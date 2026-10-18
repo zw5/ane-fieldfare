@@ -8,19 +8,13 @@ package final class VisionScratch {
     package let normalizedPatches: MTLBuffer
     package let hiddenA: MTLBuffer
     package let hiddenB: MTLBuffer
+    /// Q/K/V live in attention's padded buffers; `q` is general scratch.
     package let q: MTLBuffer
-    /// Nil under the fused padded attention layout, where the QKV projections
-    /// write the attention-owned padded buffers instead of hidden-width scratch.
-    package let k: MTLBuffer?
-    package let v: MTLBuffer?
     package let attention: MTLBuffer
+    /// Gate projection output; the up projection folds GeGLU into it.
     package let gate: MTLBuffer
-    /// Nil when the up projection folds GeGLU into its epilogue.
-    package let up: MTLBuffer?
 
-    package init(device: MTLDevice, rows: Int, config: VisionConfig,
-                 needsSeparateKV: Bool = true,
-                 needsSeparateUp: Bool = true) throws {
+    package init(device: MTLDevice, rows: Int, config: VisionConfig) throws {
         paddedRows = ((rows + 63) / 64) * 64
         self.rows = rows
         self.hiddenSize = config.hiddenSize
@@ -36,17 +30,12 @@ package final class VisionScratch {
         hiddenA = try buffer(paddedRows * config.hiddenSize)
         hiddenB = try buffer(paddedRows * config.hiddenSize)
         q = try buffer(paddedRows * config.hiddenSize)
-        k = needsSeparateKV ? try buffer(paddedRows * config.hiddenSize) : nil
-        v = needsSeparateKV ? try buffer(paddedRows * config.hiddenSize) : nil
         attention = try buffer(paddedRows * config.hiddenSize)
         gate = try buffer(paddedRows * config.intermediateSize + 64)
-        up = needsSeparateUp
-            ? try buffer(paddedRows * config.intermediateSize + 64) : nil
     }
 
     private var buffers: [MTLBuffer] {
         [normalizedPatches, hiddenA, hiddenB, q, attention, gate]
-            + [k, v, up].compactMap(\.self)
     }
 
     /// Zeroes only what a later read can actually see.

@@ -65,7 +65,6 @@ import Testing
             hiddenSize: VisionConfig().textHiddenSize,
             gpuNanoseconds: 0,
             scratchBytes: bytes,
-            attentionVariant: .native72Q16,
             projectorPath: .affineThreadgroupF16,
             expertResidencyTransition: nil,
             preprocessing: nil)

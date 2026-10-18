@@ -62,22 +62,6 @@ public final class Gemma4ImagePreprocessor {
         try plan(VisionImageSource(fileURL: fileURL))
     }
 
-    /// The geometry a request's admission needs, from headers alone. The soft
-    /// token count follows from oriented dimensions, so admission has no
-    /// reason to pay the JPEG scan-termination walk a full plan performs —
-    /// the encode that follows re-plans with full verification anyway.
-    public func admissionGeometry(fileURL: URL) throws -> Gemma4ImageGeometry {
-        let image = try VisionImageSource(fileURL: fileURL)
-        let opened = try image.open(
-            maximumEncodedBytes: metadataReader.limits.maximumEncodedBytes)
-        let metadata = try metadataReader.read(
-            opened: opened, verifyStreamCompleteness: false)
-        return try Gemma4ImageGeometry(
-            sourceWidth: metadata.orientedWidth,
-            sourceHeight: metadata.orientedHeight,
-            config: config)
-    }
-
     public func plan(_ image: VisionImageSource) throws -> VisionImagePlan {
         let started = ContinuousClock.now
         let opened = try image.open(

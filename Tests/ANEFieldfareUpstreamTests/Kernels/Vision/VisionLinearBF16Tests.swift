@@ -9,7 +9,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
 @Suite struct VisionLinearBF16Tests {
     @Test(.enabled(if: visionMPPTensorOpsAvailable,
                    "vision linear kernels require Apple8 or newer"))
-    func nativePathsProduceExpectedConstantProduct() throws {
+    func registerPathProducesExpectedConstantProduct() throws {
         let context = try MetalContext()
         let m = 128, n = 256, k = 1_152
         func buffer(count: Int, value: Float) throws -> MTLBuffer {
@@ -21,31 +21,24 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         let input = try buffer(count: m * k, value: 0.125)
         let weights = try buffer(count: n * k, value: 0.25)
 
-        for environment in [
-            [String: String](),
-            ["TURBO_FIELDFARE_VISION_REGISTER_GEMM": "1"],
-        ] {
-            // A fresh output per variant, poisoned rather than zeroed: sharing
-            // one buffer meant the second variant was compared against what the
-            // first had written, so a kernel that dispatched nothing passed.
-            let output = try buffer(count: m * n, value: -1)
-            let linear = try VisionLinearBF16(context: context, environment: environment)
-            let commandBuffer = try #require(context.queue.makeCommandBuffer())
-            linear.encode(commandBuffer: commandBuffer,
-                          input: input, weights: weights, output: output,
-                          m: m, n: n, k: k)
-            commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
-            #expect(commandBuffer.error == nil)
-            let values = output.contents().bindMemory(to: UInt16.self, capacity: m * n)
-            var maximumError: Float = 0
-            for index in 0..<(m * n) {
-                maximumError = max(
-                    maximumError,
-                    abs(Quantization.bf16ToFloat(values[index]) - 36))
-            }
-            #expect(maximumError == 0, "environment: \(environment)")
+        // Poisoned rather than zeroed, so a kernel that dispatched nothing fails.
+        let output = try buffer(count: m * n, value: -1)
+        let linear = try VisionLinearBF16(context: context)
+        let commandBuffer = try #require(context.queue.makeCommandBuffer())
+        linear.encode(commandBuffer: commandBuffer,
+                      input: input, weights: weights, output: output,
+                      m: m, n: n, k: k)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        #expect(commandBuffer.error == nil)
+        let values = output.contents().bindMemory(to: UInt16.self, capacity: m * n)
+        var maximumError: Float = 0
+        for index in 0..<(m * n) {
+            maximumError = max(
+                maximumError,
+                abs(Quantization.bf16ToFloat(values[index]) - 36))
         }
+        #expect(maximumError == 0)
     }
 
     @Test(.enabled(if: visionMPPTensorOpsAvailable,
@@ -72,9 +65,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         let output = try #require(context.device.makeBuffer(
             length: m * n * MemoryLayout<UInt16>.stride,
             options: .storageModeShared))
-        let linear = try VisionLinearBF16(
-            context: context,
-            environment: ["TURBO_FIELDFARE_VISION_REGISTER_GEMM": "1"])
+        let linear = try VisionLinearBF16(context: context)
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
         linear.encode(commandBuffer: commandBuffer,
                       input: input, weights: weights, output: output,
@@ -103,43 +94,5 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         }
         #expect(maximumWideError < 0.016)
         #expect(maximumTailError < 0.016)
-    }
-
-    @Test(.enabled(if: visionMPPTensorOpsAvailable,
-                   "vision linear kernels require Apple8 or newer"))
-    func registerMatchesMPPReductionAtProductionK() throws {
-        let context = try MetalContext()
-        let m = 64, n = 32, k = 1_152
-        let inputBits = (0..<(m * k)).map {
-            Quantization.bf16Bits(Float(($0 * 17) % 127 - 63) / 64)
-        }
-        let weightBits = (0..<(n * k)).map {
-            Quantization.bf16Bits(Float(($0 * 29) % 113 - 56) / 128)
-        }
-        let input = try #require(context.device.makeBuffer(
-            bytes: inputBits, length: inputBits.count * 2, options: .storageModeShared))
-        let weights = try #require(context.device.makeBuffer(
-            bytes: weightBits, length: weightBits.count * 2, options: .storageModeShared))
-        let baseline = try #require(context.device.makeBuffer(
-            length: m * n * 2, options: .storageModeShared))
-        let register = try #require(context.device.makeBuffer(
-            length: m * n * 2, options: .storageModeShared))
-
-        for (environment, output) in [
-            ([String: String](), baseline),
-            (["TURBO_FIELDFARE_VISION_REGISTER_GEMM": "1"], register),
-        ] {
-            let linear = try VisionLinearBF16(context: context, environment: environment)
-            let commandBuffer = try #require(context.queue.makeCommandBuffer())
-            linear.encode(commandBuffer: commandBuffer,
-                          input: input, weights: weights, output: output,
-                          m: m, n: n, k: k)
-            commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
-            #expect(commandBuffer.error == nil)
-        }
-
-        #expect(Data(bytes: baseline.contents(), count: m * n * 2)
-            == Data(bytes: register.contents(), count: m * n * 2))
     }
 }

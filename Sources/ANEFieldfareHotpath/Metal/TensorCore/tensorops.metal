@@ -108,92 +108,6 @@ kernel void mpp_prefill_affine_threadgroup_f16(
     }
 }
 
-#if defined(TURBO_FIELDFARE_VISION_TENSOROPS)
-
-kernel void mpp_vision_linear_bf16(
-    device bfloat* activations [[buffer(0)]],
-    device const bfloat* weights [[buffer(1)]],
-    device bfloat* output [[buffer(2)]],
-    constant uint& M [[buffer(3)]],
-    constant uint& N [[buffer(4)]],
-    constant uint& K [[buffer(5)]],
-    uint3 tgid [[threadgroup_position_in_grid]],
-    uint3 lid3 [[thread_position_in_threadgroup]],
-    uint3 threads3 [[threads_per_threadgroup]]) {
-    constexpr int tileM = 64;
-    constexpr int tileN = 32;
-    constexpr int tileK = 64;
-    constexpr auto descriptor = matmul2d_descriptor(
-        tileM, tileN, tileK, false, true, false);
-    matmul2d<descriptor, execution_simdgroups<4>> operation;
-
-    using device_bfloat_tensor = tensor<device bfloat, dextents<int32_t, 2>, tensor_inline>;
-    using threadgroup_bfloat_tensor = tensor<threadgroup bfloat, dextents<int32_t, 2>, tensor_inline>;
-    threadgroup bfloat weightTile[tileN * tileK];
-    threadgroup_bfloat_tensor tileB(
-        weightTile,
-        dextents<int32_t, 2>(tileK, tileN),
-        array<int32_t, 2>({1, tileK}));
-    // Extent is the K that remains, not a fixed tile: MPP clips loads to the
-    // declared extents, and that clipping is the only bound. `down_proj` passes
-    // K = 4304, which is 67 tiles plus 16, so a hardcoded 64 let the tail group
-    // read past each row — currently landing inside an unexplained 64-element
-    // pad in VisionScratch rather than crashing.
-    device_bfloat_tensor firstA(
-        activations,
-        dextents<int32_t, 2>(min(int32_t(tileK), int32_t(K)), M),
-        array<int32_t, 2>({1, int32_t(K)}));
-    auto firstTileA = firstA.slice(0, int32_t(tgid.y) * tileM);
-    auto accumulator = operation.get_destination_cooperative_tensor<
-        decltype(firstTileA), decltype(tileB), float>();
-    auto groupProduct = operation.get_destination_cooperative_tensor<
-        decltype(firstTileA), decltype(tileB), float>();
-    for (int element = 0; element < accumulator.get_capacity(); ++element) {
-        accumulator[element] = 0.0f;
-    }
-
-    const uint lid = lid3.x;
-    const uint threads = threads3.x;
-    for (uint group = 0; group < (K + tileK - 1u) / tileK; ++group) {
-        for (int element = 0; element < groupProduct.get_capacity(); ++element) {
-            groupProduct[element] = 0.0f;
-        }
-        for (uint linear = lid; linear < uint(tileN * tileK); linear += threads) {
-            const uint localN = linear / uint(tileK);
-            const uint localK = linear % uint(tileK);
-            const uint globalN = tgid.x * uint(tileN) + localN;
-            const uint globalK = group * uint(tileK) + localK;
-            weightTile[linear] = globalN < N && globalK < K
-                ? weights[globalN * K + globalK] : bfloat(0.0f);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        device_bfloat_tensor groupA(
-            activations + group * uint(tileK),
-            dextents<int32_t, 2>(
-                min(int32_t(tileK), int32_t(K) - int32_t(group) * int32_t(tileK)), M),
-            array<int32_t, 2>({1, int32_t(K)}));
-        auto tileA = groupA.slice(0, int32_t(tgid.y) * tileM);
-        operation.run(tileA, tileB, groupProduct);
-        for (int element = 0; element < accumulator.get_capacity(); ++element) {
-            accumulator[element] += groupProduct[element];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    for (int element = 0; element < accumulator.get_capacity(); ++element) {
-        if (!accumulator.is_valid_element(element)) continue;
-        const auto position = accumulator.get_multidimensional_index(element);
-        const uint globalN = tgid.x * uint(tileN) + uint(position[0]);
-        const uint globalM = tgid.y * uint(tileM) + uint(position[1]);
-        if (globalM < M && globalN < N) {
-            output[globalM * N + globalN] = bfloat(accumulator[element]);
-        }
-    }
-}
-
-#endif
-
 constant constexpr int kMPPAffineApple10TileM = 64;
 constant constexpr int kMPPAffineApple10TileN = 64;
 constant constexpr int kMPPAffineApple10TileK = 128;
@@ -697,31 +611,6 @@ kernel void mpp_vision_attention_bf16(
     threadgroup float oldScale[kVisionAttentionQueries];
     threadgroup float nextMaxTile[kVisionAttentionQueries];
     mpp_vision_attention_bf16_impl<kVisionAttentionRealHeadDim>(
-        Q, K, V, O, sequenceLength, numHeads, layout, tg, lid, simdLane,
-        simdIndex, scoreTile, weightTile, rowMax, rowSum, oldScale, nextMaxTile);
-}
-
-kernel void mpp_vision_attention_bf16_pv80(
-    device bfloat* Q [[buffer(0)]],
-    device bfloat* K [[buffer(1)]],
-    device bfloat* V [[buffer(2)]],
-    device bfloat* O [[buffer(3)]],
-    constant uint& sequenceLength [[buffer(4)]],
-    constant uint& numHeads [[buffer(5)]],
-    constant VisionAttentionLayout& layout [[buffer(6)]],
-    uint3 tg [[threadgroup_position_in_grid]],
-    uint lid [[thread_index_in_threadgroup]],
-    ushort simdLane [[thread_index_in_simdgroup]],
-    ushort simdIndex [[simdgroup_index_in_threadgroup]]) {
-    threadgroup float scoreTile[
-        kVisionAttentionQueries * kVisionAttentionKeys];
-    threadgroup float weightTile[
-        kVisionAttentionQueries * kVisionAttentionKeys];
-    threadgroup float rowMax[kVisionAttentionQueries];
-    threadgroup float rowSum[kVisionAttentionQueries];
-    threadgroup float oldScale[kVisionAttentionQueries];
-    threadgroup float nextMaxTile[kVisionAttentionQueries];
-    mpp_vision_attention_bf16_impl<kVisionAttentionHeadDim>(
         Q, K, V, O, sequenceLength, numHeads, layout, tg, lid, simdLane,
         simdIndex, scoreTile, weightTile, rowMax, rowSum, oldScale, nextMaxTile);
 }

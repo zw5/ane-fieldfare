@@ -7,41 +7,6 @@ constant constexpr uint kVisionMaxQueryTile = 16;
 constant constexpr uint kVisionKeyTile = 32;
 constant constexpr uint kVisionThreads = 128;
 
-kernel void vision_pad_heads_72_to_80(
-    device const bfloat* q [[buffer(0)]],
-    device const bfloat* k [[buffer(1)]],
-    device const bfloat* v [[buffer(2)]],
-    device bfloat* paddedQ [[buffer(3)]],
-    device bfloat* paddedK [[buffer(4)]],
-    device bfloat* paddedV [[buffer(5)]],
-    constant uint& rows [[buffer(6)]],
-    constant uint& heads [[buffer(7)]],
-    uint index [[thread_position_in_grid]]) {
-    if (index >= rows * heads * 80u) return;
-    const uint dimension = index % 80u;
-    const uint vector = index / 80u;
-    const uint row = vector % rows;
-    const uint head = vector / rows;
-    const uint source = (row * heads + head) * 72u + dimension;
-    paddedQ[index] = dimension < 72u ? q[source] : bfloat(0.0f);
-    paddedK[index] = dimension < 72u ? k[source] : bfloat(0.0f);
-    paddedV[index] = dimension < 72u ? v[source] : bfloat(0.0f);
-}
-
-kernel void vision_unpad_heads_80_to_72(
-    device const bfloat* input [[buffer(0)]],
-    device bfloat* output [[buffer(1)]],
-    constant uint& rows [[buffer(2)]],
-    constant uint& heads [[buffer(3)]],
-    uint index [[thread_position_in_grid]]) {
-    if (index >= rows * heads * 72u) return;
-    const uint dimension = index % 72u;
-    const uint vector = index / 72u;
-    const uint row = vector / heads;
-    const uint head = vector % heads;
-    output[index] = input[(head * rows + row) * 80u + dimension];
-}
-
 template <uint ComputeDim, uint QueryTile>
 inline void vision_attention_online_impl(
     device const bfloat* q,
@@ -194,52 +159,6 @@ kernel void vision_attention_online_72(
         oldScale, rowSum, rowMax);
 }
 
-kernel void vision_attention_online_80(
-    device const bfloat* q [[buffer(0)]],
-    device const bfloat* k [[buffer(1)]],
-    device const bfloat* v [[buffer(2)]],
-    device bfloat* output [[buffer(3)]],
-    constant uint& sequenceLength [[buffer(4)]],
-    constant uint& numHeads [[buffer(5)]],
-    uint3 group [[threadgroup_position_in_grid]],
-    uint3 threadPosition [[thread_position_in_threadgroup]]) {
-    threadgroup bfloat qTile[kVisionMaxQueryTile * kVisionHeadDim];
-    threadgroup bfloat kTile[kVisionKeyTile * kVisionHeadDim];
-    threadgroup bfloat vTile[kVisionKeyTile * kVisionHeadDim];
-    threadgroup float probabilities[kVisionMaxQueryTile * kVisionKeyTile];
-    threadgroup float accumulator[kVisionMaxQueryTile * kVisionPaddedHeadDim];
-    threadgroup float oldScale[kVisionMaxQueryTile];
-    threadgroup float rowSum[kVisionMaxQueryTile];
-    threadgroup float rowMax[kVisionMaxQueryTile];
-    vision_attention_online_impl<kVisionPaddedHeadDim, 8>(
-        q, k, v, output, sequenceLength, numHeads, group.xy, threadPosition.x,
-        qTile, kTile, vTile, probabilities, accumulator,
-        oldScale, rowSum, rowMax);
-}
-
-kernel void vision_attention_online_72_q16(
-    device const bfloat* q [[buffer(0)]],
-    device const bfloat* k [[buffer(1)]],
-    device const bfloat* v [[buffer(2)]],
-    device bfloat* output [[buffer(3)]],
-    constant uint& sequenceLength [[buffer(4)]],
-    constant uint& numHeads [[buffer(5)]],
-    uint3 group [[threadgroup_position_in_grid]],
-    uint3 threadPosition [[thread_position_in_threadgroup]]) {
-    threadgroup bfloat qTile[kVisionMaxQueryTile * kVisionHeadDim];
-    threadgroup bfloat kTile[kVisionKeyTile * kVisionHeadDim];
-    threadgroup bfloat vTile[kVisionKeyTile * kVisionHeadDim];
-    threadgroup float probabilities[kVisionMaxQueryTile * kVisionKeyTile];
-    threadgroup float accumulator[kVisionMaxQueryTile * kVisionPaddedHeadDim];
-    threadgroup float oldScale[kVisionMaxQueryTile];
-    threadgroup float rowSum[kVisionMaxQueryTile];
-    threadgroup float rowMax[kVisionMaxQueryTile];
-    vision_attention_online_impl<kVisionHeadDim, 16>(
-        q, k, v, output, sequenceLength, numHeads, group.xy, threadPosition.x,
-        qTile, kTile, vTile, probabilities, accumulator,
-        oldScale, rowSum, rowMax);
-}
-
 kernel void vision_normalize_patches(
     device const bfloat* input [[buffer(0)]],
     device bfloat* output [[buffer(1)]],
@@ -386,56 +305,6 @@ inline float2 vision_rope_pair(float2 value, int position, uint pairInAxis) {
                   value.y * cosine + value.x * sine);
 }
 
-kernel void vision_qkv_norm_rope(
-    device bfloat* q [[buffer(0)]],
-    device bfloat* k [[buffer(1)]],
-    device bfloat* v [[buffer(2)]],
-    device const bfloat* qWeight [[buffer(3)]],
-    device const bfloat* kWeight [[buffer(4)]],
-    device const int2* positions [[buffer(5)]],
-    constant uint& rows [[buffer(6)]],
-    constant uint& heads [[buffer(7)]],
-    uint vectorIndex [[thread_position_in_grid]]) {
-    if (vectorIndex >= rows * heads) return;
-    const uint base = vectorIndex * kVisionHeadDim;
-    float qSquares = 0.0f;
-    float kSquares = 0.0f;
-    float vSquares = 0.0f;
-    for (uint dimension = 0; dimension < kVisionHeadDim; ++dimension) {
-        const float qValue = float(q[base + dimension]);
-        const float kValue = float(k[base + dimension]);
-        const float vValue = float(v[base + dimension]);
-        qSquares = fma(qValue, qValue, qSquares);
-        kSquares = fma(kValue, kValue, kSquares);
-        vSquares = fma(vValue, vValue, vSquares);
-    }
-    const float qInverse = rsqrt(qSquares / 72.0f + 1e-6f);
-    const float kInverse = rsqrt(kSquares / 72.0f + 1e-6f);
-    const float vInverse = rsqrt(vSquares / 72.0f + 1e-6f);
-    const int2 position = positions[vectorIndex / heads];
-    for (uint axis = 0; axis < 2u; ++axis) {
-        const uint axisBase = axis * 36u;
-        const int coordinate = axis == 0u ? position.x : position.y;
-        for (uint pair = 0; pair < 18u; ++pair) {
-            const uint first = base + axisBase + pair;
-            const uint second = first + 18u;
-            float2 qPair = float2(float(q[first]) * qInverse * float(qWeight[axisBase + pair]),
-                                  float(q[second]) * qInverse * float(qWeight[axisBase + pair + 18u]));
-            float2 kPair = float2(float(k[first]) * kInverse * float(kWeight[axisBase + pair]),
-                                  float(k[second]) * kInverse * float(kWeight[axisBase + pair + 18u]));
-            qPair = vision_rope_pair(qPair, coordinate, pair);
-            kPair = vision_rope_pair(kPair, coordinate, pair);
-            q[first] = bfloat(qPair.x);
-            q[second] = bfloat(qPair.y);
-            k[first] = bfloat(kPair.x);
-            k[second] = bfloat(kPair.y);
-        }
-    }
-    for (uint dimension = 0; dimension < kVisionHeadDim; ++dimension) {
-        v[base + dimension] = bfloat(float(v[base + dimension]) * vInverse);
-    }
-}
-
 /// Same arithmetic as `vision_qkv_norm_rope` on the head-major padded layout the
 /// QKV projections now write: vector `(head, row)` starts at
 /// `(head * rowStride + row) * 80`. Threads walk rows within a head so the
@@ -491,19 +360,6 @@ kernel void vision_qkv_norm_rope_padded(
     for (uint dimension = 0; dimension < kVisionHeadDim; ++dimension) {
         v[base + dimension] = bfloat(float(v[base + dimension]) * vInverse);
     }
-}
-
-kernel void vision_geglu(
-    device bfloat* gate [[buffer(0)]],
-    device const bfloat* up [[buffer(1)]],
-    constant uint& count [[buffer(2)]],
-    uint index [[thread_position_in_grid]]) {
-    if (index >= count) return;
-    const float x = float(gate[index]);
-    const float inner = clamp(
-        0.7978845608f * (x + 0.044715f * x * x * x), -20.0f, 20.0f);
-    const float gelu = 0.5f * x * (1.0f + tanh(inner));
-    gate[index] = bfloat(gelu * float(up[index]));
 }
 
 kernel void vision_pool_standardize_norm(
