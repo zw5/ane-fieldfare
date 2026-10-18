@@ -18,7 +18,11 @@ final class DequantInt4GEMV {
         Shape(m: 2816, n: 8192),
     ]
 
+    /// Input rows one `encodeRows` dispatch handles; matches the kernel.
+    static let maxBatchRows = 16
+
     private let pipeline: MTLComputePipelineState
+    private let multiRowPipeline: MTLComputePipelineState
     private let specializedPipelines: [Shape: MTLComputePipelineState]
 
     init(context: MetalContext) throws {
@@ -39,6 +43,35 @@ final class DequantInt4GEMV {
                 maxTotalThreadsPerThreadgroup: 512)
         }
         self.specializedPipelines = specializedPipelines
+        self.multiRowPipeline = try context.pipeline(
+            "dequant_int4_gemm_small_mma", constants: [], maxTotalThreadsPerThreadgroup: 128)
+    }
+
+    /// `rows` input vectors at `xStrideElements` apart, each projected like
+    /// `encode`, with the weights read once.
+    func encodeRows(commandBuffer: MTLCommandBuffer,
+                    weights: MTLBuffer, weightsOffset: Int,
+                    scales: MTLBuffer, scalesOffset: Int,
+                    biases: MTLBuffer, biasesOffset: Int,
+                    x: MTLBuffer, xOffset: Int = 0,
+                    y: MTLBuffer, yOffset: Int = 0,
+                    m: UInt32, n: UInt32, rows: Int,
+                    xStrideElements: Int, yStrideElements: Int) {
+        precondition(rows > 0 && rows <= Self.maxBatchRows, "rows=\(rows) outside 1...\(Self.maxBatchRows)")
+        precondition(n % UInt32(Quantization.groupSize) == 0 && weightsOffset % 2 == 0)
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.setComputePipelineState(multiRowPipeline)
+        encoder.setBuffer(weights, offset: weightsOffset, index: 0)
+        encoder.setBuffer(scales, offset: scalesOffset, index: 1)
+        encoder.setBuffer(biases, offset: biasesOffset, index: 2)
+        encoder.setBuffer(x, offset: xOffset, index: 3)
+        encoder.setBuffer(y, offset: yOffset, index: 4)
+        var values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
+        for i in values.indices { encoder.setBytes(&values[i], length: 4, index: 5 + i) }
+        encoder.dispatchThreadgroups(
+            MTLSize(width: (Int(m) + 31) / 32, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+        encoder.endEncoding()
     }
 
     func encode(commandBuffer: MTLCommandBuffer,

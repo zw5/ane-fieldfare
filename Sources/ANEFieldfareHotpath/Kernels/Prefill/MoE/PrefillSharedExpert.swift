@@ -10,6 +10,8 @@ final class PrefillSharedExpert {
     private let context: MetalContext
     private let batched: MPPPrefillInt4QMM?
     private let geluMulPSO: MTLComputePipelineState?
+    /// Multi-row GEMV for small INT4 batches such as speculative verification.
+    private let multiRow: DequantInt4GEMV?
     private var batchScratch: (gate: MTLBuffer, up: MTLBuffer, act: MTLBuffer, tokens: Int, intermediate: Int)?
 
     /// `batched` selects the INT4 tensor-op GEMM path for 4-bit weights. It
@@ -21,9 +23,11 @@ final class PrefillSharedExpert {
             let qmm = MPPPrefillInt4QMM(context: context)
             self.batched = qmm.isAvailable ? qmm : nil
             self.geluMulPSO = try context.pipeline("gelu_mul_fp16")
+            self.multiRow = try DequantInt4GEMV(context: context)
         } else {
             self.batched = nil
             self.geluMulPSO = nil
+            self.multiRow = nil
         }
     }
 
@@ -53,12 +57,23 @@ final class PrefillSharedExpert {
                                y: MTLBuffer, yOffset: Int,
                                gate: SharedExpertInt8Proj, up: SharedExpertInt8Proj, down: SharedExpertInt8Proj,
                                queryCount: Int, d: Int, intermediate: Int,
-                               xStrideElements: Int, yStrideElements: Int) throws -> Bool {
-        guard let batched, let geluMulPSO, queryCount >= Self.batchedMinimumTokens,
+                               xStrideElements: Int, yStrideElements: Int,
+                               smallBatch: Bool) throws -> Bool {
+        let useMultiRow = smallBatch && queryCount <= DequantInt4GEMV.maxBatchRows && multiRow != nil
+        guard let batched, let geluMulPSO, useMultiRow || queryCount >= Self.batchedMinimumTokens,
               xStrideElements == d, yStrideElements == d else { return false }
         let buffers = try scratch(tokens: queryCount, intermediate: intermediate)
         func project(_ p: SharedExpertInt8Proj, x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int) -> Bool {
-            batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
+            if useMultiRow, let multiRow {
+                multiRow.encodeRows(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
+                                    scales: p.scales, scalesOffset: p.scalesOffset,
+                                    biases: p.biases, biasesOffset: p.biasesOffset,
+                                    x: x, xOffset: xOffset, y: y, yOffset: yOffset,
+                                    m: p.rows, n: p.cols, rows: queryCount,
+                                    xStrideElements: Int(p.cols), yStrideElements: Int(p.rows))
+                return true
+            }
+            return batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                            scales: p.scales, scalesOffset: p.scalesOffset,
                            biases: p.biases, biasesOffset: p.biasesOffset,
                            x: x, xOffset: xOffset, y: y, yOffset: yOffset,
@@ -105,7 +120,8 @@ final class PrefillSharedExpert {
                             d: Int,
                             intermediate: Int,
                             xStrideElements: Int,
-                            yStrideElements: Int) throws {
+                            yStrideElements: Int,
+                            smallBatch: Bool = false) throws {
         precondition(queryCount >= 0, "queryCount must be non-negative")
         precondition(d > 0, "d must be positive")
         precondition(intermediate > 0, "intermediate must be positive")
@@ -121,7 +137,7 @@ final class PrefillSharedExpert {
         if try encodeBatched(commandBuffer: cb, x: x, xOffset: xOffset, y: y, yOffset: yOffset,
                              gate: gate, up: up, down: down, queryCount: queryCount, d: d,
                              intermediate: intermediate, xStrideElements: xStrideElements,
-                             yStrideElements: yStrideElements) {
+                             yStrideElements: yStrideElements, smallBatch: smallBatch) {
             return
         }
         let halfBytes = MemoryLayout<Float16>.stride

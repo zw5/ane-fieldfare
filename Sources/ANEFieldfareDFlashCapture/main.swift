@@ -25,6 +25,13 @@ private struct Generation: Decodable {
         do {
             if args.count == 4, args[1] == "embedding" {
                 try dumpEmbedding(modelPath: args[2], prefix: args[3])
+            } else if args.count == 6, args[1] == "generate", let block = Int(args[5]) {
+                try await generate(modelPath: args[2], drafterPath: args[3], generationPath: args[4], block: block)
+            } else if args.count == 6, args[1] == "draft-check" {
+                try await draftCheck(modelPath: args[2], drafterPath: args[3], generationPath: args[4],
+                                     anchors: args[5].split(separator: ",").compactMap { Int($0) })
+            } else if args.count == 4, args[1] == "verify-check" {
+                try await verifyCheck(modelPath: args[2], generationPath: args[3])
             } else if args.count == 5, args[1] == "capture" {
                 try await capture(modelPath: args[2], generationPath: args[3], prefix: args[4])
             } else {
@@ -36,9 +43,11 @@ private struct Generation: Decodable {
         }
     }
 
+    static let slots = Int(ProcessInfo.processInfo.environment["SLOTS"] ?? "16")!
+
     static func loadModel(_ path: String, context: MetalContext) throws -> Model {
         try Model.load(directoryURL: URL(fileURLWithPath: path), device: context.device,
-                       streamingMode: .pread(slotCount: 16), expertCachePolicy: .lfu,
+                       streamingMode: .pread(slotCount: slots), expertCachePolicy: .lfu,
                        integrityPolicy: .sizeCheckTrustedReceipt)
     }
 
@@ -116,6 +125,133 @@ private struct Generation: Decodable {
         try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
             .write(to: URL(fileURLWithPath: prefix + ".json"))
         print("captured \(tokens.count) positions in \(chunks.count) chunks; prefill=\(seconds)s")
+    }
+
+    /// Teacher-forces a greedy generation through `verify` in full blocks and
+    /// counts rows whose greedy token disagrees with the recorded next token.
+    /// With `rewind`, a junk block is verified and rewound before each real one.
+    static func verifyCheck(modelPath: String, generationPath: String) async throws {
+        let generation = try JSONDecoder().decode(
+            Generation.self, from: Data(contentsOf: URL(fileURLWithPath: generationPath)))
+        let context = try MetalContext()
+        let model = try loadModel(modelPath, context: context)
+        let block = RealForwardRunner.maxVerifyTokens
+        for useRewind in [false] {
+            let runner = try RealForwardRunner(
+                model: model, context: context, maxContext: 4096,
+                runtimeConfiguration: RuntimeConfiguration(expertCacheSlots: slots, prefillChunkTokens: 1024))
+            guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
+                                                         options: .storageModeShared) else { fail("alloc", 1) }
+            let prompt = generation.prompt_token_ids
+            let result = try await runner.prefillChunked(tokens: prompt[...], startPosition: 0,
+                outputMode: .greedyIfAvailable, config: .production(chunkTokens: 1024), into: logits,
+                onProgress: { _ in })
+            let gen = generation.generated_token_ids
+            var mismatches = 0, rows = 0, firstMismatch = -1
+            if case .greedyToken(let t) = result.seed, Int32(t) != gen[0] { mismatches += 1; firstMismatch = 0 }
+            var position = prompt.count
+            var i = 0
+            print("  after prompt: tile_fetch=\(String(format: "%.2f", Double(runner.prefillTileFetchNanos) / 1e9)) "
+                + "tile_hits=\(runner.prefillTileHits) tile_misses=\(runner.prefillTileMisses) "
+                + "routed_wall=\(String(format: "%.2f", Double(runner.prefillRoutedWallNanos) / 1e9))")
+            let started = Date()
+            while i + 1 < gen.count {
+                let n = min(block, gen.count - 1 - i)
+                if useRewind {
+                    _ = try await runner.verify(tokens: Array(repeating: 236761, count: block),
+                                                startPosition: position)
+                    try runner.rewind(to: position)
+                }
+                let out = try await runner.verify(tokens: Array(gen[i..<(i + n)]), startPosition: position)
+                for r in 0..<n where out[r] != gen[i + r + 1] {
+                    mismatches += 1
+                    if firstMismatch < 0 { firstMismatch = i + r + 1 }
+                }
+                rows += n; i += n; position += n
+            }
+            let seconds = Date().timeIntervalSince(started)
+            func sec(_ n: UInt64) -> String { String(format: "%.2f", Double(n) / 1e9) }
+            print("  io=\(sec(runner.totalIoNanos)) routed_wall=\(sec(runner.prefillRoutedWallNanos)) "
+                + "pre_router_gpu=\(sec(runner.prefillPreRouterGPUNanos)) shared_gpu=\(sec(runner.prefillSharedGPUNanos)) "
+                + "routed_gpu=\(sec(runner.prefillRoutedGPUNanos)) hits=\(runner.routedExpertCacheHits) "
+                + "misses=\(runner.routedExpertCacheMisses) union=\(runner.prefillUnionExpertsBeforeCap) "
+                + "tile_fetch=\(sec(runner.prefillTileFetchNanos)) tile_drain=\(sec(runner.prefillTileDrainNanos)) "
+                + "tile_hits=\(runner.prefillTileHits) tile_misses=\(runner.prefillTileMisses)")
+            print("rewind=\(useRewind) rows=\(rows) mismatches=\(mismatches) first=\(firstMismatch) "
+                + "verify_seconds=\(String(format: "%.2f", seconds)) per_block_ms="
+                + String(format: "%.1f", seconds * 1000 / Double((rows + block - 1) / block) / (useRewind ? 2 : 1)))
+        }
+    }
+
+    /// Speculative greedy generation of as many tokens as the recorded plain
+    /// greedy generation, reporting agreement and timing.
+    static func generate(modelPath: String, drafterPath: String, generationPath: String, block: Int) async throws {
+        let generation = try JSONDecoder().decode(
+            Generation.self, from: Data(contentsOf: URL(fileURLWithPath: generationPath)))
+        let context = try MetalContext()
+        let model = try loadModel(modelPath, context: context)
+        let runner = try RealForwardRunner(
+            model: model, context: context, maxContext: 4096,
+            runtimeConfiguration: RuntimeConfiguration(expertCacheSlots: slots, prefillChunkTokens: 1024))
+        let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
+                                        context: context, maxContext: 4096)
+        let reference = generation.generated_token_ids
+        let (tokens, stats) = try await DFlashGeneration.generateGreedy(
+            runner: runner, drafter: drafter, context: context, prompt: generation.prompt_token_ids,
+            maxNewTokens: reference.count, blockSize: block, prefillChunkTokens: 1024)
+        let firstDiff = zip(tokens, reference).enumerated().first { $0.element.0 != $0.element.1 }?.offset ?? -1
+        var profile = stats.profile
+        profile["slots"] = slots
+        profile["block"] = block
+        profile["tokens_match_plain_greedy"] = tokens == reference
+        profile["first_divergence"] = firstDiff
+        profile["generated_token_ids"] = tokens.map(Int.init)
+        func sec(_ n: UInt64) -> Double { Double(n) / 1e9 }
+        profile["runner_including_prompt"] = [
+            "pre_router_gpu": sec(runner.prefillPreRouterGPUNanos), "shared_gpu": sec(runner.prefillSharedGPUNanos),
+            "routed_gpu": sec(runner.prefillRoutedGPUNanos), "routed_wall": sec(runner.prefillRoutedWallNanos),
+            "tile_fetch": sec(runner.prefillTileFetchNanos), "tile_drain": sec(runner.prefillTileDrainNanos),
+            "tile_hits": runner.prefillTileHits, "tile_misses": runner.prefillTileMisses,
+            "union_experts": runner.prefillUnionExpertsBeforeCap, "layer_tiles": runner.prefillUnionLayerTiles]
+        let data = try JSONSerialization.data(withJSONObject: profile, options: [.sortedKeys])
+        print(String(decoding: data, as: UTF8.self))
+    }
+
+    /// Drafts at given anchor positions over teacher-forced context, for
+    /// comparison with the numpy reference (`Scripts/dflash/dflash_ref.py`).
+    static func draftCheck(modelPath: String, drafterPath: String, generationPath: String, anchors: [Int]) async throws {
+        let generation = try JSONDecoder().decode(
+            Generation.self, from: Data(contentsOf: URL(fileURLWithPath: generationPath)))
+        let tokens = generation.prompt_token_ids + generation.generated_token_ids
+        let context = try MetalContext()
+        let model = try loadModel(modelPath, context: context)
+        let runner = try RealForwardRunner(
+            model: model, context: context, maxContext: 4096,
+            runtimeConfiguration: RuntimeConfiguration(expertCacheSlots: 16, prefillChunkTokens: 1024))
+        let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
+                                        context: context, maxContext: 4096)
+        var failure: Error?
+        runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { chunk in
+            do { try drafter.appendContext(captured: chunk.hidden, stride: chunk.tokenCount, rows: chunk.tokenCount) }
+            catch { failure = error }
+        }
+        guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2, options: .storageModeShared) else {
+            fail("alloc", 1)
+        }
+        _ = try await runner.prefillChunked(tokens: tokens[...], startPosition: 0, outputMode: .logits,
+                                            config: .production(chunkTokens: 1024), into: logits, onProgress: { _ in })
+        if let failure { throw failure }
+        var result: [String: [Int]] = [:]
+        for anchor in anchors {
+            try drafter.truncateContext(to: anchor)
+            let started = Date()
+            let drafts = try drafter.propose(anchor: tokens[anchor], count: drafter.config.blockSize)
+            let ms = Date().timeIntervalSince(started) * 1000
+            result[String(anchor)] = drafts.map(Int.init)
+            FileHandle.standardError.write(Data("anchor \(anchor) propose_ms=\(String(format: "%.1f", ms))\n".utf8))
+        }
+        let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+        print(String(decoding: data, as: UTF8.self))
     }
 
     static func args() -> [String] { CommandLine.arguments }

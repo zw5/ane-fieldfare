@@ -242,3 +242,82 @@ kernel void dequant_int4_qkv_gemv_simd(
     dequant_int4_gemv_simd_body(W, scales, biases, x, y, M, NN,
                                 1u, local_row, 0u, lane);
 }
+
+// Small-batch INT4 GEMM on the SIMD-group matrix units, for 1..16 input rows
+// (speculative verification and drafting): y[r][o] = sum_k x[r][k] * W[o][k].
+// Each weight is dequantized once into threadgroup memory (FP16) and shared by
+// all rows; products accumulate in FP32 on 8x8 tiles. A threadgroup of four
+// SIMD groups covers 32 output columns, one 64-wide quantization group of K
+// at a time. Accumulation order differs from the per-row GEMV.
+constant constexpr uint kInt4MMASGs = 4;
+constant constexpr uint kInt4MMACols = 8;     // output columns per SIMD group
+
+kernel void dequant_int4_gemm_small_mma(
+    device const uint8_t* W        [[buffer(0)]],
+    device const bfloat*  scales   [[buffer(1)]],
+    device const bfloat*  biases   [[buffer(2)]],
+    device const half*    x        [[buffer(3)]],
+    device half*          y        [[buffer(4)]],
+    constant uint&        O        [[buffer(5)]],   // output columns (weight rows)
+    constant uint&        K        [[buffer(6)]],   // input width
+    constant uint&        R        [[buffer(7)]],   // input rows, 1..16
+    constant uint&        xStride  [[buffer(8)]],
+    constant uint&        yStride  [[buffer(9)]],
+    uint                  tg_idx   [[threadgroup_position_in_grid]],
+    uint                  tid      [[thread_index_in_threadgroup]],
+    uint                  sg       [[simdgroup_index_in_threadgroup]],
+    uint                  lane     [[thread_index_in_simdgroup]]
+) {
+    threadgroup half xs[16 * 64];
+    threadgroup half wt[kInt4MMASGs][kInt4MMACols * 64];
+    threadgroup float out[kInt4MMASGs][16 * kInt4MMACols];
+    const uint RR = min(R, 16u);
+    const uint nG = K / kGroupSize;
+    const uint o0 = (tg_idx * kInt4MMASGs + sg) * kInt4MMACols;
+    // Dequant ownership: lane -> column o0 + lane/4, k segment (lane%4)*16.
+    const uint wcol = o0 + lane / 4u;
+    const uint seg = lane % 4u;
+    const bool wvalid = wcol < O;
+    device const ushort* wrow = (device const ushort*)(W + min(wcol, O - 1) * (K / 2));
+
+    simdgroup_float8x8 acc0 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 acc1 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    for (uint g = 0; g < nG; ++g) {
+        for (uint i = tid; i < 16u * 16u; i += kInt4MMASGs * 32u) {   // 16 rows x 16 half4
+            const uint r = i / 16u, c = i % 16u;
+            half4 v = half4(0.0h);
+            if (r < RR) v = *((device const half4*)(x + r * xStride + g * kGroupSize) + c);
+            *((threadgroup half4*)(xs + r * 64u) + c) = v;
+        }
+        {
+            const float s = wvalid ? float(scales[wcol * nG + g]) : 0.0f;
+            const float b = wvalid ? float(biases[wcol * nG + g]) : 0.0f;
+            threadgroup half* dst = &wt[sg][(lane / 4u) * 64u + seg * 16u];
+            for (uint j = 0; j < 4; ++j) {
+                const uint bits = wrow[g * 16u + seg * 4u + j];   // 4 nibbles
+                for (uint t = 0; t < 4; ++t) {
+                    dst[j * 4u + t] = half(float((bits >> (4u * t)) & 0xFu) * s + b);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint ks = 0; ks < 64u; ks += 8u) {
+            simdgroup_half8x8 a0, a1, bt;
+            simdgroup_load(a0, xs + ks, 64);
+            simdgroup_load(bt, &wt[sg][ks], 64, ulong2(0, 0), true);
+            simdgroup_multiply_accumulate(acc0, a0, bt, acc0);
+            if (RR > 8u) {
+                simdgroup_load(a1, xs + 8u * 64u + ks, 64);
+                simdgroup_multiply_accumulate(acc1, a1, bt, acc1);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    simdgroup_store(acc0, &out[sg][0], kInt4MMACols);
+    simdgroup_store(acc1, &out[sg][8u * kInt4MMACols], kInt4MMACols);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = lane; i < RR * kInt4MMACols; i += 32u) {
+        const uint r = i / kInt4MMACols, c = i % kInt4MMACols;
+        if (o0 + c < O) y[r * yStride + o0 + c] = half(out[sg][i]);
+    }
+}

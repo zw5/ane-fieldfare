@@ -149,6 +149,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// Set to record selected layer outputs and every layer's routes during
     /// chunked prefill.
     public var prefillCapture: PrefillCapture?
+    /// Set only for the duration of `verify`: greedy tokens for every row,
+    /// tensor-op projections at any row count, routed experts on Metal.
+    private var verifyTokens: MTLBuffer?
     public convenience init(model: Model, context: MetalContext, maxContext: Int,
                 runtimeConfiguration: RuntimeConfiguration = .production) throws {
         try self.init(model: model, context: context, maxContext: maxContext,
@@ -309,6 +312,50 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         resetTransientState()
     }
 
+    /// Maximum rows one `verify` call accepts.
+    public static let maxVerifyTokens = LMHeadChainInt4.maxGreedyRows
+
+    /// Runs `tokens` at the KV cursor as one chunk and returns the target's
+    /// greedy next token after each row. The cursor advances by
+    /// `tokens.count`; the caller rewinds rows it rejects. `prefillCapture`,
+    /// when set, records the chunk as in prefill.
+    public func verify(tokens: [Int32], startPosition: Int) async throws -> [Int32] {
+        try prefillChunkState.requireClean(operation: "verify")
+        guard !tokens.isEmpty, tokens.count <= Self.maxVerifyTokens else {
+            throw PrefillError.chunkedUnsupported(
+                "verify takes 1...\(Self.maxVerifyTokens) tokens, got \(tokens.count)")
+        }
+        let scratch = try prefillScratch
+            ?? ensurePrefillScratch(config: .production(chunkTokens: 32))
+        guard let out = ctx.device.makeBuffer(length: tokens.count * MemoryLayout<UInt32>.stride,
+                                              options: .storageModeShared) else {
+            throw ModelError.residentBufferWrapFailed
+        }
+        verifyTokens = out
+        defer { verifyTokens = nil }
+        try await executePrefillChunk(
+            tokens: tokens[...], startPosition: startPosition, outputMode: .greedyIfAvailable,
+            logits: out, scratch: scratch,
+            config: .production(chunkTokens: scratch.layout.chunkTokens),
+            writeFinalHead: true)
+        let values = out.contents().bindMemory(to: UInt32.self, capacity: tokens.count)
+        return (0..<tokens.count).map { Int32(bitPattern: values[$0]) }
+    }
+
+    /// Abandons the newest KV tokens, e.g. rejected speculative drafts. Rows
+    /// past the new cursor are never read and are overwritten on the next write.
+    public func rewind(to position: Int) throws {
+        guard position > 0, position <= kv.position,
+              kv.highWaterPosition - position <= kv.maxRewindTokens else {
+            throw PrefillError.prefillCursorMismatch(
+                "cannot rewind KV from \(kv.position) to \(position); "
+                    + "high water \(kv.highWaterPosition), "
+                    + "ring slack \(kv.maxRewindTokens)")
+        }
+        kv.rewind(to: position)
+        resetTransientState()
+    }
+
     private func resetTransientState() {
         prefillChunkState.reset()
     }
@@ -331,6 +378,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var prefillUnionExpertsAfterCap: UInt64 = 0
     public private(set) var prefillUnionLayerTiles: UInt64 = 0
     public private(set) var prefillRoutedWallNanos: UInt64 = 0
+    /// Host time awaiting routed tile fetches and tile drains in chunked
+    /// prefill, and the tiles' planned cache hits and misses.
+    public private(set) var prefillTileFetchNanos: UInt64 = 0
+    public private(set) var prefillTileDrainNanos: UInt64 = 0
+    public private(set) var prefillTileHits: UInt64 = 0
+    public private(set) var prefillTileMisses: UInt64 = 0
     public private(set) var exactRouteDigest: UInt64 = 1_469_598_103_934_665_603
     public private(set) var exactRouteSamples: UInt64 = 0
     public private(set) var allRouteValuesFinite: Bool = true
@@ -606,6 +659,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                   tokenCount: Int,
                                   xStrideElements: Int,
                                   yStrideElements: Int) {
+            if verifyTokens != nil, tokenCount <= DequantInt4GEMV.maxBatchRows {
+                int4.encodeRows(commandBuffer: commandBuffer,
+                                weights: weights.buffer, weightsOffset: Int(weights.offset),
+                                scales: weights.buffer, scalesOffset: Int(weights.scaleOffset),
+                                biases: weights.buffer, biasesOffset: Int(weights.biasOffset),
+                                x: x, y: y, m: UInt32(rows), n: UInt32(columns), rows: tokenCount,
+                                xStrideElements: xStrideElements, yStrideElements: yStrideElements)
+                return
+            }
             if tokenCount >= 32,
                family == .q || family == .kv || family == .o,
                let candidate = prefillMPPAffineInt4 {
@@ -926,9 +988,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
 
                     // Clear routed partials here, in a command buffer the host
                     // completes, so routed guests on other queues never race it.
+                    // Only this chunk's `t * topK` rows are read.
                     if let blit = cb.makeBlitCommandEncoder() {
                         blit.fill(buffer: scratch.routePartials,
-                                  range: 0..<scratch.routePartials.length,
+                                  range: 0..<(t * cfg.topKExperts * D * MemoryLayout<Float16>.stride),
                                   value: 0)
                         blit.endEncoding()
                     }
@@ -1028,7 +1091,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                                         d: D,
                                                         intermediate: cfg.intermediateSize,
                                                         xStrideElements: D,
-                                                        yStrideElements: D)
+                                                        yStrideElements: D,
+                                                        smallBatch: verifyTokens != nil)
                     prefillRMS.encodeBF16W(commandBuffer: sharedCB,
                                            x: scratch.h1,
                                            weight: sharedProj.postF1.buffer,
@@ -1057,6 +1121,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     var tileLifetime = PrefillStreamedTileSlotLifetime()
                     func drainOldestPendingTile() throws {
                         guard !pendingTiles.isEmpty else { return }
+                        let drainStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                        defer { prefillTileDrainNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - drainStart }
                         let pending = pendingTiles.removeFirst()
                         try withExtendedLifetime((pending.fetch, pending.argumentBuffer)) {
                             try waitForCompletion(pending.commandBuffer)
@@ -1070,7 +1136,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     let routedWallStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                     let routedTileScheduler = PrefillRoutedTileScheduler(config: schedulerConfig)
                     var routedOnHost = true
-                    if let guest = supervisor.routedPrefill(layer: L) {
+                    if verifyTokens == nil, let guest = supervisor.routedPrefill(layer: L) {
                         let completed = try await supervisor.supervise(layer: L) {
                             try await guest.runLayer(model: model, layer: L, hidden: scratch.routedX,
                                 partials: scratch.routePartials, routes: routes, pairs: metadata.sortedPairs)
@@ -1152,6 +1218,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                     detail: "routed tile scheduler requested pending action without pending tile")
                             }
                         }
+                        let fetchStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                         let fetch = try await PrefillStreamedTileBinding.fetchBindingForTile(
                             model: model,
                             layer: L,
@@ -1160,6 +1227,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             plannedFetch: plannedFetch,
                             avoidingSlots: Set(pendingTiles.flatMap(
                                 \.fetch.plannedAssignedSlots)))
+                        prefillTileFetchNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - fetchStart
+                        prefillTileHits &+= UInt64(fetch.plannedHits)
+                        prefillTileMisses &+= UInt64(fetch.plannedMissIndices.count)
                         try fetch.binding.validateCoversPairs(routes.sortedPairs,
                                                               pairStart: Int(tile.pairStart),
                                                               pairCount: Int(tile.pairCount))
@@ -1271,7 +1341,24 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 throw ModelError.residentBufferWrapFailed
             }
             finalCB.label = "prefill start=\(startPosition) count=\(t) phase=final_head"
-            if outputMode == .greedyIfAvailable, useFusedGreedyHead {
+            if let verifyTokens {
+                fusionHead.encodeGreedyRows(
+                    commandBuffer: finalCB,
+                    hidden: scratch.hidden,
+                    rowCount: t,
+                    normWeight: finalNorm.buffer,
+                    normOffset: Int(finalNorm.offset),
+                    weights: lm.buffer,
+                    weightsOffset: Int(lm.offset),
+                    scales: lm.buffer,
+                    scalesOffset: Int(lm.scaleOffset),
+                    biases: lm.buffer,
+                    biasesOffset: Int(lm.biasOffset),
+                    outTokens: verifyTokens,
+                    d: UInt32(D),
+                    vocab: UInt32(cfg.vocabSize),
+                    rmsEps: eps)
+            } else if outputMode == .greedyIfAvailable, useFusedGreedyHead {
                 fusionHead.encodeGreedyDecode(
                     commandBuffer: finalCB,
                     hidden: scratch.hidden,
@@ -1309,7 +1396,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             }
             finalCB.commit()
             try waitForCompletion(finalCB)
-            if outputMode == .greedyIfAvailable, useFusedGreedyHead {
+            if verifyTokens == nil, outputMode == .greedyIfAvailable, useFusedGreedyHead {
                 lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
             }
         }

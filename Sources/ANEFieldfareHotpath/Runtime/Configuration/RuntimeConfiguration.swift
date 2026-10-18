@@ -32,7 +32,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public static let defaultPrefillChunkTokens = 1024
     // Cache capacity is separate from prefill scratch and ANE carriers. Check
     // the complete process footprint on the intended prompt and context size.
-    public static let allowedExpertCacheSlots = [8, 16, 17, 18, 24, 32]
+    public static let allowedExpertCacheSlots = [8, 16, 17, 18, 24, 32, 48, 64]
     public static let allowedPrefillChunkTokens = PrefillRuntimeConfig.allowedChunkTokens
     public static let minimumExpertCacheSlotsForChunkedPrefill = 16
     /// The one rendering shared by every help text and every rejection that

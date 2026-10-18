@@ -14,3 +14,14 @@ for n in code math explain chat; do $B capture $CK <dir>/$n.gen.json <dir>/$n; d
 ```
 
 The drafter must be at `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash`.
+
+## Runtime checks
+
+`ANEFieldfareDFlashCapture` also drives the runtime implementation
+(`Sources/ANEFieldfareHotpath/Runtime/DFlash`). `SLOTS` sets the expert cache.
+
+```bash
+$B verify-check $CK <dir>/code.gen.json                       # teacher-forced verify == greedy decode
+$B draft-check $CK $DRAFTER <dir>/code.gen.json 200,150,100   # Metal drafts, compare with dflash_ref.py
+SLOTS=48 $B generate $CK $DRAFTER <dir>/code.gen.json 8       # speculative greedy vs recorded plain greedy
+```
