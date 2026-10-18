@@ -34,8 +34,6 @@ internal enum PrefillProjectionFamily: Sendable, Equatable {
     case q
     case kv
     case o
-    case shared
-    case routed
 }
 
 internal enum PrefillProjectionDispatch: Sendable, Equatable {
@@ -52,7 +50,7 @@ internal enum PrefillProjectionDispatchPolicy {
         switch family {
         case .q:
             return .repeatedGEMV
-        case .kv, .o, .shared, .routed:
+        case .kv, .o:
             return .qmm
         }
     }
@@ -68,7 +66,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
 
     private let model: Model
     private let ctx: MetalContext
-    private let kv: KVCacheManager?
+    private let kv: KVCacheManager
     private let cfg: ArchConfig
 
     // Kernels
@@ -105,8 +103,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private let normed: MTLBuffer        // [D] FP16
     private let attnOut: MTLBuffer       // [N_HEADS * head_dim] FP16
     private let qScratch: MTLBuffer      // [N_HEADS * head_dim] FP16
-    private let kStage: MTLBuffer        // [max KV heads * head_dim] FP16, current token
-    private let vStage: MTLBuffer        // [max KV heads * head_dim] FP16, current token
     private let oOut: MTLBuffer          // [D] FP16
     private let h1Buf: MTLBuffer         // [D] FP16 (dense MLP output)
     private let h2Buf: MTLBuffer         // [D] FP16 (routed output)
@@ -229,10 +225,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.normed        = try buf(D)
         self.attnOut       = try buf(maxQ)
         self.qScratch      = try buf(maxQ)
-        self.kStage        = try buf(max(cfg.numKVHeads * cfg.headDim,
-                                         cfg.numFullKVHeads * cfg.fullHeadDim))
-        self.vStage        = try buf(max(cfg.numKVHeads * cfg.headDim,
-                                         cfg.numFullKVHeads * cfg.fullHeadDim))
         self.oOut          = try buf(D)
         self.h1Buf         = try buf(D)
         self.h2Buf         = try buf(D)
@@ -310,7 +302,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     }
 
     public func reset() {
-        kv?.reset()
+        kv.reset()
         resetTransientState()
     }
 
@@ -358,7 +350,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         try await produceToken(token: token,
                                position: position,
                                into: logits,
-                               emitHead: true,
                                outputMode: .greedyIfAvailable)
     }
 
@@ -377,7 +368,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             throw PrefillError.chunkedUnsupported(
                 "chunked prefill startPosition must be non-negative")
         }
-        let kvPosition = kv?.position ?? 0
+        let kvPosition = kv.position
         guard kvPosition == startPosition else {
             throw PrefillError.chunkedUnsupported(
                 "chunked prefill cursor \(kvPosition) != startPosition \(startPosition)")
@@ -404,8 +395,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 logits: logits,
                 scratch: scratch,
                 config: config,
-                writeFinalHead: spanIndex == spans.count - 1,
-                allGreedyTokens: nil)
+                writeFinalHead: spanIndex == spans.count - 1)
             onProgress(span.completedCount)
         }
         if outputMode == .greedyIfAvailable, useFusedGreedyHead {
@@ -435,7 +425,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             throw PrefillError.chunkedUnsupported(
                 "multimodal prefill range exceeds maxContext \(maxContext)")
         }
-        let kvPosition = kv?.position ?? 0
+        let kvPosition = kv.position
         guard kvPosition == startPosition else {
             throw PrefillError.chunkedUnsupported(
                 "multimodal prefill cursor \(kvPosition) != startPosition \(startPosition)")
@@ -526,14 +516,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                      scratch: PrefillChunkScratchBuffers,
                                      config: PrefillRuntimeConfig,
                                      writeFinalHead: Bool,
-                                     allGreedyTokens: MTLBuffer? = nil,
                                      embeddingOverride: MTLBuffer? = nil,
                                      bidirectionalBlock: Range<Int>? = nil) async throws {
         guard !tokens.isEmpty else { return }
         guard kv != nil else {
             throw PrefillError.chunkedUnsupported("chunked prefill attention requires FP16 KV")
         }
-        let kvPosition = kv?.position ?? 0
+        let kvPosition = kv.position
         guard kvPosition == startPosition else {
             throw PrefillError.chunkedUnsupported(
                 "chunked prefill cursor \(kvPosition) != startPosition \(startPosition)")
@@ -546,7 +535,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             throw PrefillError.chunkedUnsupported(
                 "chunked prefill token count \(tokens.count) exceeds scratch chunk size \(scratch.layout.chunkTokens)")
         }
-        if let kv, kv.fp16RingEnabled, let ringLayer = (0..<cfg.numLayers).first(where: {
+        if kv.fp16RingEnabled, let ringLayer = (0..<cfg.numLayers).first(where: {
             kv.ringCapacity(layer: $0) > 0
         }) {
             let requiredCapacity = min(maxContext, cfg.slidingWindow + config.chunkTokens)
@@ -841,17 +830,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                        rotatedPairs: rotatedPairs,
                                        eps: eps)
 
-            if let kv {
-                let bytes = t * kvDim * MemoryLayout<Float16>.stride
-                try copyPrefillKVToCache(commandBuffer: cb,
-                                         kv: kv,
-                                         layer: L,
-                                         startPosition: startPosition,
-                                         tokenCount: t,
-                                         keySource: scratch.kStage,
-                                         valueSource: scratch.vStage,
-                                         bytesPerToken: bytes / t)
-            }
+            let bytes = t * kvDim * MemoryLayout<Float16>.stride
+            try copyPrefillKVToCache(commandBuffer: cb,
+                                     kv: kv,
+                                     layer: L,
+                                     startPosition: startPosition,
+                                     tokenCount: t,
+                                     keySource: scratch.kStage,
+                                     valueSource: scratch.vStage,
+                                     bytesPerToken: bytes / t)
             let params = PrefillAttentionParams(
                     startPosition: UInt32(startPosition),
                     queryCount: UInt32(t),
@@ -868,26 +855,21 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         isFull ? 0 : bidirectionalBlock?.lowerBound ?? 0),
                     bidirectionalBlockEnd: UInt32(
                         isFull ? 0 : bidirectionalBlock?.upperBound ?? 0))
-            if let kv {
-                    let keyBuffer = kv.keyBuffer(layer: L, validTokenCount: startPosition + t)
-                    let valueBuffer = kv.valueBuffer(layer: L, validTokenCount: startPosition + t)
-                    let ringCapacity = kv.ringCapacity(layer: L)
-                    let activeRingCapacity = ringCapacity > 0 && startPosition + t > ringCapacity
-                        ? UInt32(ringCapacity)
-                        : 0
-                    prefillAttention.encodeCausal(commandBuffer: cb,
-                                                  q: scratch.q,
-                                                  k: keyBuffer,
-                                                  v: valueBuffer,
-                                                  out: scratch.attentionOutput,
-                                                  params: params,
-                                                  kvRingCapacity: activeRingCapacity,
-                                                  layerKind: isFull ? .full : .slidingWindow,
-                                                  path: prefillAttentionPath)
-            } else {
-                throw PrefillError.chunkedUnsupported(
-                    "chunked prefill attention requires FP16 KV")
-            }
+            let keyBuffer = kv.keyBuffer(layer: L, validTokenCount: startPosition + t)
+            let valueBuffer = kv.valueBuffer(layer: L, validTokenCount: startPosition + t)
+            let ringCapacity = kv.ringCapacity(layer: L)
+            let activeRingCapacity = ringCapacity > 0 && startPosition + t > ringCapacity
+                ? UInt32(ringCapacity)
+                : 0
+            prefillAttention.encodeCausal(commandBuffer: cb,
+                                          q: scratch.q,
+                                          k: keyBuffer,
+                                          v: valueBuffer,
+                                          out: scratch.attentionOutput,
+                                          params: params,
+                                          kvRingCapacity: activeRingCapacity,
+                                          layerKind: isFull ? .full : .slidingWindow,
+                                          path: prefillAttentionPath)
             encodeInt4Projection(commandBuffer: cb,
                                      family: .o,
                                      weights: views.o,
@@ -1277,26 +1259,23 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             }
             finalCB.label = "prefill start=\(startPosition) count=\(t) phase=final_head"
             if outputMode == .greedyIfAvailable, useFusedGreedyHead {
-                let rows = allGreedyTokens == nil ? [t - 1] : Array(0..<t)
-                for row in rows {
-                    fusionHead.encodeGreedyDecode(
-                        commandBuffer: finalCB,
-                        hidden: scratch.hidden,
-                        hiddenOffset: row * D * MemoryLayout<Float16>.stride,
-                        normWeight: finalNorm.buffer,
-                        normOffset: Int(finalNorm.offset),
-                        weights: lm.buffer,
-                        weightsOffset: Int(lm.offset),
-                        scales: lm.buffer,
-                        scalesOffset: Int(lm.scaleOffset),
-                        biases: lm.buffer,
-                        biasesOffset: Int(lm.biasOffset),
-                        outToken: allGreedyTokens ?? greedyTokenBuf,
-                        outTokenOffset: allGreedyTokens == nil ? 0 : row * MemoryLayout<UInt32>.stride,
-                        d: UInt32(D),
-                        vocab: UInt32(cfg.vocabSize),
-                        rmsEps: eps)
-                }
+                fusionHead.encodeGreedyDecode(
+                    commandBuffer: finalCB,
+                    hidden: scratch.hidden,
+                    hiddenOffset: (t - 1) * D * MemoryLayout<Float16>.stride,
+                    normWeight: finalNorm.buffer,
+                    normOffset: Int(finalNorm.offset),
+                    weights: lm.buffer,
+                    weightsOffset: Int(lm.offset),
+                    scales: lm.buffer,
+                    scalesOffset: Int(lm.scaleOffset),
+                    biases: lm.buffer,
+                    biasesOffset: Int(lm.biasOffset),
+                    outToken: greedyTokenBuf,
+                    outTokenOffset: 0,
+                    d: UInt32(D),
+                    vocab: UInt32(cfg.vocabSize),
+                    rmsEps: eps)
             } else {
                 prefillFinalRowHead.encodeLogits(commandBuffer: finalCB,
                                                  hiddenBlock: scratch.hidden,
@@ -1318,25 +1297,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             finalCB.commit()
             try waitForCompletion(finalCB)
             if outputMode == .greedyIfAvailable, useFusedGreedyHead {
-                if let allGreedyTokens {
-                    lastGreedyToken = allGreedyTokens.contents()
-                        .bindMemory(to: UInt32.self, capacity: t)[t - 1]
-                } else {
-                    lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
-                }
+                lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
             }
         }
 
-        kv?.advance(by: tokens.count)
+        kv.advance(by: tokens.count)
         prefillChunkState.markCommitted()
     }
 
     private func produceToken(token: Int32,
                               position: Int,
                               into logits: MTLBuffer,
-                              emitHead: Bool,
                               outputMode: PrefillOutputMode) async throws {
-        let kvPosition = kv?.position ?? 0
+        let kvPosition = kv.position
         guard kvPosition == position else {
             throw PrefillError.prefillCursorMismatch(
                 "produce cursor \(kvPosition) != position \(position)")
@@ -1400,8 +1373,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let numKVL   = isFull ? cfg.numFullKVHeads : cfg.numKVHeads
             let qDim     = UInt32(cfg.numHeads * headDimL)
             let kvDim    = UInt32(numKVL * headDimL)
-            let kSlot    = kv?.kSlot(layer: L, position: position) ?? (buffer: kStage, offset: 0)
-            let vSlot    = kv?.vSlot(layer: L, position: position) ?? (buffer: vStage, offset: 0)
+            let kSlot    = kv.kSlot(layer: L, position: position)
+            let vSlot    = kv.vSlot(layer: L, position: position)
             let seqLen   = UInt32(position + 1)
 
             let inNorm   = try model.inputNorm(layer: L)
@@ -1493,7 +1466,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                          seqLen: seqLen,
                                          scale: 1.0)
                 } else {
-                    let ringCapacity = kv?.ringCapacity(layer: L) ?? 0
+                    let ringCapacity = kv.ringCapacity(layer: L)
                     let activeRingCapacity = ringCapacity > 0 && Int(seqLen) > ringCapacity
                         ? UInt32(ringCapacity)
                         : 0
@@ -1813,23 +1786,20 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 d: D, vocab: UInt32(self.cfg.vocabSize),
                 rmsEps: eps)
         }
-        if emitHead {
-            let useFusedHeadForThisToken = useFusedGreedyHead && outputMode == .greedyIfAvailable
-            let tHead = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            if useFusedHeadForThisToken {
-                try runSync(gFusionHead)
-                totalHeadFusedNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
-                lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
-            } else {
-                try runSync { cb in
-                    gFinalNorm(cb)
-                    gLmHead(cb)
-                }
-                totalHeadNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
+        let tHead = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        if useFusedGreedyHead && outputMode == .greedyIfAvailable {
+            try runSync(gFusionHead)
+            totalHeadFusedNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
+            lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
+        } else {
+            try runSync { cb in
+                gFinalNorm(cb)
+                gLmHead(cb)
             }
+            totalHeadNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
         }
 
-        kv?.advance()
+        kv.advance()
     }
 
     private func runSync(_ body: (MTLCommandBuffer) -> Void) throws {

@@ -52,16 +52,6 @@ import Metal
         #expect(PrefillRuntimeConfig.autoChunkTokens(promptTokens: 7_019, cap: 64) == 64)
     }
 
-    /// The env door and the flag door have to agree on what is legal.
-    @Test func requestedChunkSizesSnapToTheAllowedList() {
-        #expect(PrefillRuntimeConfig.supportedChunkTokens(999) == 512)
-        #expect(PrefillRuntimeConfig.supportedChunkTokens(200) == 128)
-        #expect(PrefillRuntimeConfig.supportedChunkTokens(64) == 64)
-        // Below the smallest allowed size there is nothing to snap to, so it
-        // floors at one token rather than inventing 32.
-        #expect(PrefillRuntimeConfig.supportedChunkTokens(0) == 1)
-    }
-
     @Test func allocationUsesPrivateScratchAndSharedRouteMetadata() throws {
         let ctx = try MetalContext()
         let toy = ArchConfig(hiddenSize: 64,

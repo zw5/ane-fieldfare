@@ -185,7 +185,6 @@ import ANEFieldfareHotpath
             ("--expert-cache-policy", "fifo"),
             ("--prefill", "yes"),
             ("--prefill-chunk-tokens", "2048"),
-            ("--rdadvise", "automatic"),
         ]
         for (flag, value) in invalidValues {
             #expect(throws: ArgsError.invalidValue(flag: flag, value: value)) {

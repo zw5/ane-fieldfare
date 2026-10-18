@@ -16,7 +16,7 @@ records the mapping and retained ANE Fieldfare contracts.
 
 Upstream regression tests and numerical reference helpers are included under
 `Tests/ANEFieldfareUpstreamTests`, `Tests/ANEFieldfareFormatTests`, and
-`Sources/ANEFieldfareValidationSupport`. The repack writers under
+`Tests/Support/Validation`. The repack writers under
 `Tests/Support/Repack` support synthetic loader fixtures only. These files
 retain the same Apache 2.0 attribution and license. This import does not add
 the upstream GUI, server, or installer executables.

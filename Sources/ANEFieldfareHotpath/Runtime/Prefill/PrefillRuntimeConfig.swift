@@ -163,52 +163,6 @@ enum PrefillChunkPlanner {
     }
 }
 
-public enum PrefillKVStorageMode: String, Sendable, Equatable {
-    case fp16
-}
-
-public enum PrefillExecutedMode: String, Sendable, Equatable {
-    case off
-    case chunked
-    case unsupported
-}
-
-public enum PrefillChunkCompleteness: String, Sendable, Equatable {
-    case complete
-    case unsupported
-}
-
-public struct PrefillExecutionDiagnostics: Sendable, Equatable {
-    public let requestedMode: PrefillRuntimeConfig.Mode
-    public let executedMode: PrefillExecutedMode
-    public let kvStorageMode: PrefillKVStorageMode?
-    public let chunkCompleteness: PrefillChunkCompleteness
-    public let unsupportedReason: String?
-
-    public init(config: PrefillRuntimeConfig,
-                executedMode: PrefillExecutedMode,
-                kvStorageMode: PrefillKVStorageMode? = nil,
-                chunkCompleteness: PrefillChunkCompleteness? = nil,
-                unsupportedReason: String? = nil) {
-        self.requestedMode = config.mode
-        self.executedMode = executedMode
-        self.kvStorageMode = kvStorageMode
-        self.chunkCompleteness = chunkCompleteness
-            ?? (executedMode == .unsupported ? .unsupported : .complete)
-        self.unsupportedReason = unsupportedReason
-    }
-
-    public static func unsupported(config: PrefillRuntimeConfig,
-                                   kvStorageMode: PrefillKVStorageMode? = nil,
-                                   reason: String) -> PrefillExecutionDiagnostics {
-        PrefillExecutionDiagnostics(config: config,
-                                    executedMode: .unsupported,
-                                    kvStorageMode: kvStorageMode,
-                                    chunkCompleteness: .unsupported,
-                                    unsupportedReason: reason)
-    }
-}
-
 public struct PrefillRuntimeConfig: Sendable, Equatable {
     public enum Mode: String, Sendable, Equatable {
         case off
@@ -219,16 +173,6 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
     // accepting upstream's 256-token size and automatic selection.
     public static let maxChunkTokens = 1024
     public static let allowedChunkTokens = [32, 64, 128, 256, 512, 1024]
-
-    /// The largest selectable chunk no greater than `requested`.
-    ///
-    /// Capping at `maxChunkTokens` is not enough on its own: a bare cap lets a
-    /// caller ask for a size `--prefill-chunk-tokens` rejects. Snapping to the
-    /// same list keeps the two doors agreeing on what is legal.
-    public static func supportedChunkTokens(_ requested: Int) -> Int {
-        let capped = max(1, min(requested, maxChunkTokens))
-        return allowedChunkTokens.last { $0 <= capped } ?? capped
-    }
 
     /// The smallest allowed chunk that covers `promptTokens`, capped.
     ///
@@ -248,10 +192,6 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
 
     public let mode: Mode
     public let chunkTokens: Int
-    public func coercedForReplay() -> PrefillRuntimeConfig? {
-        mode == .off ? .defaultChunked : nil
-    }
-
     private init(mode: Mode, chunkTokens: Int) {
         self.mode = mode
         self.chunkTokens = chunkTokens

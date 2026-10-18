@@ -188,29 +188,6 @@ public final class VisionRuntime {
         }
     }
 
-    /// Encodes the model-input copy a stored conversation kept, refusing it
-    /// unless its pixels still hash to what the turn recorded.
-    ///
-    /// It shares the expert-residency dance with `encodeImage` deliberately:
-    /// replaying a conversation with images pays exactly the encode a live turn
-    /// pays, and a residency policy that behaved differently on reopen would
-    /// make the reopen a different measurement from the turn it reproduces.
-    public func encodeStoredImage(
-        at fileURL: URL,
-        expectedDigest: String,
-        languageModel: Model? = nil,
-        residencyPolicy: VisionResidencyPolicy = .defaultPolicy,
-        checkCancellation: () throws -> Void = {}
-    ) throws -> VisionFeatures {
-        try encode(languageModel: languageModel,
-                   residencyPolicy: residencyPolicy,
-                   checkCancellation: checkCancellation) { preprocessor in
-            try preprocessor.preprocess(
-                storedModelInput: preprocessor.plan(storedModelInput: fileURL),
-                expectedDigest: expectedDigest)
-        }
-    }
-
     private func encode(
         languageModel: Model?,
         residencyPolicy: VisionResidencyPolicy,

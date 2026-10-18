@@ -23,15 +23,4 @@ import Testing
         #expect(spans.map(\.tokenCount) == [64, 64, 2])
         #expect(spans.map(\.startPosition) == [7, 71, 135])
     }
-
-    @Test func diagnosticsPreserveUnknownValues() {
-        let diagnostics = PrefillExecutionDiagnostics(
-            config: .production(chunkTokens: 128),
-            executedMode: .unsupported,
-            kvStorageMode: nil,
-            unsupportedReason: "unavailable")
-        #expect(diagnostics.kvStorageMode == nil)
-        #expect(diagnostics.chunkCompleteness == .unsupported)
-        #expect(diagnostics.unsupportedReason == "unavailable")
-    }
 }

@@ -25,7 +25,7 @@ let package = Package(
         .target(
             name: "ANEFieldfareValidationSupport",
             dependencies: ["ANEFieldfareHotpath"],
-            path: "Sources/ANEFieldfareValidationSupport"
+            path: "Tests/Support/Validation"
         ),
         .testTarget(
             name: "ANEFieldfareUpstreamTests",

@@ -16,9 +16,9 @@
     "All eight routed experts in ANE mode",
     "1024-token prefill default and 32/64/128/256/512/1024 selections",
     "Reference-order SIMD attention, including upstream image visibility",
-    "16-slot LFU default and optional bounded adaptive/window-mapping controls",
+    "16-slot LFU default expert cache",
     "32K CLI context default and legacy --prefill-chunk alias",
-    "Local profiling, numerical oracles, speculative experiments and native runtime"
+    "Device supervisor with ANE routed-prefill guest, local profiling and numerical oracles"
   ],
   "scope": "Imported runtime, compact format, CLI, and their regression tests. Upstream GUI and server remain outside this repository. Repack writers are test-fixture support only.",
   "benchmark_boundary": "September 16 post-merge comparison uses unmodified latest Turbo 4c6db1e with matched release toolchain, official generation fixtures/settings, nine discarded warmups and eighteen measured runs. See results/turbo-latest-20260916/REPORT.md and summary.json. September 8 receipts remain historical comparisons against 6c044011."
