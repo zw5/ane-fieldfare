@@ -123,8 +123,7 @@ struct DeviceSupervisorFailoverTests {
 
         func runner(_ supervisor: DeviceSupervisor) throws -> RealForwardRunner {
             try RealForwardRunner(model: model, context: context, maxContext: 256,
-                                  runtimeConfiguration: config,
-                                  prefillBoundaryOracle: nil, supervisor: supervisor)
+                                  runtimeConfiguration: config, supervisor: supervisor)
         }
 
         /// Prefill the prompt, then decode two tokens; return every logit row.

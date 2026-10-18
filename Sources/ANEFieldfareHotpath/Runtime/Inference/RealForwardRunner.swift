@@ -1,78 +1,6 @@
 import Foundation
 import Metal
 
-public enum RDAdvicePolicyMode: String, Codable, Sendable, Equatable {
-    case `default`
-    case off
-    case bounded
-    case adaptive
-
-    public static func parse(_ raw: String?) -> RDAdvicePolicyMode {
-        switch raw?.lowercased() {
-        case "off", "none", "disabled":
-            return .off
-        case "bounded":
-            return .bounded
-        case "adaptive":
-            return .adaptive
-        default:
-            return .default
-        }
-    }
-}
-
-public struct RDAdviceAdaptivePolicyConfig: Sendable, Equatable {
-    public var missCap: Int
-    public var byteCap: UInt64
-    public var slowCallNanos: UInt64
-
-    public init(missCap: Int,
-                byteCap: UInt64,
-                slowCallNanos: UInt64) {
-        self.missCap = missCap
-        self.byteCap = byteCap
-        self.slowCallNanos = slowCallNanos
-    }
-
-    public static let conservative = RDAdviceAdaptivePolicyConfig(
-        missCap: 12,
-        byteCap: 384 * 1_048_576,
-        slowCallNanos: 1_000_000)
-}
-
-struct RDAdviceAdaptivePolicyState: Sendable, Equatable {
-    var config: RDAdviceAdaptivePolicyConfig
-    private var skipUntilPosition: Int = -1
-    private(set) var recentSlowCallNanos: UInt64 = 0
-
-    init(config: RDAdviceAdaptivePolicyConfig = .conservative) {
-        self.config = config
-    }
-
-    mutating func reset() {
-        skipUntilPosition = -1
-        recentSlowCallNanos = 0
-    }
-
-    func shouldSkip(position: Int,
-                    requestedMisses: Int,
-                    estimatedBytes: UInt64,
-                    canOverlapUsefulGPUWork: Bool) -> Bool {
-        position <= skipUntilPosition ||
-        !canOverlapUsefulGPUWork ||
-        requestedMisses > config.missCap ||
-        estimatedBytes > config.byteCap
-    }
-
-    mutating func update(after result: ExpertIOAdviceResult,
-                                position: Int) {
-        recentSlowCallNanos = max(recentSlowCallNanos, result.maxCallNanos)
-        if result.maxCallNanos >= config.slowCallNanos {
-            skipUntilPosition = max(skipUntilPosition, position)
-        }
-    }
-}
-
 /// Gemma 4 real-forward decode pass.
 ///
 /// Composes the production kernels against the `.gturbo` model:
@@ -198,20 +126,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private let greedyTokenBuf: MTLBuffer // 4 B UInt32 fused-head output
     private var prefillChunkState = PrefillChunkCommitState()
     private var prefillScratch: PrefillChunkScratchBuffers?
-    private var previousDecodeRoutes: [[Int]?]
-    private var routePrefetchTask: (layer: Int, experts: [Int], task: Task<Void, Error>)?
-    private var adaptiveRouteFrequency: [[UInt64]]
     /// Owns the ANE guest; the forward loop asks it per layer whether the
     /// guest runs routed prefill.
     let supervisor: DeviceSupervisor
     public var aneRoutedPrefillProfile: [String: Any] { supervisor.routedPrefillProfile }
     public var supervisorProfile: [String: Any] { supervisor.profile }
 
-    private static let rdadviseBoundedMissCap = 12
-    private static let rdadviseBoundedMaxCallNanos: UInt64 = 250_000
-    private static let rdadviseAdaptiveMissCap = 12
-    private static let rdadviseAdaptiveByteCap: UInt64 = 384 * 1_048_576
-    private static let rdadviseAdaptiveSlowCallNanos: UInt64 = 1_000_000
     private static let prefillRoutedTileSchedulerConfig = PrefillRoutedTileSchedulerConfig()
 
     /// Per-layer `router.scale * D^-0.5` pre-folded into one BF16 buffer
@@ -228,30 +148,18 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// `forceLogitsHead: true` or they read a never-written buffer.
     private let useFusedGreedyHead: Bool
     private let prefillAttentionPath: RuntimePrefillAttentionPath
-    private let prefillBoundaryOracle: PrefillBoundaryOracleCollector?
     private let activeRoutedExperts: Int
-    public let widePrefillTransport: RuntimeWidePrefillTransport
-    private let routePrefetchEnabled: Bool
     public let prefillExpertUnionCap: Int?
-    public let rdadviseEnabled: Bool
-    public let rdadvisePolicyMode: RDAdvicePolicyMode
-    private var rdadviseSkipUntilPosition: Int = -1
-    private var rdadviseAdaptiveState: RDAdviceAdaptivePolicyState
-    private var rdadviseAdaptivePosition: Int = -1
-    private var rdadviseAdaptivePositionBytes: UInt64 = 0
     public convenience init(model: Model, context: MetalContext, maxContext: Int,
-                runtimeConfiguration: RuntimeConfiguration = .production,
-                prefillBoundaryOracle: PrefillBoundaryOracleCollector? = nil) throws {
+                runtimeConfiguration: RuntimeConfiguration = .production) throws {
         try self.init(model: model, context: context, maxContext: maxContext,
-                      runtimeConfiguration: runtimeConfiguration,
-                      prefillBoundaryOracle: prefillBoundaryOracle, supervisor: nil)
+                      runtimeConfiguration: runtimeConfiguration, supervisor: nil)
     }
 
     /// `supervisor` replaces placement resolved from the configuration and
     /// environment. Tests inject guests through it.
     init(model: Model, context: MetalContext, maxContext: Int,
          runtimeConfiguration: RuntimeConfiguration,
-         prefillBoundaryOracle: PrefillBoundaryOracleCollector?,
          supervisor: DeviceSupervisor?) throws {
         self.model = model
         self.ctx = context
@@ -259,23 +167,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.maxContext = maxContext
         self.useFusedGreedyHead = runtimeConfiguration.headPath == .fusedRows
         self.prefillAttentionPath = runtimeConfiguration.prefillAttentionPath
-        self.prefillBoundaryOracle = prefillBoundaryOracle
         self.activeRoutedExperts = runtimeConfiguration.activeRoutedExperts
-        self.widePrefillTransport = runtimeConfiguration.widePrefillTransport
-        self.routePrefetchEnabled = runtimeConfiguration.routePrefetchEnabled
         self.prefillExpertUnionCap = runtimeConfiguration.prefillExpertUnionCap
         let useFP16Ring = runtimeConfiguration.fp16RingEnabled
-        self.rdadvisePolicyMode = runtimeConfiguration.rdadvisePolicy
-        self.rdadviseAdaptiveState = RDAdviceAdaptivePolicyState(
-            config: RDAdviceAdaptivePolicyConfig(
-                missCap: Self.rdadviseAdaptiveMissCap,
-                byteCap: Self.rdadviseAdaptiveByteCap,
-                slowCallNanos: Self.rdadviseAdaptiveSlowCallNanos))
-        self.rdadviseEnabled = runtimeConfiguration.rdadviseEnabled
-        self.previousDecodeRoutes = Array(repeating: nil, count: model.config.numLayers)
-        self.adaptiveRouteFrequency = Array(
-            repeating: Array(repeating: 0, count: model.config.numExperts),
-            count: model.config.numLayers)
         self.supervisor = try supervisor ?? DeviceSupervisor(
             configuration: runtimeConfiguration, model: model, context: context)
         self.kv = try KVCacheManager(device: context.device,
@@ -456,10 +350,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
 
     private func resetTransientState() {
         prefillChunkState.reset()
-        rdadviseSkipUntilPosition = -1
-        rdadviseAdaptiveState.reset()
-        rdadviseAdaptivePosition = -1
-        rdadviseAdaptivePositionBytes = 0
     }
 
     public private(set) var totalIoNanos: UInt64 = 0
@@ -472,17 +362,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var totalHeadFusedNanos: UInt64 = 0
     public private(set) var lastGreedyToken: UInt32 = 0
     public var usesFusedGreedyHead: Bool { useFusedGreedyHead }
-    public private(set) var totalRDAdviseNanos: UInt64 = 0
-    public private(set) var totalRDAdviseCalls: UInt64 = 0
-    public private(set) var totalRDAdviseBytes: UInt64 = 0
-    public private(set) var totalRDAdviseFailures: UInt64 = 0
-    public private(set) var totalRDAdviseSkipped: UInt64 = 0
-    public private(set) var speculativeDraftTokens: UInt64 = 0
-    public private(set) var speculativeAcceptedDraftTokens: UInt64 = 0
-    public private(set) var speculativeVerificationBlocks: UInt64 = 0
-    public private(set) var routePrefetchPredictions: UInt64 = 0
-    public private(set) var routePrefetchHits: UInt64 = 0
-    public private(set) var adaptiveCacheRebalances: UInt64 = 0
     public private(set) var routedExpertCacheHits: UInt64 = 0
     public private(set) var routedExpertCacheMisses: UInt64 = 0
     public private(set) var routedWeightMassByRank = Array(repeating: 0.0, count: 8)
@@ -490,14 +369,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var prefillUnionExpertsBeforeCap: UInt64 = 0
     public private(set) var prefillUnionExpertsAfterCap: UInt64 = 0
     public private(set) var prefillUnionLayerTiles: UInt64 = 0
-    public private(set) var prefillTransportRequestedBytes: UInt64 = 0
-    public private(set) var prefillTransportPreadCalls: UInt64 = 0
-    public private(set) var prefillTransportPreadBytes: UInt64 = 0
-    public private(set) var prefillTransportCacheHits: UInt64 = 0
-    public private(set) var prefillTransportCacheMisses: UInt64 = 0
-    public private(set) var prefillTransportForcedDrains: UInt64 = 0
-    public private(set) var prefillTransportMaxPendingDepth: UInt64 = 0
-    public private(set) var prefillTransportSlotHighWater: UInt64 = 0
     public private(set) var prefillRoutedWallNanos: UInt64 = 0
     public private(set) var exactRouteDigest: UInt64 = 1_469_598_103_934_665_603
     public private(set) var exactRouteSamples: UInt64 = 0
@@ -516,69 +387,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         return Array(UnsafeBufferPointer(start: pointer, count: count))
     }
 
-    func recordSpeculativeBlock(drafted: Int, acceptedDrafts: Int) {
-        speculativeDraftTokens &+= UInt64(max(0, drafted))
-        speculativeAcceptedDraftTokens &+= UInt64(max(0, acceptedDrafts))
-        speculativeVerificationBlocks &+= 1
-    }
-
-    private func recordRDAdvice(_ result: ExpertIOAdviceResult, wallNanos: UInt64) {
-        totalRDAdviseNanos &+= wallNanos
-        totalRDAdviseCalls &+= UInt64(result.calls)
-        totalRDAdviseBytes &+= result.bytes
-        totalRDAdviseFailures &+= UInt64(result.failed)
-        totalRDAdviseSkipped &+= UInt64(result.skipped)
-    }
-
-    private func shouldSkipRDAdvice(position: Int,
-                                    requestedMisses: Int,
-                                    estimatedBytes: UInt64,
-                                    canOverlapUsefulGPUWork: Bool) -> ExpertIOAdviceResult? {
-        switch rdadvisePolicyMode {
-        case .bounded:
-            if position <= rdadviseSkipUntilPosition {
-                return ExpertIOAdviceResult.skipped(requested: requestedMisses,
-                                                    bytes: estimatedBytes)
-            }
-            if requestedMisses > Self.rdadviseBoundedMissCap {
-                return ExpertIOAdviceResult.skipped(requested: requestedMisses,
-                                                    bytes: estimatedBytes)
-            }
-            return nil
-        case .adaptive:
-            if position != rdadviseAdaptivePosition {
-                rdadviseAdaptivePosition = position
-                rdadviseAdaptivePositionBytes = 0
-            }
-            let cumulativeEstimatedBytes = rdadviseAdaptivePositionBytes &+ estimatedBytes
-            let shouldSkip = rdadviseAdaptiveState.shouldSkip(
-                position: position,
-                requestedMisses: requestedMisses,
-                estimatedBytes: cumulativeEstimatedBytes,
-                canOverlapUsefulGPUWork: canOverlapUsefulGPUWork)
-            rdadviseAdaptivePositionBytes = cumulativeEstimatedBytes
-            guard shouldSkip else { return nil }
-            return ExpertIOAdviceResult.skipped(requested: requestedMisses,
-                                                bytes: estimatedBytes)
-        case .default, .off:
-            return nil
-        }
-    }
-
-    private func updateRDAdvicePolicy(after result: ExpertIOAdviceResult,
-                                      position: Int) {
-        switch rdadvisePolicyMode {
-        case .bounded:
-            if result.maxCallNanos > Self.rdadviseBoundedMaxCallNanos {
-                rdadviseSkipUntilPosition = max(rdadviseSkipUntilPosition, position + 1)
-            }
-        case .adaptive:
-            rdadviseAdaptiveState.update(after: result, position: position)
-        case .default, .off:
-            break
-        }
-    }
-
     public func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {
         try prefillChunkState.requireClean(operation: "produce")
         try await produceToken(token: token,
@@ -586,56 +394,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                into: logits,
                                emitHead: true,
                                outputMode: .greedyIfAvailable)
-    }
-
-    /// Training-free self-draft using a shape-selected prefix of decoder
-    /// layers. It shares the model and expert cache with the verifier and
-    /// writes speculative KV rows in place; `rewind(to:)` makes those rows
-    /// invisible before full-depth verification overwrites them.
-    public func produceDraft(token: Int32,
-                             position: Int,
-                             layerCount: Int,
-                             into logits: MTLBuffer) async throws -> UInt32 {
-        precondition(layerCount > 0 && layerCount < cfg.numLayers,
-                     "draft layer count must be a strict decoder prefix")
-        try await produceToken(token: token,
-                               position: position,
-                               into: logits,
-                               emitHead: true,
-                               outputMode: .greedyIfAvailable,
-                               layerLimit: layerCount)
-        return lastGreedyToken
-    }
-
-    /// Full-depth verification for a proposed input block using the production
-    /// scalar decoder for every row.  The prefill kernels are mathematically
-    /// causal, but they use different attention, grouped-MoE, normalization,
-    /// reduction, and tail schedules; near a logit tie those rounding changes
-    /// can select a different greedy token.  A speculative verifier must be an
-    /// oracle for ordinary decode, so prompt-prefill throughput is deliberately
-    /// not reused here.
-    public func verifyGreedyBlock(tokens: ArraySlice<Int32>,
-                                  startPosition: Int,
-                                  config: PrefillRuntimeConfig) async throws -> [UInt32] {
-        guard !tokens.isEmpty, tokens.count <= config.chunkTokens else {
-            throw PrefillError.chunkedUnsupported("invalid speculative verification width")
-        }
-        guard continuationPosition == startPosition else {
-            throw PrefillError.prefillCursorMismatch(
-                "verification cursor \(continuationPosition) != startPosition \(startPosition)")
-        }
-        var predictions: [UInt32] = []
-        predictions.reserveCapacity(tokens.count)
-        for (offset, token) in tokens.enumerated() {
-            try Task.checkCancellation()
-            try await produceToken(token: token,
-                                   position: startPosition + offset,
-                                   into: greedyTokenBuf,
-                                   emitHead: true,
-                                   outputMode: .greedyIfAvailable)
-            predictions.append(lastGreedyToken)
-        }
-        return predictions
     }
 
     public func prefillChunked(tokens: ArraySlice<Int32>,
@@ -691,7 +449,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         return PrefillResult(newPosition: startPosition + tokens.count,
                              seed: .logitsWritten)
     }
-
 
     public func prefillMultimodal(input: MultimodalPrefillInput,
                                   startPosition: Int,
@@ -883,18 +640,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         let sqrtHidden = Float(D).squareRoot()
         let t = tokens.count
         let emb = model.embedding
-
-        func capture(_ boundary: String, layer: Int, element: PrefillOracleElement = .fp16,
-                     buffer: MTLBuffer, offsetElements: Int, count: Int,
-                     commandBuffer: MTLCommandBuffer) throws {
-            guard let prefillBoundaryOracle else { return }
-            let stride = element == .fp16
-                ? MemoryLayout<UInt16>.stride : MemoryLayout<UInt32>.stride
-            try prefillBoundaryOracle.encode(
-                commandBuffer: commandBuffer, boundary: boundary, layer: layer,
-                position: startPosition + t - 1, element: element, source: buffer,
-                sourceOffset: offsetElements * stride, count: count)
-        }
 
         func encodeInt4Projection(commandBuffer: MTLCommandBuffer,
                                   family: PrefillProjectionFamily,
@@ -1108,13 +853,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                  xStrideElements: D,
                                  yStrideElements: kvDim)
 
-            try capture("q_projection", layer: L, buffer: scratch.q,
-                        offsetElements: (t - 1) * qDim, count: qDim, commandBuffer: cb)
-            try capture("k_projection", layer: L, buffer: scratch.kStage,
-                        offsetElements: (t - 1) * kvDim, count: kvDim, commandBuffer: cb)
-            try capture("v_projection", layer: L, buffer: scratch.vStage,
-                        offsetElements: (t - 1) * kvDim, count: kvDim, commandBuffer: cb)
-
             let rotatedPairs = isFull
                 ? UInt32(Double(cfg.fullHeadDim) * cfg.partialRotaryFactor / 2.0)
                 : UInt32(headDim / 2)
@@ -1137,13 +875,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                        rotatedPairs: rotatedPairs,
                                        eps: eps)
 
-            try capture("q_rotary", layer: L, buffer: scratch.q,
-                        offsetElements: (t - 1) * qDim, count: qDim, commandBuffer: cb)
-            try capture("k_rotary", layer: L, buffer: scratch.kStage,
-                        offsetElements: (t - 1) * kvDim, count: kvDim, commandBuffer: cb)
-            try capture("v_normalized", layer: L, buffer: scratch.vStage,
-                        offsetElements: (t - 1) * kvDim, count: kvDim, commandBuffer: cb)
-
             if let kv {
                 let bytes = t * kvDim * MemoryLayout<Float16>.stride
                 try copyPrefillKVToCache(commandBuffer: cb,
@@ -1154,13 +885,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                          keySource: scratch.kStage,
                                          valueSource: scratch.vStage,
                                          bytesPerToken: bytes / t)
-                let validElements = (startPosition + t) * kvDim
-                try capture("kv_key_prefix", layer: L,
-                            buffer: kv.keyBuffer(layer: L, validTokenCount: startPosition + t),
-                            offsetElements: 0, count: validElements, commandBuffer: cb)
-                try capture("kv_value_prefix", layer: L,
-                            buffer: kv.valueBuffer(layer: L, validTokenCount: startPosition + t),
-                            offsetElements: 0, count: validElements, commandBuffer: cb)
             }
             let params = PrefillAttentionParams(
                     startPosition: UInt32(startPosition),
@@ -1198,8 +922,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 throw PrefillError.chunkedUnsupported(
                     "chunked prefill attention requires FP16 KV")
             }
-            try capture("attention", layer: L, buffer: scratch.attentionOutput,
-                        offsetElements: (t - 1) * qDim, count: qDim, commandBuffer: cb)
             encodeInt4Projection(commandBuffer: cb,
                                      family: .o,
                                      weights: views.o,
@@ -1210,8 +932,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                      tokenCount: t,
                                      xStrideElements: qDim,
                                      yStrideElements: D)
-            try capture("o_projection", layer: L, buffer: scratch.h1,
-                        offsetElements: (t - 1) * D, count: D, commandBuffer: cb)
             prefillPostAttention.encode(commandBuffer: cb,
                                             hidden: scratch.hidden,
                                             attn: scratch.h1,
@@ -1251,16 +971,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         d: UInt32(D),
                         topK: UInt32(cfg.topKExperts),
                         hiddenStrideElements: UInt32(D))
-
-                    try capture("routed_input", layer: L, buffer: scratch.routedX,
-                                offsetElements: (t - 1) * D, count: D, commandBuffer: cb)
-                    try capture("router_ids", layer: L, element: .uint32,
-                                buffer: scratch.routeIDs,
-                                offsetElements: (t - 1) * cfg.topKExperts,
-                                count: cfg.topKExperts, commandBuffer: cb)
-                    try capture("router_weights", layer: L, buffer: scratch.routeWeights,
-                                offsetElements: (t - 1) * cfg.topKExperts,
-                                count: cfg.topKExperts, commandBuffer: cb)
 
                     // Clear routed partials here, in a command buffer the host
                     // completes, so routed guests on other queues never race it.
@@ -1334,39 +1044,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         .filter { $0.weight != 0 }
                     prefillUnionExpertsAfterCap &+= UInt64(Set(pairs.map(\.expert)).count)
                     let schedulerConfig = Self.prefillRoutedTileSchedulerConfig
-                    // E[distinct experts] = E * (1 - (1 - k/E)^T). At exact
-                    // top-8, a 64-position tile nearly saturates the expert
-                    // population. The production candidate still reads only
-                    // router-authoritative eight-expert groups, alternating
-                    // two transient pread banks. Direct mapping is retained
-                    // solely as an explicit admission control.
-                    let useMappedWidePrefill =
-                        widePrefillTransport == .mappedControl && t >= 64
-                    let useTransientWidePrefill =
-                        widePrefillTransport == .preadDoubleBuffered &&
-                        t >= 64
-                    if widePrefillTransport == .mappedControl && t >= 64 && L + 1 < cfg.numLayers {
-                        model.beginPreparingMappedPrefill(layer: L + 1)
-                    }
-                    let routeTileExpertCount: Int
-                    if useMappedWidePrefill {
-                        routeTileExpertCount = schedulerConfig.tileExperts
-                    } else if useTransientWidePrefill {
-                        let slotCount = Model.prefillRoutedExpertSlotCount
-                        guard schedulerConfig.fitsSlotBudget(slotCount: slotCount) else {
-                            throw PrefillError.chunkedUnsupported(
-                                "prefill routed tile depth \(schedulerConfig.maxPendingDepth) with \(schedulerConfig.tileExperts) experts/tile needs \((schedulerConfig.maxPendingDepth + 1) * schedulerConfig.tileExperts) slots, has \(slotCount)")
-                        }
-                        routeTileExpertCount = min(schedulerConfig.tileExperts, slotCount)
-                    } else if let slotCount = model.routedExpertCacheSlotCount(layer: L) {
-                        // The retained narrow tail is allowed to use one
-                        // persistent top-8 bank. Its scheduler fails the
-                        // avoiding-slot plan closed and drains before reuse;
-                        // only the wide transient candidate requires 16 slots.
-                        routeTileExpertCount = min(schedulerConfig.tileExperts, slotCount)
-                    } else {
-                        routeTileExpertCount = schedulerConfig.tileExperts
-                    }
+                    // A tile never needs more experts than the routed cache has
+                    // slots; its scheduler drains before reusing one.
+                    let routeTileExpertCount = model.routedExpertCacheSlotCount(layer: L)
+                        .map { min(schedulerConfig.tileExperts, $0) } ?? schedulerConfig.tileExperts
                     let routes = try PrefillMoEGrouping.groupTokenExpertPairs(
                         pairs,
                         queryCount: t,
@@ -1461,45 +1142,29 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         let expertIDs = try PrefillStreamedTileBinding.expertIDs(
                             forTile: tileIndex,
                             routes: routes)
-                        var plannedFetch: PrefillRoutedExpertFetchPlan?
-                        var plannedLegacyFetch: RoutedExpertFetchPlan?
-                        if useMappedWidePrefill {
-                            // Read-only mapped bindings have no mutable slots,
-                            // so adjacent physical expert tiles may be queued
-                            // without a cache-lifetime barrier.
-                        } else if !pendingTiles.isEmpty {
+                        var plannedFetch: RoutedExpertFetchPlan?
+                        if !pendingTiles.isEmpty {
                             let pendingAssignedSlots = pendingTiles.flatMap(\.fetch.plannedAssignedSlots)
                             if !pendingAssignedSlots.isEmpty {
                                 let pendingSlots = Set(pendingAssignedSlots)
-                                let transientPlan = try useTransientWidePrefill
-                                    ? model.planPrefillRoutedExpertsIfPossible(
-                                        layer: L,
-                                        experts: expertIDs,
-                                        avoidingSlots: pendingSlots)
-                                    : nil
-                                let legacyPlan = try useTransientWidePrefill
-                                    ? nil
-                                    : model.planRoutedExpertsIfPossible(
-                                        layer: L,
-                                        experts: expertIDs,
-                                        avoidingSlots: pendingSlots)
+                                let plan = try model.planRoutedExpertsIfPossible(
+                                    layer: L,
+                                    experts: expertIDs,
+                                    avoidingSlots: pendingSlots)
                                 let decision = routedTileScheduler.decide(
                                     PrefillRoutedTileSchedulerInput(
                                         hasPendingTile: true,
                                         pendingDepth: pendingTiles.count,
                                         pendingAssignedSlots: pendingAssignedSlots,
-                                        avoidingSlotPlanAvailable:
-                                            transientPlan != nil || legacyPlan != nil))
+                                        avoidingSlotPlanAvailable: plan != nil))
                                 switch decision {
                                 case .prefetchNext:
-                                    guard transientPlan != nil || legacyPlan != nil else {
+                                    guard plan != nil else {
                                         throw ModelError.indexCorrupt(
                                             detail: "routed tile scheduler requested missing plan")
                                     }
-                                    plannedFetch = transientPlan
-                                    plannedLegacyFetch = legacyPlan
+                                    plannedFetch = plan
                                 case .drainBeforeIssue:
-                                    prefillTransportForcedDrains &+= 1
                                     try drainOldestPendingTile()
                                 case .issueWithoutPending:
                                     throw ModelError.indexCorrupt(
@@ -1514,7 +1179,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                         avoidingSlotPlanAvailable: false))
                                 switch decision {
                                 case .drainBeforeIssue:
-                                    prefillTransportForcedDrains &+= 1
                                     try drainOldestPendingTile()
                                 case .issueWithoutPending, .prefetchNext:
                                     throw ModelError.indexCorrupt(
@@ -1535,56 +1199,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                     detail: "routed tile scheduler requested pending action without pending tile")
                             }
                         }
-                        let fetch: PrefillStreamedTileFetchResult
-                        if useMappedWidePrefill {
-                            fetch = try PrefillStreamedTileBinding.mappedBindingForTile(
-                                model: model,
-                                layer: L,
-                                tileIndex: tileIndex,
-                                routes: routes)
-                        } else if useTransientWidePrefill {
-                            let plan = try plannedFetch ??
-                                model.planPrefillRoutedExpertsIfPossible(
-                                    layer: L,
-                                    experts: expertIDs,
-                                    avoidingSlots: Set(pendingTiles.flatMap(
-                                        \.fetch.plannedAssignedSlots)))
-                            guard let plan else {
-                                throw ModelError.indexCorrupt(
-                                    detail: "wide-prefill transient banks cannot place tile \(tileIndex)")
-                            }
-                            guard plan.layer == L, plan.experts == expertIDs else {
-                                throw ModelError.indexCorrupt(
-                                    detail: "wide-prefill preplanned fetch does not match tile \(tileIndex)")
-                            }
-                            prefillTransportRequestedBytes &+= plan.requestedBytes
-                            prefillTransportCacheHits &+= UInt64(plan.hits)
-                            prefillTransportCacheMisses &+= UInt64(plan.misses.count)
-                            let result = try await model.fetchPrefillRoutedExperts(plan: plan)
-                            prefillTransportPreadCalls &+= UInt64(result.preadCalls)
-                            prefillTransportPreadBytes &+= result.preadBytes
-                            totalIoNanos &+= result.preadNanos
-                            let binding = try PrefillStreamedTileBinding(
-                                expertIDs: expertIDs,
-                                views: result.views)
-                            fetch = PrefillStreamedTileFetchResult(
-                                expertIDs: expertIDs,
-                                binding: binding,
-                                usedPlannedFetch: true,
-                                plannedHits: plan.hits,
-                                plannedMissIndices: plan.misses,
-                                plannedAssignedSlots: plan.assignedSlots,
-                                plannedMissSlots: plan.misses.map { plan.assignedSlots[$0] })
-                        } else {
-                            fetch = try await PrefillStreamedTileBinding.fetchBindingForTile(
-                                model: model,
-                                layer: L,
-                                tileIndex: tileIndex,
-                                routes: routes,
-                                plannedFetch: plannedLegacyFetch,
-                                avoidingSlots: Set(pendingTiles.flatMap(
-                                    \.fetch.plannedAssignedSlots)))
-                        }
+                        let fetch = try await PrefillStreamedTileBinding.fetchBindingForTile(
+                            model: model,
+                            layer: L,
+                            tileIndex: tileIndex,
+                            routes: routes,
+                            plannedFetch: plannedFetch,
+                            avoidingSlots: Set(pendingTiles.flatMap(
+                                \.fetch.plannedAssignedSlots)))
                         try fetch.binding.validateCoversPairs(routes.sortedPairs,
                                                               pairStart: Int(tile.pairStart),
                                                               pairCount: Int(tile.pairCount))
@@ -1626,18 +1248,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                                                commandBuffer: tileCB,
                                                                fetch: fetch,
                                                                argumentBuffer: argumentBuffer))
-                        let liveSlots = Set(pendingTiles.flatMap(
-                            \.fetch.plannedAssignedSlots)).count
-                        prefillTransportSlotHighWater = max(
-                            prefillTransportSlotHighWater,
-                            UInt64(liveSlots))
                         while pendingTiles.count > schedulerConfig.maxPendingDepth {
-                            prefillTransportForcedDrains &+= 1
                             try drainOldestPendingTile()
                         }
-                        prefillTransportMaxPendingDepth = max(
-                            prefillTransportMaxPendingDepth,
-                            UInt64(pendingTiles.count))
                     }
                     while !pendingTiles.isEmpty {
                         try drainOldestPendingTile()
@@ -1673,12 +1286,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                             hiddenStrideElements: UInt32(D),
                                             eps: eps,
                                             layerScalar: Quantization.bf16ToFloat(scalarBits))
-                    try capture("routed_output", layer: L, buffer: scratch.h2,
-                                offsetElements: (t - 1) * D, count: D,
-                                commandBuffer: tailCB)
-                    try capture("layer_hidden", layer: L, buffer: scratch.hidden,
-                                offsetElements: (t - 1) * D, count: D,
-                                commandBuffer: tailCB)
                     tailCB.commit()
                     try withExtendedLifetime(metadata) {
                         try waitForCompletion(tailCB)
@@ -1762,8 +1369,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                               position: Int,
                               into logits: MTLBuffer,
                               emitHead: Bool,
-                              outputMode: PrefillOutputMode,
-                              layerLimit: Int? = nil) async throws {
+                              outputMode: PrefillOutputMode) async throws {
         let kvPosition = kv?.position ?? 0
         guard kvPosition == position else {
             throw PrefillError.prefillCursorMismatch(
@@ -1822,8 +1428,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             }
         }
 
-        let activeLayerCount = layerLimit ?? cfg.numLayers
-        for L in 0..<activeLayerCount {
+        for L in 0..<cfg.numLayers {
             let isFull = cfg.fullAttentionLayerMask[L] != 0
             let headDimL = isFull ? cfg.fullHeadDim : cfg.headDim
             let numKVL   = isFull ? cfg.numFullKVHeads : cfg.numKVHeads
@@ -2047,37 +1652,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let topK = UInt32(activeRoutedExperts)
             let canPlanPhase1HitSplit =
                 activeRoutedExperts <= MoE.maxStreamedExperts
-            if let pending = routePrefetchTask, pending.layer == L {
-                try await pending.task.value
-                routePrefetchPredictions &+= UInt64(pending.experts.count)
-                let actual = Set(experts)
-                routePrefetchHits &+= UInt64(
-                    pending.experts.filter { actual.contains($0) }.count)
-                routePrefetchTask = nil
-            }
             let plannedFetch = canPlanPhase1HitSplit
                 ? try model.planRoutedExperts(layer: L, experts: experts)
                 : nil
             if let plannedFetch {
                 routedExpertCacheHits &+= UInt64(plannedFetch.hits)
                 routedExpertCacheMisses &+= UInt64(plannedFetch.misses.count)
-            }
-            previousDecodeRoutes[L] = experts
-            for expert in experts { adaptiveRouteFrequency[L][expert] &+= 1 }
-            if routePrefetchEnabled {
-                let nextLayer = (L + 1) % cfg.numLayers
-                if let predicted = previousDecodeRoutes[nextLayer], routePrefetchTask == nil {
-                    let capturedModel = model
-                    routePrefetchTask = (
-                        layer: nextLayer,
-                        experts: predicted,
-                        task: Task {
-                            if let plan = try capturedModel.planRoutedExperts(
-                                layer: nextLayer, experts: predicted) {
-                                _ = try await capturedModel.fetchRoutedExperts(plan: plan)
-                            }
-                        })
-                }
             }
             var phase1HitCB: MTLCommandBuffer?
             var phase1HitSplitArgBuf: MTLBuffer?
@@ -2163,30 +1743,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             sharedCB.commit()
             phase1HitCB?.commit()
 
-            if rdadviseEnabled && rdadvisePolicyMode != .off {
-                let requestedMisses = plannedFetch?.misses.count ?? experts.count
-                let estimatedAdviceBytes = try model.routedExpertAdviceByteEstimate(
-                    layer: L,
-                    missCount: requestedMisses)
-                if let skipped = shouldSkipRDAdvice(position: position,
-                                                    requestedMisses: requestedMisses,
-                                                    estimatedBytes: estimatedAdviceBytes,
-                                                    canOverlapUsefulGPUWork: true) {
-                    recordRDAdvice(skipped, wallNanos: 0)
-                } else {
-                    let tAdvice = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-                    let result: ExpertIOAdviceResult
-                    if let plannedFetch {
-                        result = try model.adviseRoutedExperts(plan: plannedFetch)
-                    } else {
-                        result = try model.adviseRoutedExperts(layer: L, experts: experts)
-                    }
-                    let wallNanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tAdvice
-                    recordRDAdvice(result, wallNanos: wallNanos)
-                    updateRDAdvicePolicy(after: result, position: position)
-                }
-            }
-
             // Routed-expert pread — overlaps the shared MLP GPU work above.
             let tIoStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             let blobs: [TensorView]
@@ -2218,10 +1774,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                  layerScalar: layerScalar)
             }
             let routedCB = ctx.queue.makeCommandBuffer()!
-            // Window-mapped misses replace their buffers. The hit command
-            // retains the old catalog, while phase 2 needs the fetched one.
-            let splitArgBuf = phase1HitCB != nil && !phase1MissSlots.isEmpty &&
-                plannedFetch?.buffersStableAcrossFetch != false
+            let splitArgBuf = phase1HitCB != nil && !phase1MissSlots.isEmpty
                 ? phase1HitSplitArgBuf
                 : nil
             let argBuf = splitArgBuf ?? moe.makeReusedRoutedArgumentBuffer(
@@ -2266,32 +1819,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             try finishPendingRoutedCommand(pending, waitIfNeeded: true)
             pendingRoutedCommand = nil
         }
-        // One training-free calibration window, then freeze the placement.
-        // Rebalancing every 16 tokens invalidated useful LFU state and made the
-        // earlier adaptive policy slower than fixed capacity.
-        if case .adaptive(let totalSlots, let minimum, let maximum) = model.streamingMode,
-           adaptiveCacheRebalances == 0, position >= 32 {
-            let ranked = adaptiveRouteFrequency.map { $0.sorted(by: >) }
-            var allocation = Array(repeating: minimum, count: cfg.numLayers)
-            var remaining = totalSlots - minimum * cfg.numLayers
-            while remaining > 0 {
-                var bestLayer: Int?
-                var bestMarginal: UInt64 = 0
-                for layer in 0..<cfg.numLayers where allocation[layer] < maximum {
-                    let marginal = ranked[layer][allocation[layer]]
-                    if bestLayer == nil || marginal > bestMarginal {
-                        bestLayer = layer
-                        bestMarginal = marginal
-                    }
-                }
-                guard let bestLayer else { break }
-                allocation[bestLayer] += 1
-                remaining -= 1
-            }
-            try model.configureRoutedExpertCacheSlots(allocation)
-            adaptiveCacheRebalances &+= 1
-        }
-
         // The fused head skips the vocab buffer and leaves a greedy token in
         // greedyTokenBuf; the logits path writes the complete vector.
         let fNorm = model.finalNorm

@@ -27,16 +27,6 @@ public enum RuntimeExpertCachePolicy: String, Codable, Sendable {
     case lru
 }
 
-public enum RuntimeWidePrefillTransport: String, Codable, Sendable {
-    /// Use the same bounded LFU carriers as recurrent decode.
-    case cachedPread = "cached-pread"
-    /// Route-authoritative, exact compact expert reads through two transient
-    /// eight-expert banks. Retained only as a rejected experimental rail.
-    case preadDoubleBuffered = "pread-double-buffered"
-    /// Historical mapping control; rejected for its large working set.
-    case mappedControl = "mapped-control"
-}
-
 public struct RuntimeConfiguration: Sendable, Equatable {
     public static let defaultExpertCacheSlots = 16
     public static let defaultPrefillChunkTokens = 1024
@@ -72,7 +62,6 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public let expertCacheSlots: Int
     public let backend: RuntimeBackend
     public let expertCachePolicy: RuntimeExpertCachePolicy
-    public let rdadvisePolicy: RDAdvicePolicyMode
     public let prefillPolicy: RuntimePrefillPolicy
     public let prefillChunkTokens: Int
     public let prefillAttentionPath: RuntimePrefillAttentionPath
@@ -84,26 +73,18 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     /// every routed identity. Lossy profiles use this to prevent a 128-token
     /// tile from expanding back to nearly all 128 experts.
     public let prefillExpertUnionCap: Int?
-    public let widePrefillTransport: RuntimeWidePrefillTransport
-    /// Predictive expert fetch for the next layer. This remains an explicit
-    /// experimental rail; the runner consumes the typed decision without
-    /// consulting process state inside the recurrent loop.
-    public let routePrefetchEnabled: Bool
     /// What the device supervisor does when a guest rail faults.
     public let faultPolicy: RuntimeFaultPolicy
 
     public init(backend: RuntimeBackend = .metal,
                 expertCacheSlots: Int = RuntimeConfiguration.defaultExpertCacheSlots,
                 expertCachePolicy: RuntimeExpertCachePolicy = .lfu,
-                rdadvisePolicy: RDAdvicePolicyMode = .off,
                 prefillEnabled: Bool = true,
                 prefillChunkTokens: Int = RuntimeConfiguration.defaultPrefillChunkTokens,
                 prefillAttentionPath: RuntimePrefillAttentionPath = .causalSIMD,
                 forceLogitsHead: Bool = false,
                 activeRoutedExperts: Int = 8,
                 prefillExpertUnionCap: Int? = nil,
-                widePrefillTransport: RuntimeWidePrefillTransport = .cachedPread,
-                routePrefetchEnabled: Bool = false,
                 faultPolicy: RuntimeFaultPolicy = .failClosed) {
         precondition(Self.allowedExpertCacheSlots.contains(expertCacheSlots),
                      "unsupported expert-cache slot count")
@@ -117,15 +98,12 @@ public struct RuntimeConfiguration: Sendable, Equatable {
         self.expertCacheSlots = expertCacheSlots
         self.backend = backend
         self.expertCachePolicy = expertCachePolicy
-        self.rdadvisePolicy = rdadvisePolicy
         self.prefillPolicy = prefillEnabled ? .chunked : .off
         self.prefillChunkTokens = prefillChunkTokens
         self.prefillAttentionPath = prefillAttentionPath
         self.headPath = forceLogitsHead ? .logits : .fusedRows
         self.activeRoutedExperts = activeRoutedExperts
         self.prefillExpertUnionCap = prefillExpertUnionCap
-        self.widePrefillTransport = widePrefillTransport
-        self.routePrefetchEnabled = routePrefetchEnabled
         self.faultPolicy = faultPolicy
     }
 
@@ -134,7 +112,6 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     }
 
     public var fp16RingEnabled: Bool { true }
-    public var rdadviseEnabled: Bool { rdadvisePolicy != .off }
     public var prefillConfig: PrefillRuntimeConfig {
         switch prefillPolicy {
         case .off:

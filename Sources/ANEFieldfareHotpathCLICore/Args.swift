@@ -30,7 +30,6 @@ public struct Args: Equatable, Sendable {
     /// `--prefill-chunk-tokens auto`: the size is decided once the prompt length
     /// is known, which needs the tokenizer and, for images, their geometry.
     public var prefillChunkTokensAuto: Bool
-    public var rdadvisePolicy: RDAdvicePolicyMode
     public var faultPolicy: RuntimeFaultPolicy
 
     public init(model: String,
@@ -59,7 +58,6 @@ public struct Args: Equatable, Sendable {
                 prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration.production.prefillPolicy,
                 prefillChunkTokens: Int = RuntimeConfiguration.production.prefillChunkTokens,
                 prefillChunkTokensAuto: Bool = false,
-                rdadvisePolicy: RDAdvicePolicyMode = RuntimeConfiguration.production.rdadvisePolicy,
                 faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration.production.faultPolicy) {
         self.model = model
         self.backend = backend
@@ -88,7 +86,6 @@ public struct Args: Equatable, Sendable {
         self.prefillPolicy = prefillPolicy
         self.prefillChunkTokens = prefillChunkTokens
         self.prefillChunkTokensAuto = prefillChunkTokensAuto
-        self.rdadvisePolicy = rdadvisePolicy
     }
 }
 
@@ -175,7 +172,6 @@ extension Args {
                                  (default \(RuntimeConfiguration.defaultPrefillChunkTokens)). Each chunk re-reads the routed
                                  expert pool, so larger chunks read less; auto
                                  picks the smallest size that covers the prompt.
-      --rdadvise <s>             Read-advice policy: off, default, bounded, or adaptive (default off).
       --help                     Show this message.
     """
 
@@ -183,24 +179,10 @@ extension Args {
         forceLogitsHead: Bool,
         imagePrompt: Bool = false,
         environment: [String: String] = [:]) throws -> RuntimeConfiguration {
-        var expertCacheSlots = self.expertCacheSlots
-        if let value = environment["ANE_FIELDFARE_HOTPATH_CACHE_SLOTS"] {
-            guard let parsed = Int(value), RuntimeConfiguration.allowedExpertCacheSlots.contains(parsed) else {
-                throw ArgsError.invalidValue(flag: "ANE_FIELDFARE_HOTPATH_CACHE_SLOTS", value: value)
-            }
-            expertCacheSlots = parsed
-        }
-        let expertCachePolicy = environment["ANE_FIELDFARE_HOTPATH_CACHE_POLICY"].flatMap(RuntimeExpertCachePolicy.init(rawValue:)) ?? self.expertCachePolicy
-        let rdadvisePolicy = environment["ANE_FIELDFARE_HOTPATH_RDADVISE"].flatMap(RDAdvicePolicyMode.init(rawValue:)) ?? self.rdadvisePolicy
-        let activeExperts = Int(environment["ANE_FIELDFARE_APPROX_TOPK"] ?? "") ?? expertTopK
-        let expertCap = Int(environment["ANE_FIELDFARE_PREFILL_UNION_CAP"] ?? "") ?? prefillExpertCap ?? (activeExperts < 8 ? activeExperts * 8 : nil)
+        let activeExperts = expertTopK
+        let expertCap = prefillExpertCap ?? (activeExperts < 8 ? activeExperts * 8 : nil)
         guard (1...8).contains(activeExperts), expertCap == nil || (1...128).contains(expertCap!) else {
             throw ArgsError.invalidValue(flag: "--expert-top-k/--prefill-expert-cap", value: "out of range")
-        }
-        let transportName = environment["ANE_FIELDFARE_HOTPATH_PREFILL_TRANSPORT"]
-            ?? (environment["ANE_FIELDFARE_PREAD_WIDE_PREFILL_CANDIDATE"] == "1" ? "pread-double-buffered" : "cached-pread")
-        guard let transport = RuntimeWidePrefillTransport(rawValue: transportName) else {
-            throw ArgsError.invalidValue(flag: "ANE_FIELDFARE_HOTPATH_PREFILL_TRANSPORT", value: transportName)
         }
         let attentionName = environment["ANE_FIELDFARE_PREFILL_ATTENTION"] ?? "causal-simd"
         guard let attention = RuntimePrefillAttentionPath(rawValue: attentionName) else {
@@ -239,15 +221,12 @@ extension Args {
             backend: backend,
             expertCacheSlots: expertCacheSlots,
             expertCachePolicy: expertCachePolicy,
-            rdadvisePolicy: rdadvisePolicy,
             prefillEnabled: prefillPolicy == .chunked,
             prefillChunkTokens: prefillChunkTokens,
             prefillAttentionPath: attention,
             forceLogitsHead: forceLogitsHead,
             activeRoutedExperts: activeExperts,
             prefillExpertUnionCap: expertCap,
-            widePrefillTransport: transport,
-            routePrefetchEnabled: environment["ANE_FIELDFARE_HOTPATH_ROUTE_PREFETCH"] == "1",
             faultPolicy: faultPolicy)
     }
 
@@ -280,7 +259,6 @@ extension Args {
         var prefillPolicy = runtimeDefaults.prefillPolicy
         var prefillChunkTokens = runtimeDefaults.prefillChunkTokens
         var prefillChunkTokensAuto = false
-        var rdadvisePolicy = runtimeDefaults.rdadvisePolicy
 
         var index = 0
         while index < argv.count {
@@ -411,12 +389,6 @@ extension Args {
                 // overridden at run time by the resolved size.
                 prefillChunkTokensAuto = false
                 prefillChunkTokens = parsed
-            case "--rdadvise":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = RDAdvicePolicyMode(rawValue: value) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                rdadvisePolicy = parsed
             default:
                 throw ArgsError.unknownFlag(flag)
             }
@@ -488,7 +460,6 @@ extension Args {
                              prefillPolicy: prefillPolicy,
                              prefillChunkTokens: prefillChunkTokens,
                              prefillChunkTokensAuto: prefillChunkTokensAuto,
-                             rdadvisePolicy: rdadvisePolicy,
                              faultPolicy: faultPolicy)
         _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         return arguments

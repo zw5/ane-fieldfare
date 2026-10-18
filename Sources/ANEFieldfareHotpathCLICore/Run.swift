@@ -184,30 +184,17 @@ public func run(args: Args,
         }
 
         let context = try MetalContext()
-        let streamingMode: ExpertStreamingMode
-        if environment["ANE_FIELDFARE_HOTPATH_MAPPED_EXPERTS"] == "1" {
-            streamingMode = .mapped
-        } else if environment["ANE_FIELDFARE_HOTPATH_ADAPTIVE_CACHE"] == "1" {
-            streamingMode = .adaptive(totalSlots: 16 * 30,
-                                      minimumPerLayer: 14,
-                                      maximumPerLayer: 18)
-        } else {
-            streamingMode = .pread(slotCount: runtime.expertCacheSlots)
-        }
         let model = try Model.load(
             directoryURL: modelURL,
             device: context.device,
-            streamingMode: streamingMode,
+            streamingMode: .pread(slotCount: runtime.expertCacheSlots),
             expertCachePolicy: runtime.modelExpertCachePolicy,
             integrityPolicy: .fullSha256)
-        let boundaryCollector = environment["ANE_FIELDFARE_PREFILL_BOUNDARY_ORACLE"] == "1"
-            ? PrefillBoundaryOracleCollector() : nil
         let runner = try RealForwardRunner(
             model: model,
             context: context,
             maxContext: args.maxContext,
-            runtimeConfiguration: runtime,
-            prefillBoundaryOracle: boundaryCollector)
+            runtimeConfiguration: runtime)
         let scratch = try RawCompletionScratch(context: context,
                                                vocab: model.config.vocabSize)
         let multimodalInput: MultimodalPrefillInput?
@@ -261,20 +248,6 @@ public func run(args: Args,
         let effectiveMaxNew = min(args.maxNew, args.maxContext - promptIds.count)
         let config = makeConfig(maxNewTokens: effectiveMaxNew)
 
-        let speculative: SelfSpeculativeConfig?
-        if let layers = Int(environment["ANE_FIELDFARE_SELF_DRAFT_LAYERS"] ?? ""),
-           let width = Int(environment["ANE_FIELDFARE_SELF_DRAFT_WIDTH"] ?? "") {
-            speculative = SelfSpeculativeConfig(draftLayers: layers, width: width)
-        } else {
-            speculative = nil
-        }
-        let jacobi: JacobiDecodeConfig?
-        if let width = Int(environment["ANE_FIELDFARE_JACOBI_WIDTH"] ?? ""),
-           let iterations = Int(environment["ANE_FIELDFARE_JACOBI_ITERATIONS"] ?? "") {
-            jacobi = JacobiDecodeConfig(width: width, iterations: iterations)
-        } else {
-            jacobi = nil
-        }
         var generatedTokenIDs: [Int32] = []
         let stats = try await runRawCompletion(
             producer: runner,
@@ -284,9 +257,7 @@ public func run(args: Args,
             config: config,
             context: context,
             scratch: scratch,
-            prefillConfig: runtime.prefillConfig,
-            selfSpeculative: speculative,
-            jacobi: jacobi) { progress in
+            prefillConfig: runtime.prefillConfig) { progress in
                 switch progress {
                 case .prefill:
                     break
@@ -307,32 +278,7 @@ public func run(args: Args,
         }
         if ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOTPATH_PROFILE"] == "1" {
             let nanosPerSecond = 1_000_000_000.0
-            let boundarySnapshots = boundaryCollector?.snapshots() ?? []
-            func fnv64(_ snapshot: PrefillOracleSnapshot) -> String {
-                var value: UInt64 = 1_469_598_103_934_665_603
-                for byte in snapshot.boundary.utf8 {
-                    value = (value ^ UInt64(byte)) &* 1_099_511_628_211
-                }
-                for word in [UInt64(snapshot.layer), UInt64(snapshot.position),
-                             UInt64(snapshot.count)] {
-                    value = (value ^ word) &* 1_099_511_628_211
-                }
-                for byte in snapshot.bytes {
-                    value = (value ^ UInt64(byte)) &* 1_099_511_628_211
-                }
-                return String(format: "%016llx", value)
-            }
-            let boundaryDigests = boundarySnapshots.map(fnv64)
-            let boundaryFinite = boundarySnapshots.allSatisfy { snapshot in
-                guard snapshot.element == .fp16 else { return true }
-                return snapshot.bytes.withUnsafeBytes { raw in
-                    raw.bindMemory(to: UInt16.self).allSatisfy {
-                        ($0 & 0x7C00) != 0x7C00
-                    }
-                }
-            }
             let profile: [String: Any] = [
-                "window_mapped_experts_requested": environment["ANE_FIELDFARE_HOTPATH_WINDOW_MMAP"] == "1",
                 "schema": "ane-fieldfare.hotpath-profile.v1",
                 "requested_backend": args.backend.rawValue,
                 "ane_routed_prefill": runner.aneRoutedPrefillProfile,
@@ -342,13 +288,6 @@ public func run(args: Args,
                 "routed_gpu_encode_seconds": Double(runner.totalCb2Nanos) / nanosPerSecond,
                 "head_seconds": Double(runner.totalHeadNanos) / nanosPerSecond,
                 "fused_head_seconds": Double(runner.totalHeadFusedNanos) / nanosPerSecond,
-                "rdadvise_seconds": Double(runner.totalRDAdviseNanos) / nanosPerSecond,
-                "speculative_draft_tokens": runner.speculativeDraftTokens,
-                "speculative_accepted_draft_tokens": runner.speculativeAcceptedDraftTokens,
-                "speculative_verification_blocks": runner.speculativeVerificationBlocks,
-                "route_prefetch_predictions": runner.routePrefetchPredictions,
-                "route_prefetch_hits": runner.routePrefetchHits,
-                "adaptive_cache_rebalances": runner.adaptiveCacheRebalances,
                 "routed_expert_cache_hits": runner.routedExpertCacheHits,
                 "routed_expert_cache_misses": runner.routedExpertCacheMisses,
                 "routed_weight_mass_by_rank": runner.routedWeightMassByRank,
@@ -357,17 +296,7 @@ public func run(args: Args,
                 "prefill_union_experts_before_cap": runner.prefillUnionExpertsBeforeCap,
                 "prefill_union_experts_after_cap": runner.prefillUnionExpertsAfterCap,
                 "prefill_union_layer_tiles": runner.prefillUnionLayerTiles,
-                "wide_prefill_transport": runner.widePrefillTransport.rawValue,
-                "prefill_transport_requested_bytes": runner.prefillTransportRequestedBytes,
-                "prefill_transport_pread_calls": runner.prefillTransportPreadCalls,
-                "prefill_transport_pread_bytes": runner.prefillTransportPreadBytes,
-                "prefill_transport_cache_hits": runner.prefillTransportCacheHits,
-                "prefill_transport_cache_misses": runner.prefillTransportCacheMisses,
-                "prefill_transport_forced_drains": runner.prefillTransportForcedDrains,
-                "prefill_transport_max_pending_depth": runner.prefillTransportMaxPendingDepth,
-                "prefill_transport_slot_high_water": runner.prefillTransportSlotHighWater,
                 "prefill_transport_pread_seconds": Double(runner.totalIoNanos) / nanosPerSecond,
-                "prefill_transport_speculative_bytes": 0,
                 "prefill_wall_seconds": stats.prefillSeconds,
                 "prefill_routed_ffn_seconds": Double(runner.prefillRoutedWallNanos) / nanosPerSecond,
                 "prefill_pre_router_gpu_seconds": Double(runner.prefillPreRouterGPUNanos) / nanosPerSecond,
@@ -381,17 +310,12 @@ public func run(args: Args,
                     ? Double(stats.newTokens) / stats.decodeSeconds : 0,
                 "prompt_token_ids": promptIds,
                 "stop_reason": String(describing: stats.reason),
-                "prefill_boundary_oracle": [
-                    "passed": boundaryCollector != nil && !boundarySnapshots.isEmpty,
-                    "snapshot_count": boundarySnapshots.count,
-                    "digests": boundaryDigests,
-                ],
                 "exact_route_oracle": [
                     "passed": runner.exactRouteSamples > 0 && runner.allRouteValuesFinite,
                     "samples": runner.exactRouteSamples,
                     "digest": String(format: "%016llx", runner.exactRouteDigest),
                 ],
-                "all_values_finite": runner.allRouteValuesFinite && boundaryFinite,
+                "all_values_finite": runner.allRouteValuesFinite,
                 "fused_head": runner.usesFusedGreedyHead,
                 "new_tokens": stats.newTokens,
                 "generated_token_ids": generatedTokenIDs,

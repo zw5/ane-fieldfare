@@ -283,23 +283,6 @@ public struct PrefillStreamedTileBinding: Sendable, Equatable {
                                              plannedMissSlots: plannedMissSlots)
     }
 
-    public static func mappedBindingForTile(model: Model,
-                                            layer: Int,
-                                            tileIndex: Int,
-                                            routes: PrefillMoEGroupedRoutes) throws
-        -> PrefillStreamedTileFetchResult {
-        let expertIDs = try expertIDs(forTile: tileIndex, routes: routes)
-        let views = try model.mappedPrefillRoutedExperts(layer: layer, experts: expertIDs)
-        let binding = try PrefillStreamedTileBinding(expertIDs: expertIDs, views: views)
-        return PrefillStreamedTileFetchResult(expertIDs: expertIDs,
-                                             binding: binding,
-                                             usedPlannedFetch: false,
-                                             plannedHits: expertIDs.count,
-                                             plannedMissIndices: [],
-                                             plannedAssignedSlots: [],
-                                             plannedMissSlots: [])
-    }
-
     public func validateCoversPairs(_ pairs: [PrefillTokenExpertPair],
                                     pairStart: Int,
                                     pairCount: Int) throws {

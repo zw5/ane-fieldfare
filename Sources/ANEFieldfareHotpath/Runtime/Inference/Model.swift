@@ -21,11 +21,10 @@ public struct ModelLoadStats: Sendable {
 public enum ExpertStreamingMode: Sendable {
     /// Read each expert into one of `slotCount` 2 MB-aligned cache slots.
     case pread(slotCount: Int)
-    /// Map each compact layer once and bind selected expert offsets directly.
-    /// Physical residency remains demand-paged and is admitted separately.
-    case mapped
-    /// Fixed model-wide cache budget with online per-layer reassignment.
-    case adaptive(totalSlots: Int, minimumPerLayer: Int, maximumPerLayer: Int)
+
+    public var slotCount: Int {
+        switch self { case .pread(let slotCount): return slotCount }
+    }
 }
 
 /// Loaded `.gturbo/` model. Resident weights live behind one mmap'd
@@ -55,21 +54,9 @@ public struct Model {
 
     final class StreamersBox: @unchecked Sendable {
         var streamers: [PreadExpertStreamer?]
-        /// Wide prefill reads compact expert records in physical order.  Keep
-        /// that exact, read-only carrier separate from the small recurrent
-        /// decode cache so neither workload poisons the other's policy.
-        var prefillMappedStreamers: [PreadExpertStreamer?]
-        /// Exact wide-prefill candidate carrier for the currently active
-        /// layer only. Replacing it at a layer boundary bounds the candidate
-        /// to two eight-record banks model-wide.
-        var prefillPreadStreamer: PreadExpertStreamer?
-        var prefillPreadLayer: Int?
-        var prefillPreadGeneration: UInt64 = 0
-        var prefillPreadFetches: Int = 0
         var layerVerified: [Bool]
         init(numLayers: Int) {
             self.streamers = Array(repeating: nil, count: numLayers)
-            self.prefillMappedStreamers = Array(repeating: nil, count: numLayers)
             self.layerVerified = Array(repeating: false, count: numLayers)
         }
     }
@@ -323,33 +310,11 @@ public struct Model {
             expertsPerLayer: packedExpertsLayout.expertsPerLayer,
             expertStride: packedExpertsLayout.expertStride,
             expertOffsets: packedExpertsLayout.layers[L].experts.map(\.offset))
-        let slotCount: Int
-        let directMapped: Bool
-        let slotCapacity: Int
-        switch streamingMode {
-        case .pread(let configuredSlotCount):
-            slotCount = configuredSlotCount
-            slotCapacity = configuredSlotCount
-            directMapped = false
-        case .mapped:
-            slotCount = packedExpertsLayout.expertsPerLayer
-            slotCapacity = slotCount
-            directMapped = true
-        case .adaptive(let total, let minimum, let maximum):
-            precondition(total / packedExpertsLayout.numLayers >= minimum)
-            slotCount = total / packedExpertsLayout.numLayers
-            slotCapacity = maximum
-            directMapped = false
-        }
         streamersBox.streamers[L] = try PreadExpertStreamer(
             layout: layout,
             device: device,
-            slotCount: slotCount,
-            slotCapacity: slotCapacity,
+            slotCount: streamingMode.slotCount,
             cachePolicy: expertCachePolicy,
-            directMapped: directMapped,
-            windowMapped: !directMapped &&
-                ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOTPATH_WINDOW_MMAP"] == "1",
             fileDescriptor: layerFD)
         streamersBox.layerVerified[L] = true
     }
