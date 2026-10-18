@@ -30,6 +30,11 @@ private struct Generation: Decodable {
             } else if args.count == 6, args[1] == "draft-check" {
                 try await draftCheck(modelPath: args[2], drafterPath: args[3], generationPath: args[4],
                                      anchors: args[5].split(separator: ",").compactMap { Int($0) })
+            } else if args.count == 2, args[1] == "bench-gemv" {
+                let context = try MetalContext()
+                for (m, n) in [(4096, 2816), (2048, 2816), (2816, 4096), (2112, 2816), (2816, 2112), (8192, 2816)] {
+                    print(try KernelBench.coldGEMV(context: context, m: m, n: n))
+                }
             } else if args.count == 4, args[1] == "verify-check" {
                 try await verifyCheck(modelPath: args[2], generationPath: args[3])
             } else if args.count == 5, args[1] == "capture" {

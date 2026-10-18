@@ -70,6 +70,21 @@ extension Model {
         return RoutedExpertFetchPlan(layer: layer, cachePlan: cachePlan)
     }
 
+    /// Starts background reads of predicted experts for `layer`. Never
+    /// blocks on I/O and never changes results; see `PreadExpertStreamer.prefetch`.
+    public func prefetchRoutedExperts(layer: Int, experts: [Int]) throws {
+        try ensureLayerOpened(layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
+        streamer.prefetch(experts: experts)
+    }
+
+    /// Prefetch counters summed over every open layer.
+    public var routedExpertPrefetchStats: ExpertPrefetchStats {
+        streamersQueue.sync {
+            streamersBox.streamers.compactMap { $0 }.reduce(ExpertPrefetchStats()) { $0 + $1.prefetchStats }
+        }
+    }
+
     public func routedExpertCacheSlotCount(layer _: Int) -> Int? {
         streamingMode.slotCount
     }
@@ -87,6 +102,10 @@ extension Model {
     public func fetchRoutedExperts(plan: RoutedExpertFetchPlan) async throws -> [TensorView] {
         try ensureLayerOpened(plan.layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
+        if plan.misses.isEmpty {
+            return Self.makeExpertViews(streamer.expertCachePlanBuffers(plan.cachePlan),
+                                        layer: plan.layer, experts: plan.experts)
+        }
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {

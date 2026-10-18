@@ -308,6 +308,21 @@ public func run(args: Args,
                 "fused_head_seconds": Double(runner.totalHeadFusedNanos) / nanosPerSecond,
                 "routed_expert_cache_hits": runner.routedExpertCacheHits,
                 "routed_expert_cache_misses": runner.routedExpertCacheMisses,
+                "decode_attention_gpu_seconds": Double(runner.decodeAttentionGPUNanos) / nanosPerSecond,
+                "decode_shared_gpu_seconds": Double(runner.decodeSharedGPUNanos) / nanosPerSecond,
+                "decode_routed_gpu_seconds": Double(runner.decodeRoutedGPUNanos) / nanosPerSecond,
+                "routed_expert_prefetch": {
+                    let stats = model.routedExpertPrefetchStats
+                    return [
+                        "lookahead": runner.expertPrefetchLookahead,
+                        "width": runner.expertPrefetchWidth,
+                        "predicted_next_layer_experts": runner.prefetchPredictedExperts,
+                        "matched_next_layer_experts": runner.prefetchMatchedExperts,
+                        "issued": stats.issued, "already_present": stats.alreadyPresent,
+                        "skipped": stats.skipped, "useful": stats.useful, "wasted": stats.wasted,
+                        "failed": stats.failed, "plan_waits": stats.planWaits,
+                    ] as [String: Any]
+                }(),
                 "routed_weight_mass_by_rank": runner.routedWeightMassByRank,
                 "routed_weight_mass_samples": runner.routedWeightMassSamples,
                 "prefill_expert_union_cap": runner.prefillExpertUnionCap ?? NSNull(),
