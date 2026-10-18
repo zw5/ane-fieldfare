@@ -131,19 +131,6 @@ internal enum PrefillProjectionDispatchPolicy {
 }
 
 public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, @unchecked Sendable {
-    /// A deliberately tiny, training-free routed-branch memo.  It learns only
-    /// from exact evaluations performed earlier in the same generation.  The
-    /// experimental admission path is disabled unless an explicit normalized
-    /// input-distance threshold is supplied; the production default therefore
-    /// remains the exact streamed expert path.
-    private struct RoutedReuseEntry {
-        var valid = false
-        var routes: [Int] = []
-        var weights: [Float16] = []
-        var input: [Float16] = []
-        var output: [Float16] = []
-    }
-
     private struct LayerSharedExpertProjections {
         let gate: SharedExpertInt8Proj
         let up: SharedExpertInt8Proj
@@ -214,17 +201,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private var previousDecodeRoutes: [[Int]?]
     private var routePrefetchTask: (layer: Int, experts: [Int], task: Task<Void, Error>)?
     private var adaptiveRouteFrequency: [[UInt64]]
-    private var routedReuseEntries: [RoutedReuseEntry]
-    private let routedReuseThreshold: Float?
-    /// Owns every non-Metal rail. The forward loop asks it which guest, if
-    /// any, runs each placeable operation on each layer.
+    /// Owns the ANE guest; the forward loop asks it per layer whether the
+    /// guest runs routed prefill.
     let supervisor: DeviceSupervisor
     public var aneRoutedPrefillProfile: [String: Any] { supervisor.routedPrefillProfile }
-    public var aneSharedFFNProfile: [String: Any] { supervisor.sharedFFNProfile }
-    public var supervisorProfile: [String: Any] {
-        ExecutionTimeline.shared?.write()
-        return supervisor.profile
-    }
+    public var supervisorProfile: [String: Any] { supervisor.profile }
 
     private static let rdadviseBoundedMissCap = 12
     private static let rdadviseBoundedMaxCallNanos: UInt64 = 250_000
@@ -295,29 +276,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.adaptiveRouteFrequency = Array(
             repeating: Array(repeating: 0, count: model.config.numExperts),
             count: model.config.numLayers)
-        if ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOTPATH_ROUTED_EXACT_REUSE"] == "1" {
-            self.routedReuseThreshold = 0
-        } else if let raw = ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOTPATH_ROUTED_REUSE_THRESHOLD"],
-           let value = Float(raw), value > 0 {
-            // Legacy experimental spelling now enables locality telemetry but
-            // admission is still bit-exact; nonzero approximate reuse was
-            // rejected before promotion.
-            self.routedReuseThreshold = value
-        } else {
-            self.routedReuseThreshold = nil
-        }
-        self.routedReuseEntries = Array(repeating: RoutedReuseEntry(),
-                                        count: model.config.numLayers)
-        if let supervisor {
-            self.supervisor = supervisor
-        } else {
-            let plan = try ExecutionPlacementPlan.resolve(
-                backend: runtimeConfiguration.backend, numLayers: model.config.numLayers)
-            self.supervisor = try DeviceSupervisor(
-                plan: plan, faultPolicy: runtimeConfiguration.faultPolicy,
-                model: model, context: context, configuration: runtimeConfiguration,
-                routedReuseEnabled: routedReuseThreshold != nil)
-        }
+        self.supervisor = try supervisor ?? DeviceSupervisor(
+            configuration: runtimeConfiguration, model: model, context: context)
         self.kv = try KVCacheManager(device: context.device,
                                      config: cfg,
                                      maxContext: maxContext,
@@ -352,9 +312,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.prefillSharedExpert = try PrefillSharedExpert(
             context: context,
             weightBits: model.sharedExpertWeightBits,
-            // Batched tensor-op GEMM by default; "0" restores the per-token
-            // GEMV accumulation order of the original numerical reference.
-            batched: ProcessInfo.processInfo.environment["ANE_FIELDFARE_PREFILL_SHARED_GEMM"] != "0")
+            batched: true)
         self.prefillGroupedMoE = try PrefillGroupedRoutedMoE(context: context)
         self.prefillMoE = try PrefillMoE(context: context)
         self.prefillLayerTail = try PrefillLayerTail(context: context)
@@ -502,10 +460,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         rdadviseAdaptiveState.reset()
         rdadviseAdaptivePosition = -1
         rdadviseAdaptivePositionBytes = 0
-        if routedReuseThreshold != nil {
-            routedReuseEntries = Array(repeating: RoutedReuseEntry(),
-                                       count: cfg.numLayers)
-        }
     }
 
     public private(set) var totalIoNanos: UInt64 = 0
@@ -529,11 +483,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var routePrefetchPredictions: UInt64 = 0
     public private(set) var routePrefetchHits: UInt64 = 0
     public private(set) var adaptiveCacheRebalances: UInt64 = 0
-    public private(set) var routedReuseCandidates: UInt64 = 0
-    public private(set) var routedReuseAdmissions: UInt64 = 0
-    public private(set) var routedReuseExactRouteMatches: UInt64 = 0
-    public private(set) var routedReuseBestRouteOverlap: UInt64 = 0
-    public private(set) var routedReuseBestInputDistance: Float = .infinity
     public private(set) var routedExpertCacheHits: UInt64 = 0
     public private(set) var routedExpertCacheMisses: UInt64 = 0
     public private(set) var routedWeightMassByRank = Array(repeating: 0.0, count: 8)
@@ -565,43 +514,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private func snapshotFP16(_ buffer: MTLBuffer, count: Int) -> [Float16] {
         let pointer = buffer.contents().bindMemory(to: Float16.self, capacity: count)
         return Array(UnsafeBufferPointer(start: pointer, count: count))
-    }
-
-    private func routedReuseCandidate(layer: Int,
-                                      routes: [Int],
-                                      weights: [Float16]) -> (output: [Float16], distance: Float)? {
-        guard routedReuseThreshold != nil else { return nil }
-        routedReuseCandidates &+= 1
-        let entry = routedReuseEntries[layer]
-        guard entry.valid, entry.weights.count == weights.count else {
-            return nil
-        }
-        let overlap = routes.reduce(into: 0) { count, expert in
-            if entry.routes.contains(expert) { count += 1 }
-        }
-        routedReuseBestRouteOverlap = max(routedReuseBestRouteOverlap, UInt64(overlap))
-        if entry.routes == routes { routedReuseExactRouteMatches &+= 1 }
-        let current = routedX.contents().bindMemory(to: Float16.self,
-                                                    capacity: cfg.hiddenSize)
-        var squaredDifference: Float = 0
-        var squaredCurrent: Float = 0
-        for index in 0..<cfg.hiddenSize {
-            let value = Float(current[index])
-            let difference = value - Float(entry.input[index])
-            squaredDifference += difference * difference
-            squaredCurrent += value * value
-        }
-        let distance = sqrt(squaredDifference / max(squaredCurrent, 1e-20))
-        routedReuseBestInputDistance = min(routedReuseBestInputDistance, distance)
-        guard entry.routes == routes else { return nil }
-        guard weights.indices.allSatisfy({
-            weights[$0].bitPattern == entry.weights[$0].bitPattern
-        }) else { return nil }
-        guard (0..<cfg.hiddenSize).allSatisfy({
-            current[$0].bitPattern == entry.input[$0].bitPattern
-        }) else { return nil }
-        routedReuseAdmissions &+= 1
-        return (entry.output, distance)
     }
 
     func recordSpeculativeBlock(drafted: Int, acceptedDrafts: Int) {
@@ -1350,8 +1262,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                 offsetElements: (t - 1) * cfg.topKExperts,
                                 count: cfg.topKExperts, commandBuffer: cb)
 
-                    var anePrefill = supervisor.sharedFFN(layer: L, prefill: true)
-                    try anePrefill?.encodeInput(cb, source: scratch.denseX, rows: t)
                     // Clear routed partials here, in a command buffer the host
                     // completes, so routed guests on other queues never race it.
                     if let blit = cb.makeBlitCommandEncoder() {
@@ -1360,17 +1270,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                   value: 0)
                         blit.endEncoding()
                     }
-                    ExecutionTimeline.shared?.track(cb, "pre-router")
                     cb.commit()
-                    let preRouterSubmitted = ExecutionTimeline.now()
                     try waitForCompletion(cb)
-                    ExecutionTimeline.shared?.record("host", "wait-pre-router", start: preRouterSubmitted, end: ExecutionTimeline.now())
-                    let routePlanStart = ExecutionTimeline.now()
                     prefillPreRouterGPUNanos += UInt64(max(0, cb.gpuEndTime - cb.gpuStartTime) * 1e9)
-                    if let guest = anePrefill,
-                       !(try await supervisor.supervise(.sharedFFNPrefill, layer: L, { try guest.begin() })) {
-                        anePrefill = nil
-                    }
 
                     let routeCount = t * cfg.topKExperts
                     let idPtr = scratch.routeIDs.contents()
@@ -1479,8 +1381,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     sharedCB.label =
                         "prefill start=\(startPosition) count=\(t) layer=\(L) phase=shared_expert"
                     let sharedProj = sharedExpertProjections[L]
-                    func encodeMetalSharedExpert(_ commandBuffer: MTLCommandBuffer) throws {
-                    try prefillSharedExpert.encodeBlock(commandBuffer: commandBuffer,
+                    try prefillSharedExpert.encodeBlock(commandBuffer: sharedCB,
                                                         x: scratch.denseX,
                                                         y: scratch.h1,
                                                         gate: sharedProj.gate,
@@ -1494,7 +1395,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                                         intermediate: cfg.intermediateSize,
                                                         xStrideElements: D,
                                                         yStrideElements: D)
-                    prefillRMS.encodeBF16W(commandBuffer: commandBuffer,
+                    prefillRMS.encodeBF16W(commandBuffer: sharedCB,
                                            x: scratch.h1,
                                            weight: sharedProj.postF1.buffer,
                                            weightOffset: Int(sharedProj.postF1.offset),
@@ -1502,11 +1403,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                            t: UInt32(t),
                                            d: UInt32(D),
                                            eps: eps)
-                    }
-                    if anePrefill == nil {
-                        try encodeMetalSharedExpert(sharedCB)
-                    }
-                    ExecutionTimeline.shared?.track(sharedCB, "shared")
                     sharedCB.commit()
                     // Do not block here. Expert planning and pread are host
                     // work and can overlap the independent shared FFN. All
@@ -1537,12 +1433,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         }
                     }
 
-                    ExecutionTimeline.shared?.record("host", "route-plan", start: routePlanStart, end: ExecutionTimeline.now())
                     let routedWallStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                     let routedTileScheduler = PrefillRoutedTileScheduler(config: schedulerConfig)
                     var routedOnHost = true
                     if let guest = supervisor.routedPrefill(layer: L) {
-                        let completed = try await supervisor.supervise(.routedExpertsPrefill, layer: L) {
+                        let completed = try await supervisor.supervise(layer: L) {
                             try await guest.runLayer(model: model, layer: L, hidden: scratch.routedX,
                                 partials: scratch.routePartials, routes: routes, pairs: metadata.sortedPairs)
                         }
@@ -1726,7 +1621,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             binding: fetch.binding,
                             params: streamedParams,
                             pairMicrobatchRows: scratch.layout.routedPairMicrobatchRows)
-                        ExecutionTimeline.shared?.track(tileCB, "metal-routed")
                         tileCB.commit()
                         pendingTiles.append(PendingPrefillTile(tileIndex: tileIndex,
                                                                commandBuffer: tileCB,
@@ -1761,20 +1655,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                                       queryCount: UInt32(t),
                                                       topK: UInt32(cfg.topKExperts),
                                                       d: UInt32(D))
-                    if let guest = anePrefill, supervisor.checksSharedOutcomeBeforeConsume,
-                       let failure = guest.awaitOutcome() {
-                        try supervisor.fault(.sharedFFNPrefill, layer: L, message: failure)
-                        guest.abandon()
-                        anePrefill = nil
-                        try encodeMetalSharedExpert(tailCB)
-                    }
-                    if let anePrefill {
-                        try anePrefill.encodeOutput(tailCB, destination: scratch.h1)
-                        prefillRMS.encodeBF16W(commandBuffer: tailCB,
-                            x: scratch.h1, weight: sharedProj.postF1.buffer,
-                            weightOffset: Int(sharedProj.postF1.offset), out: scratch.h1,
-                            t: UInt32(t), d: UInt32(D), eps: eps)
-                    }
                     let scalarBits = views.layerScalar.buffer.contents()
                         .advanced(by: Int(views.layerScalar.offset))
                         .assumingMemoryBound(to: UInt16.self)[0]
@@ -1799,14 +1679,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     try capture("layer_hidden", layer: L, buffer: scratch.hidden,
                                 offsetElements: (t - 1) * D, count: D,
                                 commandBuffer: tailCB)
-                    ExecutionTimeline.shared?.track(tailCB, "tail")
-                    let tailSubmitted = ExecutionTimeline.now()
                     tailCB.commit()
                     try withExtendedLifetime(metadata) {
                         try waitForCompletion(tailCB)
                     }
-                    ExecutionTimeline.shared?.record("host", "wait-tail", start: tailSubmitted, end: ExecutionTimeline.now())
-                    try anePrefill?.finish()
                     prefillSharedGPUNanos += UInt64(max(0, sharedCB.gpuEndTime - sharedCB.gpuStartTime) * 1e9)
                     try checkCommandBufferError(sharedCB)
                     if L + 1 < cfg.numLayers {
@@ -1903,48 +1779,26 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         let sqrtHidden = Float(cfg.hiddenSize).squareRoot()
         struct PendingRoutedCommand {
             let cb: MTLCommandBuffer
-            let sharedCB: MTLCommandBuffer?
+            let sharedCB: MTLCommandBuffer
             let phase1HitCB: MTLCommandBuffer?
             let encodeAndCommitNanos: UInt64
-            let exactCacheLayer: Int?
-            let exactCacheRoutes: [Int]
-            let exactCacheWeights: [Float16]
-            let exactCacheInput: [Float16]
-            var aneShared: SharedFFNGuestLayer? = nil
         }
         var pendingRoutedCommand: PendingRoutedCommand?
 
         func finishPendingRoutedCommand(_ pending: PendingRoutedCommand,
                                         waitIfNeeded: Bool) throws {
             if waitIfNeeded {
-                if let sharedCB = pending.sharedCB {
-                    waitUntilCompleted(sharedCB)
-                }
+                waitUntilCompleted(pending.sharedCB)
                 if let phase1HitCB = pending.phase1HitCB {
                     waitUntilCompleted(phase1HitCB)
                 }
                 waitUntilCompleted(pending.cb)
             }
-            if let sharedCB = pending.sharedCB {
-                try checkCommandBufferError(sharedCB)
-            }
+            try checkCommandBufferError(pending.sharedCB)
             if let phase1HitCB = pending.phase1HitCB {
                 try checkCommandBufferError(phase1HitCB)
             }
             try checkCommandBufferError(pending.cb)
-            try pending.aneShared?.finish()
-            if let layer = pending.exactCacheLayer,
-               pending.cb.status == .completed,
-               pending.cb.error == nil {
-                routedReuseEntries[layer] = RoutedReuseEntry(
-                    valid: true,
-                    routes: pending.exactCacheRoutes,
-                    weights: pending.exactCacheWeights,
-                    input: pending.exactCacheInput,
-                    output: snapshotFP16(h2Buf, count: cfg.hiddenSize))
-            } else if let layer = pending.exactCacheLayer {
-                routedReuseEntries[layer].valid = false
-            }
             totalCb2Nanos &+= pending.encodeAndCommitNanos
         }
 
@@ -2149,8 +2003,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             gOProj(cb)
             gPostAttnSetup(cb)
             gRouter(cb)
-            var aneShared = supervisor.sharedFFN(layer: L, prefill: false)
-            try aneShared?.encodeInput(cb, source: denseX, rows: 1)
             cb.commit()
             let tWait = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             waitUntilCompleted(cb)
@@ -2161,11 +2013,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             }
             try checkCommandBufferError(cb)
             totalCb1Nanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tCb1Start - waitNanos
-
-            if let guest = aneShared,
-               !(try await supervisor.supervise(.sharedFFNDecode, layer: L, { try guest.begin() })) {
-                aneShared = nil
-            }
 
             // CPU readback to fetch routed-expert blobs from disk.
             let idxPtr = outIndices.contents().bindMemory(to: UInt32.self,
@@ -2195,12 +2042,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     }
                 }
             }
-            let currentRoutedInput = routedReuseThreshold == nil
-                ? []
-                : snapshotFP16(routedX, count: cfg.hiddenSize)
-            let routedReuse = routedReuseCandidate(layer: L,
-                                                   routes: experts,
-                                                   weights: currentRoutingWeights)
 
             let routedOffsets = model.routedExpertOffsets(layer: L)
             let topK = UInt32(activeRoutedExperts)
@@ -2316,105 +2157,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             // experts. Commit it without waiting so its GPU work overlaps the
             // routed-expert pread. The routed CB follows it on the same queue,
             // so the combine sees h1Buf.
-            let sharedCB: MTLCommandBuffer?
-            if aneShared == nil {
-                let sharedCommand = ctx.queue.makeCommandBuffer()!
-                gSharedFFN(sharedCommand)
-                gSharedNorm(sharedCommand)
-                sharedCommand.commit()
-                sharedCB = sharedCommand
-            } else {
-                sharedCB = nil
-            }
-            let aotGuest = supervisor.routedDecode(layer: L)
-            if routedReuse == nil, aotGuest == nil, let cb = phase1HitCB {
-                cb.commit()
-            }
+            let sharedCB = ctx.queue.makeCommandBuffer()!
+            gSharedFFN(sharedCB)
+            gSharedNorm(sharedCB)
+            sharedCB.commit()
+            phase1HitCB?.commit()
 
-            // Router output and routedX are now host-visible. The provider
-            // synchronously completes the exact top-8 generation before h2 is
-            // consumed. The shared branch is already in flight on Metal and
-            // the tail command buffer is ordered behind it.
-            if let aotGuest, try await supervisor.supervise(.routedExpertsDecode, layer: L, {
-                try aotGuest.call(
-                    layer: L,
-                    experts: experts,
-                    weights: currentRoutingWeights,
-                    input: routedX.contents().assumingMemoryBound(to: Float16.self),
-                    output: h2Buf.contents().assumingMemoryBound(to: Float16.self))
-            }) {
-                let scalarPtr = layerScalarView.buffer.contents()
-                    .advanced(by: Int(layerScalarView.offset))
-                    .assumingMemoryBound(to: UInt16.self)
-                let layerScalar = Quantization.bf16ToFloat(scalarPtr[0])
-                let routedCB = ctx.queue.makeCommandBuffer()!
-                fusedTail.encode(commandBuffer: routedCB,
-                                 h2: h2Buf,
-                                 h1: h1Buf,
-                                 hidden: hidden,
-                                 postFFN2Weight: postF2.buffer,
-                                 postFFN2WeightOffset: Int(postF2.offset),
-                                 postFFNWeight: postF.buffer,
-                                 postFFNWeightOffset: Int(postF.offset),
-                                 d: D,
-                                 eps: eps,
-                                 layerScalar: layerScalar)
-                routedCB.commit()
-                pendingRoutedCommand = PendingRoutedCommand(
-                    cb: routedCB,
-                    sharedCB: sharedCB,
-                    phase1HitCB: nil,
-                    encodeAndCommitNanos: 0,
-                    exactCacheLayer: nil,
-                    exactCacheRoutes: [],
-                    exactCacheWeights: [],
-                    exactCacheInput: [])
-                continue
-            }
-            if aotGuest != nil, routedReuse == nil, let cb = phase1HitCB {
-                // The AOT guest was evicted; the streamed Metal path below
-                // recomputes h2 for this layer.
-                cb.commit()
-            }
-
-            // Experimental online memo admission.  The cached output came
-            // from an exact evaluation earlier in this same generation.  A
-            // hit bypasses both expert I/O and routed phase 1/2, but still
-            // executes the exact shared branch and layer tail.  It is opt-in
-            // and therefore cannot perturb the production path accidentally.
-            if let routedReuse {
-                _ = routedReuse.output.withUnsafeBytes { bytes in
-                    memcpy(h2Buf.contents(), bytes.baseAddress!, bytes.count)
-                }
-                let scalarPtr = layerScalarView.buffer.contents()
-                    .advanced(by: Int(layerScalarView.offset))
-                    .assumingMemoryBound(to: UInt16.self)
-                let layerScalar = Quantization.bf16ToFloat(scalarPtr[0])
-                let routedCB = ctx.queue.makeCommandBuffer()!
-                fusedTail.encode(commandBuffer: routedCB,
-                                 h2: h2Buf,
-                                 h1: h1Buf,
-                                 hidden: hidden,
-                                 postFFN2Weight: postF2.buffer,
-                                 postFFN2WeightOffset: Int(postF2.offset),
-                                 postFFNWeight: postF.buffer,
-                                 postFFNWeightOffset: Int(postF.offset),
-                                 d: D,
-                                 eps: eps,
-                                 layerScalar: layerScalar)
-                let tReuseCommit = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-                routedCB.commit()
-                pendingRoutedCommand = PendingRoutedCommand(
-                    cb: routedCB,
-                    sharedCB: sharedCB,
-                    phase1HitCB: nil,
-                    encodeAndCommitNanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tReuseCommit,
-                    exactCacheLayer: nil,
-                    exactCacheRoutes: [],
-                    exactCacheWeights: [],
-                    exactCacheInput: [])
-                continue
-            }
             if rdadviseEnabled && rdadvisePolicyMode != .off {
                 let requestedMisses = plannedFetch?.misses.count ?? experts.count
                 let estimatedAdviceBytes = try model.routedExpertAdviceByteEstimate(
@@ -2503,18 +2251,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                                    d: D,
                                                    f: FmoE,
                                                    topK: topK)
-            if let guest = aneShared, supervisor.checksSharedOutcomeBeforeConsume,
-               let failure = guest.awaitOutcome() {
-                try supervisor.fault(.sharedFFNDecode, layer: L, message: failure)
-                guest.abandon()
-                aneShared = nil
-                gSharedFFN(routedCB)
-                gSharedNorm(routedCB)
-            }
-            if let aneShared {
-                try aneShared.encodeOutput(routedCB, destination: h1Buf)
-                gSharedNorm(routedCB)
-            }
             gTail(routedCB)
             routedCB.commit()
             precondition(pendingRoutedCommand == nil,
@@ -2523,12 +2259,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 cb: routedCB,
                 sharedCB: sharedCB,
                 phase1HitCB: phase1HitCB,
-                encodeAndCommitNanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tCb2Start,
-                exactCacheLayer: routedReuseThreshold == nil ? nil : L,
-                exactCacheRoutes: experts,
-                exactCacheWeights: currentRoutingWeights,
-                exactCacheInput: currentRoutedInput,
-                aneShared: aneShared)
+                encodeAndCommitNanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tCb2Start)
             continue
         }
         if let pending = pendingRoutedCommand {

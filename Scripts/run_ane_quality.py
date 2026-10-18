@@ -41,7 +41,7 @@ for name, chunk in (("metal128", 128), (f"metal{a.chunk}", a.chunk), (f"ane{a.ch
     metadata = Path(str(prefix) + ".json")
     if metadata.exists():
         data = json.loads(metadata.read_text())
-        run.update(ane_routed_prefill=data["ane_routed_prefill"], ane_shared_ffn=data["ane_shared_ffn"],
+        run.update(ane_routed_prefill=data["ane_routed_prefill"],
                    numerical_result={"all_values_finite": data["all_values_finite"], "rows": data["rows"]})
     receipt["runs"].append(run)
     (a.output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")

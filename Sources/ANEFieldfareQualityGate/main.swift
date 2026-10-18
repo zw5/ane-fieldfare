@@ -82,7 +82,6 @@ private struct Fixture: Decodable {
                 "continuation_token_ids": fixture.continuation_token_ids,
                 "rows": greedy.count, "vocabulary": model.config.vocabSize, "greedy_token_ids": greedy,
                 "all_values_finite": finite, "prefill_seconds": prefillSeconds,
-                "ane_shared_ffn": runner.aneSharedFFNProfile,
                 "ane_routed_prefill": runner.aneRoutedPrefillProfile,
                 "logits_path": outputURL.path,
                 "claim_boundary": "Full logits under identical prompt and forced continuation inputs; independent cross-arm comparison required. No general quality claim."]

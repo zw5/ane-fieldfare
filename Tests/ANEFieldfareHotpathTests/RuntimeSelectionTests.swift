@@ -1,7 +1,6 @@
 import XCTest
 import ANEFieldfareHotpath
 import ANEFieldfareHotpathCLICore
-import ANEFieldfareAOTExpertRuntime
 
 final class RuntimeSelectionTests: XCTestCase {
     func testBackendAndPrefillSelection() throws {
@@ -18,16 +17,6 @@ final class RuntimeSelectionTests: XCTestCase {
         XCTAssertEqual(try failover.resolvedRuntimeConfiguration(forceLogitsHead: false).faultPolicy, .failoverMetal)
         XCTAssertThrowsError(try Args.parse(required + ["--fault-policy", "retry"]))
         XCTAssertThrowsError(try Args.parse(required + ["--prefill-chunk", "4096"]))
-    }
-
-    func testDeviceCarrierRejectsMappedWeightEntryPoint() throws {
-        var error: UnsafePointer<CChar>?
-        let handle = try XCTUnwrap(ANEFieldfareANEExpertDispatcherCreateDeviceCarrier(1, &error),
-                                  error.map { String(cString: $0) } ?? "ANE device carrier rejected")
-        defer { ANEFieldfareANEExpertDispatcherDestroy(handle); free(UnsafeMutableRawPointer(mutating: error)) }
-        let input = [Float](repeating: 0, count: 2816)
-        var output = [Float](repeating: .nan, count: 2816)
-        XCTAssertFalse(ANEFieldfareANEExpertDispatcherCallPositions(UnsafeMutableRawPointer(handle), 0, 1, input, &output))
     }
 
     func testUpstreamRuntimeControlsPreserveANEContracts() throws {

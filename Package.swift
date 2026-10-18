@@ -1,17 +1,14 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// The supported Swift decoder integrates the owned C/Objective-C ANE program
-// and device-carrier ABI. Native probes retain Scripts/build.sh entry points.
+// Gemma 4 MoE runtime on Metal, with routed prefill experts on the ANE
+// through a small Objective-C carrier over the private ANE runtime.
 let package = Package(
     name: "ANEFieldfareHotpath",
     platforms: [.macOS(.v26)],
     products: [
         .library(name: "ANEFieldfareHotpath", targets: ["ANEFieldfareHotpath"]),
-        .library(name: "ANEFieldfareAOTExpertRuntime", targets: ["ANEFieldfareAOTExpertRuntime"]),
         .executable(name: "ANEFieldfareHotpathCLI", targets: ["ANEFieldfareHotpathCLI"]),
-        .executable(name: "ANEFieldfarePrefill128Oracle", targets: ["ANEFieldfarePrefill128Oracle"]),
-        .executable(name: "ANEFieldfareWorkstreamPGate", targets: ["ANEFieldfareWorkstreamPGate"]),
         .executable(name: "ANEFieldfareQualityGate", targets: ["ANEFieldfareQualityGate"]),
     ],
     dependencies: [
@@ -52,8 +49,8 @@ let package = Package(
             path: "Tests/ANEFieldfareHotpathTests"
         ),
         .target(
-            name: "ANEFieldfareAOTExpertRuntime",
-            path: "Sources/ANEFieldfareAOTExpertRuntime",
+            name: "ANEFieldfareANECarrier",
+            path: "Sources/ANEFieldfareANECarrier",
             publicHeadersPath: "include",
             linkerSettings: [
                 .linkedFramework("Foundation"),
@@ -68,7 +65,7 @@ let package = Package(
         .target(
             name: "ANEFieldfareHotpath",
             dependencies: [
-                "ANEFieldfareAOTExpertRuntime",
+                "ANEFieldfareANECarrier",
                 "ANEFieldfareImportedFormat",
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "Hub", package: "swift-transformers"),
@@ -86,16 +83,6 @@ let package = Package(
             dependencies: ["ANEFieldfareHotpathCLICore"],
             path: "Sources/ANEFieldfareHotpathCLI",
             resources: [.copy("Fixtures")]
-        ),
-        .executableTarget(
-            name: "ANEFieldfarePrefill128Oracle",
-            dependencies: ["ANEFieldfareHotpath"],
-            path: "Sources/ANEFieldfarePrefill128Oracle"
-        ),
-        .executableTarget(
-            name: "ANEFieldfareWorkstreamPGate",
-            dependencies: ["ANEFieldfareHotpath"],
-            path: "Sources/ANEFieldfareWorkstreamPGate"
         ),
         .executableTarget(
             name: "ANEFieldfareQualityGate",
