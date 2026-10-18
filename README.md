@@ -104,7 +104,8 @@ The supervisor is held to these oracles:
 - **Regression parity.** Every refactor step is checked against stored logits:
   `metal` and `hybrid-ane` must reproduce them exactly, 17 × 262,144 FP16 values
   each, on a 3,015-token prompt plus 16 fixed continuation tokens. The hybrid run
-  executes 4,411 ANE evaluations across 30 layers, from 1 compile and 1 load.
+  uses 1,024-token prefill chunks and executes 3,163 ANE evaluations across 30
+  layers, from 1 compile and 1 load.
 - **Failover parity.** These tests (`DeviceSupervisorFailoverTests`) run on the
   installed checkpoint. Injected guests write NaN over the host's buffers and
   then fault:
@@ -128,7 +129,7 @@ wall time on an M5, not the protocol below:
 | Batched shared FFN, 3 tensor-op GEMMs replacing 1,024 per-token GEMVs. Shared FFN goes from 7.1 s to 0.83 s. | 16.9 s | 18.7 s | Same FP32-reference error as the GEMV (relative L2 ≈ 3–4e-4; `PrefillSharedExpertBatchedTests`); against the previous logits, mean KL 0.015 (metal) and 0.003 (hybrid); greedy 17/17 |
 | Concurrent expert-read lookahead of 4. SSD throughput: 4.7 GB/s at queue depth 1, 6.7 GB/s at depth 2. | 16.2 s | — | Bit-exact |
 | Prefill chunks up to 4,096 tokens, chosen per prompt (`--prefill-chunk-tokens auto`, now the default). Each layer's experts are read once per prompt: 32.1 GB → 11.7 GB of reads. | 11.7 s | 15.3 s | Bit-exact |
-| ANE program with 128 activation lanes per expert instead of 64. Each request streams four experts' weights (about 0.95 ms), so more rows per request halve the evaluations: 3,352 → 1,980. | 9.2 s | — | Bit-exact |
+| ANE program with 128 activation lanes per expert instead of 64. Each request streams four experts' weights (about 0.95 ms), so more rows per request halve the evaluations: 3,352 → 1,980. | 8.8 s | — | Bit-exact |
 
 Short prompts were dominated by integrity checking rather than compute: the CLI
 hashed all 13 GB of expert files on every launch. It now trusts the installer's
@@ -142,7 +143,7 @@ request costs the GPU a weight expansion (the ANE cannot dequantize INT4 itself)
 so overlapping saturates the GPU, and the halves re-read and re-expand the same
 experts. A third request bank made no measurable difference.
 
-Remaining prefill time on the 3,015-token prompt (about 9 s): pre-router GPU work
+Remaining prefill time on the 3,015-token prompt (8.8 s): pre-router GPU work
 (attention and projections) 4.2 s, then the routed experts 4.4 s, of which the ANE
 evaluates for 3.5 s.
 
