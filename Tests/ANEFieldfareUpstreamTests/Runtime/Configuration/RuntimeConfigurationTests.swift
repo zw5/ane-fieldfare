@@ -7,8 +7,6 @@ import Testing
         #expect(runtime.fp16RingEnabled)
         #expect(runtime.expertCacheSlots == 16)
         #expect(runtime.expertCachePolicy == .lfu)
-        #expect(runtime.rdadvisePolicy == .off)
-        #expect(!runtime.rdadviseEnabled)
         #expect(runtime.prefillPolicy == .chunked)
         #expect(runtime.prefillChunkTokens == 1024)
         #expect(runtime.prefillAttentionPath == .causalSIMD)
@@ -19,14 +17,12 @@ import Testing
         let runtime = RuntimeConfiguration(
             expertCacheSlots: 32,
             expertCachePolicy: .lru,
-            rdadvisePolicy: .adaptive,
             prefillEnabled: false,
             prefillChunkTokens: 64,
             prefillAttentionPath: .causalTiled,
             forceLogitsHead: true)
         #expect(runtime.expertCacheSlots == 32)
         #expect(runtime.modelExpertCachePolicy == .lru)
-        #expect(runtime.rdadviseEnabled)
         #expect(runtime.prefillConfig == .off)
         #expect(runtime.prefillAttentionPath == .causalTiled)
         #expect(runtime.headPath == .logits)

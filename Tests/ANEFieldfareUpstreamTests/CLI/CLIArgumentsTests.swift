@@ -115,7 +115,7 @@ import ANEFieldfareHotpath
             "--temperature", "--top-k", "--top-p", "--repetition-penalty",
             "--seed", "--stop", "--quiet", "--expert-cache-slots",
             "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
-            "--rdadvise", "--help", "--backend", "--fault-policy", "--prompt-file",
+            "--help", "--backend", "--fault-policy", "--prompt-file",
             "--count-tokens", "--expert-top-k", "--prefill-expert-cap",
             "--chat-prompt", "--image", "--vision-pack", "--vision-residency",
         ]
@@ -131,21 +131,18 @@ import ANEFieldfareHotpath
             "--expert-cache-policy", "lru",
             "--prefill", "off",
             "--prefill-chunk-tokens", "64",
-            "--rdadvise", "adaptive",
         ])
 
         #expect(arguments.expertCacheSlots == 24)
         #expect(arguments.expertCachePolicy == .lru)
         #expect(arguments.prefillPolicy == .off)
         #expect(arguments.prefillChunkTokens == 64)
-        #expect(arguments.rdadvisePolicy == .adaptive)
 
         let runtime = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: true)
         #expect(runtime.expertCacheSlots == 24)
         #expect(runtime.modelExpertCachePolicy == .lru)
         #expect(runtime.prefillPolicy == .off)
         #expect(runtime.prefillChunkTokens == 64)
-        #expect(runtime.rdadvisePolicy == .adaptive)
         #expect(runtime.headPath == .logits)
     }
 
@@ -173,12 +170,6 @@ import ANEFieldfareHotpath
                 "--expert-cache-policy", value,
             ])
             #expect(arguments.expertCachePolicy.rawValue == value)
-        }
-        for value in ["off", "default", "bounded", "adaptive"] {
-            let arguments = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "hi", "--rdadvise", value,
-            ])
-            #expect(arguments.rdadvisePolicy.rawValue == value)
         }
         #expect(try Args.parse([
             "--model", "m.gturbo", "--prompt", "hi", "--prefill", "on",

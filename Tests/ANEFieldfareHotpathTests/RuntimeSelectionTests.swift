@@ -23,18 +23,16 @@ final class RuntimeSelectionTests: XCTestCase {
         let required = ["--model", "/model", "--prompt", "hello"]
         let args = try Args.parse(required + ["--backend", "hybrid-ane",
             "--expert-cache-slots", "24", "--expert-cache-policy", "lru",
-            "--rdadvise", "bounded", "--prefill-chunk-tokens", "256"])
+            "--prefill-chunk-tokens", "256"])
         let runtime = try args.resolvedRuntimeConfiguration(forceLogitsHead: true)
         XCTAssertEqual(runtime.backend, .hybridANE)
         XCTAssertEqual(runtime.expertCacheSlots, 24)
         XCTAssertEqual(runtime.expertCachePolicy, .lru)
-        XCTAssertEqual(runtime.rdadvisePolicy, .bounded)
         XCTAssertEqual(runtime.prefillChunkTokens, 256)
         XCTAssertEqual(runtime.activeRoutedExperts, 8)
         XCTAssertEqual(runtime.prefillAttentionPath, .causalSIMD)
         XCTAssertThrowsError(try Args.parse(required + ["--backend", "hybrid-ane", "--expert-top-k", "6"]))
-        XCTAssertThrowsError(try args.resolvedRuntimeConfiguration(forceLogitsHead: false,
-            environment: ["ANE_FIELDFARE_PREFILL_UNION_CAP": "8"]))
+        XCTAssertThrowsError(try Args.parse(required + ["--backend", "hybrid-ane", "--prefill-expert-cap", "8"]))
         XCTAssertThrowsError(try Args.parse(required + ["--prefill", "on", "--expert-cache-slots", "8"]))
         let file = try Args.parse(["--model", "/model", "--prompt-file", "/prompt.txt", "--count-tokens"])
         XCTAssertEqual(file.promptFile, "/prompt.txt")

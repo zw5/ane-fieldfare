@@ -12,76 +12,28 @@ public enum RawDecodeProgress: Sendable {
     case tail(String)
 }
 
-public enum RawCompletionStart: Sendable, Equatable {
-    case reset
-    case resume(cachedPromptTokens: Int)
-
-    /// How many of `promptCount` tokens the producer's KV already holds.
-    func cachedPromptTokens(promptCount: Int, producer: any LogitProducer) throws -> Int {
-        switch self {
-        case .reset:
-            return 0
-        case .resume(let count):
-            guard count > 0, count < promptCount else {
-                throw GeneratorError.invalidContinuation(
-                    "cached prompt token count must be greater than zero and less than the effective prompt")
-            }
-            guard producer is any ContinuableLogitProducer else {
-                throw GeneratorError.invalidContinuation(
-                    "producer does not support continuation")
-            }
-            return count
-        }
-    }
-}
-
-/// What the prefill's seed is for. A decode consumes it, so a producer that
-/// returned the wrong kind has to be refused before the loop reads it. A
-/// restore has no decode and discards it.
-enum RawPrefillSeedUse {
-    case decode(isPureGreedy: Bool)
-    case discarded
-}
-
 struct RawPrefillOutcome {
-    let computedPrefillTokens: Int
     let position: Int
     let seed: PrefillSeed?
     let prefillSeconds: Double
     let history: [Int32]
 }
 
-/// The prefill half of `runRawCompletion`, on its own so that restoring a
-/// stored conversation goes through it too.
-///
-/// A second implementation would be a second set of chunk boundaries, and chunk
-/// boundaries are the one thing a replayed KV has to share with the KV it is
-/// reproducing: image spans are indivisible work items, chunks under 32 tokens
-/// take a different GEMV than larger ones, and `.prefill` progress is what the
-/// app's gauge animates. Restore is a prefill with the decode left off, not a
-/// different way to fill a cache.
+/// The prefill half of `runRawCompletion`.
 func runRawPrefill(
     producer: any LogitProducer,
     promptIds: [Int32],
     multimodalInput: MultimodalPrefillInput?,
     prefillConfig requestedPrefillConfig: PrefillRuntimeConfig,
-    start: RawCompletionStart,
     outputMode: PrefillOutputMode,
-    seedUse: RawPrefillSeedUse,
+    isPureGreedy: Bool,
     historyReserve: Int,
     scratch: RawCompletionScratch,
     onProgress: (RawDecodeProgress) -> Void
 ) async throws -> RawPrefillOutcome {
-    let cachedPromptTokens = try start.cachedPromptTokens(
-        promptCount: promptIds.count, producer: producer)
-    let computedPrefillTokens = promptIds.count - cachedPromptTokens
     if let multimodalInput {
-        // Under resume the multimodal input is the tail that still has to be
-        // prefilled, so it must match the prompt suffix rather than the whole
-        // prompt. `prefillMultimodal` already prefills from `startPosition`.
-        guard multimodalInput.effectiveTokenIDs
-            == Array(promptIds.dropFirst(cachedPromptTokens)) else {
-            throw GeneratorError.invalidContinuation(
+        guard multimodalInput.effectiveTokenIDs == promptIds else {
+            throw PrefillError.chunkedUnsupported(
                 "multimodal effective token IDs do not match the prompt")
         }
     }
@@ -96,7 +48,6 @@ func runRawPrefill(
         : (requestedPrefillConfig.coercedForImagePrompt() ?? requestedPrefillConfig)
 
     func checkSeed(_ seed: PrefillSeed, path: String, requiresWrittenLogits: Bool) throws {
-        guard case .decode(let isPureGreedy) = seedUse else { return }
         if requiresWrittenLogits, outputMode == .logits, seed != .logitsWritten {
             throw PrefillError.unsupportedPrefillSeed(
                 "RawCompletion \(path) prefill requested logits but producer returned \(seed)")
@@ -107,20 +58,14 @@ func runRawPrefill(
         }
     }
 
-    var history = Array(promptIds.prefix(cachedPromptTokens))
+    var history: [Int32] = []
     history.reserveCapacity(historyReserve)
 
-    switch start {
-    case .reset:
-        producer.reset()
-    case .resume:
-        let continuable = producer as! any ContinuableLogitProducer
-        try continuable.prepareForContinuation(expectedPosition: cachedPromptTokens)
-    }
+    producer.reset()
     let prefillStart = Date()
-    var position = cachedPromptTokens
+    var position = 0
     var prefillSeed: PrefillSeed?
-    let prefillTokens = promptIds[cachedPromptTokens...]
+    let prefillTokens = promptIds[...]
     switch (multimodalInput, prefillConfig.mode) {
     case (.some(let input), .chunked) where producer is any MultimodalPrefillRunner:
         let multimodal = producer as! any MultimodalPrefillRunner
@@ -131,18 +76,11 @@ func runRawPrefill(
             config: prefillConfig,
             into: scratch.logits
         ) { done in
-            // The suffix-local count plus what the KV already holds, as the
-            // chunked text path reports it. Without the offset a
-            // 300-token image turn on a 5,000-token KV showed 1 of 5,300.
-            onProgress(.prefill(done: cachedPromptTokens + done,
-                                total: promptIds.count))
+            onProgress(.prefill(done: done, total: promptIds.count))
         }
         try checkSeed(result.seed, path: "multimodal", requiresWrittenLogits: true)
         position = result.newPosition
         prefillSeed = result.seed
-        // Only the suffix: under resume the cached prefix is already in history,
-        // and appending the whole prompt would duplicate it and desynchronise
-        // history from the KV position.
         history.append(contentsOf: prefillTokens)
     case (.some, _):
         // The coercion above leaves an image prompt in chunked mode, so the
@@ -157,7 +95,7 @@ func runRawPrefill(
                                                       outputMode: outputMode,
                                                       config: prefillConfig,
                                                       into: scratch.logits) { done in
-            onProgress(.prefill(done: cachedPromptTokens + done, total: promptIds.count))
+            onProgress(.prefill(done: done, total: promptIds.count))
         }
         try checkSeed(result.seed, path: "chunked", requiresWrittenLogits: true)
         position = result.newPosition
@@ -177,7 +115,6 @@ func runRawPrefill(
     }
 
     return RawPrefillOutcome(
-        computedPrefillTokens: computedPrefillTokens,
         position: position,
         seed: prefillSeed,
         prefillSeconds: Date().timeIntervalSince(prefillStart),
@@ -186,8 +123,6 @@ func runRawPrefill(
 
 public struct RawDecodeResult: Sendable {
     public let prefillTokens: Int
-    public let cachedPromptTokens: Int
-    public let computedPrefillTokens: Int
     public let prefillSeconds: Double
     public let newTokens: Int
     public let decodeSeconds: Double
@@ -198,8 +133,6 @@ public struct RawDecodeResult: Sendable {
     public let withheldTrailingKVTokens: Int
 
     public init(prefillTokens: Int,
-                cachedPromptTokens: Int,
-                computedPrefillTokens: Int,
                 prefillSeconds: Double,
                 newTokens: Int,
                 decodeSeconds: Double,
@@ -209,8 +142,6 @@ public struct RawDecodeResult: Sendable {
                 uncommittedBoundaryTokenIDs: [Int32],
                 withheldTrailingKVTokens: Int = 0) {
         self.prefillTokens = prefillTokens
-        self.cachedPromptTokens = cachedPromptTokens
-        self.computedPrefillTokens = computedPrefillTokens
         self.prefillSeconds = prefillSeconds
         self.newTokens = newTokens
         self.decodeSeconds = decodeSeconds
@@ -278,7 +209,6 @@ public func runRawCompletion(producer: any LogitProducer,
                              context: MetalContext,
                              scratch: RawCompletionScratch,
                              prefillConfig: PrefillRuntimeConfig = .defaultChunked,
-                             start: RawCompletionStart = .reset,
                              shouldStop: () -> Bool = { false },
                              onProgress: (RawDecodeProgress) -> Void) async throws -> RawDecodeResult {
     try config.validate()
@@ -291,12 +221,6 @@ public func runRawCompletion(producer: any LogitProducer,
         throw PrefillError.unsupportedPrefillSeed(
             "the fused-head producer cannot serve this sampling configuration; use a logits head")
     }
-
-    // Derived here as well as inside `runRawPrefill` so an invalid resume count
-    // is still refused before the context-overflow check, which is the order
-    // callers have always seen.
-    let cachedPromptTokens = try start.cachedPromptTokens(
-        promptCount: promptIds.count, producer: producer)
 
     var detok = GFDetokenizer(tokenizer: tokenizer,
                               barrierTokenIDs: tokenizer.structuralMarkerIDs)
@@ -313,13 +237,11 @@ public func runRawCompletion(producer: any LogitProducer,
         promptIds: promptIds,
         multimodalInput: multimodalInput,
         prefillConfig: prefillConfig,
-        start: start,
         outputMode: fusedGreedy ? .greedyIfAvailable : .logits,
-        seedUse: .decode(isPureGreedy: config.isPureGreedy),
+        isPureGreedy: config.isPureGreedy,
         historyReserve: promptIds.count + config.maxNewTokens,
         scratch: scratch,
         onProgress: onProgress)
-    let computedPrefillTokens = prefill.computedPrefillTokens
     var history = prefill.history
     var position = prefill.position
     let prefillSeed = prefill.seed
@@ -393,8 +315,6 @@ public func runRawCompletion(producer: any LogitProducer,
     }
 
     return RawDecodeResult(prefillTokens: promptIds.count,
-                           cachedPromptTokens: cachedPromptTokens,
-                           computedPrefillTokens: computedPrefillTokens,
                            prefillSeconds: prefillSeconds,
                            newTokens: generated,
                            decodeSeconds: Date().timeIntervalSince(decodeStart),

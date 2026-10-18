@@ -58,7 +58,7 @@ internal enum PrefillProjectionDispatchPolicy {
     }
 }
 
-public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, @unchecked Sendable {
+public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRunner, ContextWindowReporting, @unchecked Sendable {
     private struct LayerSharedExpertProjections {
         let gate: SharedExpertInt8Proj
         let up: SharedExpertInt8Proj
@@ -311,40 +311,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
 
     public func reset() {
         kv?.reset()
-        resetTransientState()
-    }
-
-    /// Abandons the newest KV tokens so a stateful conversation can resume at
-    /// an earlier visible boundary.
-    public func rewind(to position: Int) throws {
-        guard let kv else {
-            throw PrefillError.prefillCursorMismatch(
-                "rewind requires an initialized KV cache")
-        }
-        guard position > 0, position <= kv.position,
-              kv.highWaterPosition - position <= kv.maxRewindTokens else {
-            throw PrefillError.prefillCursorMismatch(
-                "cannot rewind KV from \(kv.position) to \(position); "
-                    + "high water \(kv.highWaterPosition), "
-                    + "ring slack \(kv.maxRewindTokens)")
-        }
-        kv.rewind(to: position)
-        resetTransientState()
-    }
-
-    public var continuationPosition: Int {
-        kv?.position ?? 0
-    }
-
-    public func prepareForContinuation(expectedPosition: Int) throws {
-        guard let kv else {
-            throw PrefillError.prefillCursorMismatch(
-                "continuation requires an initialized KV cache")
-        }
-        guard expectedPosition > 0, kv.position == expectedPosition else {
-            throw PrefillError.prefillCursorMismatch(
-                "continuation expected KV position \(expectedPosition), current \(kv.position)")
-        }
         resetTransientState()
     }
 

@@ -21,48 +21,6 @@ extension PreadExpertStreamerTests {
     }
   }
 
-  @Test func adviseExpertsDoesNotChangeLoadedBytes() throws {
-    let url = try Self.writeSyntheticLayer()
-    defer { try? FileManager.default.removeItem(at: url) }
-    let device = try MetalContext().device
-    let streamer = try PreadExpertStreamer(
-      layout: Self.makeLayout(path: url.path), device: device, slotCount: 4)
-    let experts = [0, 2, 3]
-
-    let advice = streamer.adviseExperts(experts: experts)
-    #expect(advice.requested == experts.count)
-    #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
-      #expect(advice.failed == 0)
-    #else
-      #expect(advice.failed == experts.count)
-    #endif
-
-    let results = try streamer.loadExpertsCached(experts: experts)
-    for (index, result) in results.enumerated() {
-      let got = Self.bytes(of: result.buffer, offset: 0, count: Self.expertStride)
-      #expect(got.allSatisfy { $0 == Self.tagByte(experts[index]) })
-    }
-  }
-
-  @Test func adviseExpertMissesSkipsResidentSlots() throws {
-    let url = try Self.writeSyntheticLayer()
-    defer { try? FileManager.default.removeItem(at: url) }
-    let device = try MetalContext().device
-    let streamer = try PreadExpertStreamer(
-      layout: Self.makeLayout(path: url.path), device: device, slotCount: 4)
-
-    _ = try streamer.loadExpertsCached(experts: [0])
-    let advice = streamer.adviseExpertMisses(experts: [0, 1, 2])
-
-    #expect(advice.requested == 2)
-    #expect(advice.calls == 1)
-    #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
-      #expect(advice.failed == 0)
-    #else
-      #expect(advice.failed == 1)
-    #endif
-  }
-
   @Test func plannedCacheLoadExecutesSameMisses() throws {
     let url = try Self.writeSyntheticLayer()
     defer { try? FileManager.default.removeItem(at: url) }
