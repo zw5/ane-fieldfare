@@ -44,8 +44,6 @@ public enum GFTokenizerError: Error, CustomStringConvertible {
 /// user content is accepted as a trusted-input research-runtime limitation.
 public struct GFTokenizer: @unchecked Sendable {
     public static let modelID = "google/gemma-4-26B-A4B-it"
-    public static let chatTemplateIdentity = "gemma4-it-text-no-tools-v1"
-    public static let toolChatTemplateIdentity = "gemma4-it-tools-jinja-v1"
 
     public let bosID: Int32
     public let eosID: Int32
@@ -271,55 +269,13 @@ public struct GFTokenizer: @unchecked Sendable {
     // MARK: - Chat template
 
     public enum Role: String, Sendable { case system, developer, user, assistant, tool }
-    public struct HistoricalToolCall: Sendable, Equatable {
-        public let id: String
-        public let name: String
-        public let arguments: JSONValue
-
-        public init(id: String, name: String, arguments: JSONValue) {
-            self.id = id
-            self.name = name
-            self.arguments = arguments
-        }
-    }
-
-    public struct FunctionDefinition: Sendable, Equatable {
-        public let name: String
-        public let description: String
-        public let parameters: JSONValue
-
-        public init(name: String, description: String, parameters: JSONValue) {
-            self.name = name
-            self.description = description
-            self.parameters = parameters
-        }
-    }
-
     public struct Message: Sendable, Equatable {
         public let role: Role
         public let content: String?
-        public let toolCalls: [HistoricalToolCall]
-        public let toolCallID: String?
-        public let name: String?
 
-        public init(role: Role, content: String) {
+        public init(role: Role, content: String?) {
             self.role = role
             self.content = content
-            self.toolCalls = []
-            self.toolCallID = nil
-            self.name = nil
-        }
-
-        public init(role: Role,
-                    content: String?,
-                    toolCalls: [HistoricalToolCall] = [],
-                    toolCallID: String? = nil,
-                    name: String? = nil) {
-            self.role = role
-            self.content = content
-            self.toolCalls = toolCalls
-            self.toolCallID = toolCallID
-            self.name = name
         }
     }
 
@@ -347,41 +303,14 @@ public struct GFTokenizer: @unchecked Sendable {
         return s
     }
 
-    public func encodeToolChat(messages: [Message],
-                               tools: [FunctionDefinition]) throws -> [Int32] {
+    /// Renders through the checkpoint's bundled `chat_template.jinja`, which
+    /// the text-only template above does not cover: developer and tool roles.
+    public func encodeToolChat(messages: [Message]) throws -> [Int32] {
         guard tokenizer.hasChatTemplate else {
             throw GFTokenizerError.missingToolTemplate
         }
-        let upstreamMessages: [Tokenizers.Message] = try messages.map { message in
-            var value: Tokenizers.Message = [
-                "role": message.role.rawValue,
-                "content": message.content,
-            ]
-            if !message.toolCalls.isEmpty {
-                value["tool_calls"] = try message.toolCalls.map { call -> [String: any Sendable] in
-                    [
-                        "id": call.id,
-                        "type": "function",
-                        "function": [
-                            "name": call.name,
-                            "arguments": try call.arguments.jinjaSendableValue(),
-                        ] as [String: any Sendable],
-                    ]
-                }
-            }
-            if let toolCallID = message.toolCallID { value["tool_call_id"] = toolCallID }
-            if let name = message.name { value["name"] = name }
-            return value
-        }
-        let upstreamTools: [ToolSpec] = try tools.map { tool in
-            [
-                "type": "function",
-                "function": [
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": try tool.parameters.jinjaSendableValue(),
-                ] as [String: any Sendable],
-            ]
+        let upstreamMessages: [Tokenizers.Message] = messages.map { message in
+            ["role": message.role.rawValue, "content": message.content]
         }
         return try tokenizer.applyChatTemplate(
             messages: upstreamMessages,
@@ -389,161 +318,9 @@ public struct GFTokenizer: @unchecked Sendable {
             addGenerationPrompt: true,
             truncation: false,
             maxLength: nil,
-            tools: upstreamTools,
+            tools: [ToolSpec](),
             additionalContext: ["enable_thinking": false]
         ).map(Int32.init)
-    }
-
-    public func encodeTextContinuation(userContent: String) -> [Int32] {
-        let content = userContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        return [endOfTurnID] + encode(
-            "\n\(Self.turnOpen)user\n\(content)\(Self.turnClose)\n"
-                + "\(Self.turnOpen)model\n<|channel>thought\n<channel|>",
-            addBOS: false)
-    }
-
-    /// A user turn carrying images, encoded as a continuation onto an existing
-    /// KV prefix. Mirrors `encodeTextContinuation` exactly and then expands each
-    /// image marker the way `MultimodalPromptRenderer` does, so the result is
-    /// the same tokens a full render of that turn would produce. Token counts
-    /// come from image geometry, so no image has to be encoded to build this.
-    /// `openingConversation` builds the turn as the *first* turn of a
-    /// conversation instead of a continuation: the chat template's opening,
-    /// including `<bos>`, rather than a continuation's leading end-of-turn.
-    /// Without it a fresh conversation's first image turn started with a
-    /// dangling end-of-turn and no BOS, which this model is sensitive to.
-    public func encodeMultimodalUserContinuation(
-        textAndImages: [MultimodalContinuationPart],
-        imageTokenCounts: [Int],
-        openingConversation: Bool = false
-    ) throws -> MultimodalContinuationTokens {
-        var text = ""
-        var expected = 0
-        for part in textAndImages {
-            switch part {
-            case .text(let value):
-                guard !value.contains(MultimodalPromptRenderer.placeholder) else {
-                    throw MultimodalPromptRendererError.reservedImageMarker
-                }
-                text += value
-            case .image:
-                text += MultimodalPromptRenderer.placeholder
-                expected += 1
-            }
-        }
-        guard expected == imageTokenCounts.count, expected > 0 else {
-            throw MultimodalPromptRendererError.placeholderMismatch
-        }
-        guard text.components(
-            separatedBy: MultimodalPromptRenderer.placeholder).count - 1 == expected else {
-            throw MultimodalPromptRendererError.reservedImageMarker
-        }
-        let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let template: [Int32]
-        if openingConversation {
-            // The same rendering the text path uses for an empty KV, so the
-            // first turn of a conversation is identical whether or not it
-            // carries an image.
-            template = encode(
-                try applyChatTemplate([Message(role: .user, content: content)]),
-                addBOS: false)
-        } else {
-            template = [endOfTurnID] + encode(
-                "\n\(Self.turnOpen)user\n\(content)\(Self.turnClose)\n"
-                    + "\(Self.turnOpen)model\n<|channel>thought\n<channel|>",
-                addBOS: false)
-        }
-        // Count the placeholders the tokenizer actually produced before indexing
-        // anything by them. The per-part marker check above cannot see a marker
-        // split across two text parts, which concatenation would reassemble into
-        // a real image token and leave more placeholders than counts.
-        let placeholders = template.reduce(into: 0) {
-            if $1 == MultimodalPromptRenderer.imageTokenID { $0 += 1 }
-        }
-        guard placeholders == imageTokenCounts.count else {
-            throw MultimodalPromptRendererError.placeholderMismatch
-        }
-
-        var effective: [Int32] = []
-        var embedding: [Int32] = []
-        var ranges: [Range<Int>] = []
-        var index = 0
-        for token in template {
-            guard token == MultimodalPromptRenderer.imageTokenID else {
-                effective.append(token)
-                embedding.append(token)
-                continue
-            }
-            let count = imageTokenCounts[index]
-            effective.append(MultimodalPromptRenderer.beginImageTokenID)
-            embedding.append(MultimodalPromptRenderer.beginImageTokenID)
-            let lower = effective.count
-            effective.append(contentsOf: repeatElement(
-                MultimodalPromptRenderer.imageTokenID, count: count))
-            embedding.append(contentsOf: repeatElement(Int32(0), count: count))
-            ranges.append(lower..<effective.count)
-            effective.append(MultimodalPromptRenderer.endImageTokenID)
-            embedding.append(MultimodalPromptRenderer.endImageTokenID)
-            index += 1
-        }
-        guard index == imageTokenCounts.count else {
-            throw MultimodalPromptRendererError.placeholderMismatch
-        }
-        return MultimodalContinuationTokens(
-            effectiveTokenIDs: effective,
-            embeddingTokenIDs: embedding,
-            imageTokenRanges: ranges)
-    }
-
-    public func encodeToolResultContinuation(
-        cachedMessages: [Message],
-        assistant: Message,
-        incomingMessages: [Message],
-        tools: [FunctionDefinition]
-    ) throws -> [Int32] {
-        let prefix = try encodeToolChat(
-            messages: cachedMessages + [assistant],
-            tools: tools)
-        let full = try encodeToolChat(messages: incomingMessages, tools: tools)
-        let callCount = assistant.toolCalls.count
-        let starts = prefix.indices.filter { prefix[$0] == toolCallStartID }
-        guard callCount > 0, starts.count >= callCount,
-              let callEnd = prefix.lastIndex(of: toolCallEndID) else {
-            throw GFTokenizerError.invalidChatTemplate(
-                "cached assistant tool-call boundary is missing")
-        }
-        let callStart = starts[starts.count - callCount]
-        let callSequence = Array(prefix[callStart...callEnd])
-        // A verbatim-repeated call renders an identical token sequence, so
-        // requiring a unique match dropped the cache for the rest of the
-        // conversation. The boundary is positional whenever both renders agree
-        // through the call block; otherwise only a unique match is trusted.
-        let suffixStart: Int
-        if full.count > callEnd, full[...callEnd] == prefix[...callEnd] {
-            suffixStart = callEnd + 1
-        } else {
-            let matches = full.subsequenceStartIndices(matching: callSequence)
-            guard matches.count == 1 else {
-                throw GFTokenizerError.invalidChatTemplate(
-                    "cached assistant tool-call boundary is ambiguous")
-            }
-            suffixStart = matches[0] + callSequence.count
-        }
-        let suffix = Array(full[suffixStart...])
-        guard suffix.first == toolResponseID else {
-            throw GFTokenizerError.invalidChatTemplate(
-                "tool-result continuation does not begin at the KV boundary")
-        }
-        return suffix
-    }
-}
-
-private extension Array where Element: Equatable {
-    func subsequenceStartIndices(matching needle: [Element]) -> [Int] {
-        guard !needle.isEmpty, needle.count <= count else { return [] }
-        return indices.dropLast(needle.count - 1).filter { start in
-            self[start..<(start + needle.count)].elementsEqual(needle)
-        }
     }
 }
 

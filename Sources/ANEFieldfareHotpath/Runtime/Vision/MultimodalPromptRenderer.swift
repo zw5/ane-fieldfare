@@ -5,37 +5,13 @@ public enum MultimodalContentPart: Sendable, Equatable {
     case image(id: UUID)
 }
 
-/// A continuation turn's content, before image token counts are known.
-public enum MultimodalContinuationPart: Sendable, Equatable {
-    case text(String)
-    case image
-}
-
-/// Tokens for a continuation turn. Ranges are relative to this turn, which is
-/// also the suffix handed to the runner, so they need no rebasing.
-public struct MultimodalContinuationTokens: Sendable, Equatable {
-    public let effectiveTokenIDs: [Int32]
-    public let embeddingTokenIDs: [Int32]
-    public let imageTokenRanges: [Range<Int>]
-}
-
 public struct MultimodalMessage: Sendable, Equatable {
     public let role: GFTokenizer.Role
     public let content: [MultimodalContentPart]
-    public let toolCalls: [GFTokenizer.HistoricalToolCall]
-    public let toolCallID: String?
-    public let name: String?
 
-    public init(role: GFTokenizer.Role,
-                content: [MultimodalContentPart],
-                toolCalls: [GFTokenizer.HistoricalToolCall] = [],
-                toolCallID: String? = nil,
-                name: String? = nil) {
+    public init(role: GFTokenizer.Role, content: [MultimodalContentPart]) {
         self.role = role
         self.content = content
-        self.toolCalls = toolCalls
-        self.toolCallID = toolCallID
-        self.name = name
     }
 }
 
@@ -57,13 +33,12 @@ public enum MultimodalPromptRenderer {
     public static func render(
         messages: [MultimodalMessage],
         featuresByID: [UUID: VisionFeatures],
-        tokenizer: GFTokenizer,
-        tools: [GFTokenizer.FunctionDefinition] = []
+        tokenizer: GFTokenizer
     ) throws -> MultimodalPrefillInput {
         guard !messages.isEmpty else { throw MultimodalPromptRendererError.emptyMessages }
         var orderedImages: [(UUID, VisionFeatures)] = []
         let tokenizerMessages = try messages.map { message in
-            guard !message.content.isEmpty || !message.toolCalls.isEmpty else {
+            guard !message.content.isEmpty else {
                 throw MultimodalPromptRendererError.emptyContent
             }
             var text = ""
@@ -82,12 +57,7 @@ public enum MultimodalPromptRenderer {
                     orderedImages.append((id, features))
                 }
             }
-            return GFTokenizer.Message(
-                role: message.role,
-                content: text,
-                toolCalls: message.toolCalls,
-                toolCallID: message.toolCallID,
-                name: message.name)
+            return GFTokenizer.Message(role: message.role, content: text)
         }
         guard Set(orderedImages.map(\.0)) == Set(featuresByID.keys) else {
             let used = Set(orderedImages.map(\.0))
@@ -95,14 +65,12 @@ public enum MultimodalPromptRenderer {
                 featuresByID.keys.first { !used.contains($0) }!)
         }
 
-        let usesToolTemplate = !tools.isEmpty || tokenizerMessages.contains {
-            $0.role == .developer || $0.role == .tool || !$0.toolCalls.isEmpty
+        let usesToolTemplate = tokenizerMessages.contains {
+            $0.role == .developer || $0.role == .tool
         }
         let templateTokens: [Int32]
         if usesToolTemplate {
-            templateTokens = try tokenizer.encodeToolChat(
-                messages: tokenizerMessages,
-                tools: tools)
+            templateTokens = try tokenizer.encodeToolChat(messages: tokenizerMessages)
         } else {
             let rendered = try tokenizer.applyChatTemplate(tokenizerMessages)
             templateTokens = tokenizer.encode(rendered, addBOS: false)

@@ -27,8 +27,8 @@ import Tokenizers
 /// and text held back across one would surface after the marker and be routed
 /// under the wrong channel state (thought text leaking into the visible
 /// answer). A barrier commits the run and returns its text as the marker's own
-/// delta, which `StructuredAssistantDecoder.consume` routes under the channel
-/// in effect before the marker switches it. Plain `decode` passes no barriers,
+/// delta, so a caller can route it under the channel in effect before the
+/// marker switches it. Plain `decode` passes no barriers,
 /// keeping full library parity.
 ///
 /// Cost is O(1) per token and independent of how much has already been
