@@ -341,6 +341,7 @@ final class PrefillGroupedRoutedMoE {
     private let batchedDownPSO: MTLComputePipelineState
     private let streamedArgEncoder: MTLArgumentEncoder
     private let reusableStreamedArgumentBuffers: [MTLBuffer]
+    static let streamedArgumentBufferCount = 8
     private let reusableSortedPairsBuffer: MTLBuffer
 
     func makeStreamedArgumentBuffer(device: MTLDevice,
@@ -367,7 +368,9 @@ final class PrefillGroupedRoutedMoE {
         self.streamedArgEncoder = streamedFn.makeArgumentEncoder(
             bufferIndex: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
         var argumentBuffers: [MTLBuffer] = []
-        for index in 0..<2 {
+        // Two alternate for drained prefill tiles; verify commits up to eight
+        // tiles of one layer before waiting, each with its own buffer.
+        for index in 0..<Self.streamedArgumentBufferCount {
             guard let buffer = context.device.makeBuffer(
                 length: streamedArgEncoder.encodedLength,
                 options: .storageModeShared) else {

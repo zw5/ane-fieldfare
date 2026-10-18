@@ -1087,17 +1087,36 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         .filter { $0.weight != 0 }
                     prefillUnionExpertsAfterCap &+= UInt64(Set(pairs.map(\.expert)).count)
                     let schedulerConfig = Self.prefillRoutedTileSchedulerConfig
+                    // Verify: when the whole union fits the cache, plan it once
+                    // and order tiles hits-first, so hit tiles run while every
+                    // miss reads concurrently.
+                    let unionExperts = Array(Set(pairs.map { Int($0.expert) })).sorted()
+                    var verifyPlan: RoutedExpertFetchPlan?
+                    if verifyTokens != nil,
+                       let slots = model.routedExpertCacheSlotCount(layer: L),
+                       unionExperts.count <= slots,
+                       (unionExperts.count + 15) / 16 <= PrefillGroupedRoutedMoE.streamedArgumentBufferCount {
+                        verifyPlan = try model.planRoutedExpertsIfPossible(layer: L, experts: unionExperts)
+                    }
+                    var expertSortKeys = model.routedExpertPhysicalOffsets(layer: L)
+                    if let verifyPlan {
+                        let missSet = Set(verifyPlan.misses.map { verifyPlan.experts[$0] })
+                        for e in expertSortKeys.indices { expertSortKeys[e] = missSet.contains(e) ? 1 : 0 }
+                        prefillTileHits &+= UInt64(verifyPlan.hits)
+                        prefillTileMisses &+= UInt64(verifyPlan.misses.count)
+                    }
                     // A tile never needs more experts than the routed cache has
                     // slots; its scheduler drains before reusing one.
-                    let routeTileExpertCount = model.routedExpertCacheSlotCount(layer: L)
-                        .map { min(schedulerConfig.tileExperts, $0) } ?? schedulerConfig.tileExperts
+                    let routeTileExpertCount = verifyPlan != nil ? 16
+                        : model.routedExpertCacheSlotCount(layer: L)
+                            .map { min(schedulerConfig.tileExperts, $0) } ?? schedulerConfig.tileExperts
                     let routes = try PrefillMoEGrouping.groupTokenExpertPairs(
                         pairs,
                         queryCount: t,
                         topK: cfg.topKExperts,
                         numExperts: cfg.numExperts,
                         tileExpertCount: routeTileExpertCount,
-                        expertSortKeys: model.routedExpertPhysicalOffsets(layer: L))
+                        expertSortKeys: expertSortKeys)
 
                     guard let sharedCB = ctx.queue.makeCommandBuffer() else {
                         throw ModelError.residentBufferWrapFailed
@@ -1183,7 +1202,56 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             clearCB.commit()
                         }
                     }
-                    if routedOnHost {
+                    var verifyTileCBs: [MTLCommandBuffer] = []
+                    if routedOnHost, let verifyPlan {
+                        let missExperts = Set(verifyPlan.misses.map { verifyPlan.experts[$0] })
+                        let fetchStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                        let reads = verifyPlan.misses.isEmpty ? nil : Task {
+                            try await model.fetchRoutedExperts(plan: verifyPlan)
+                        }
+                        var views = Dictionary(uniqueKeysWithValues: zip(
+                            verifyPlan.experts, try model.routedExpertBuffers(for: verifyPlan)))
+                        var readsDone = reads == nil
+                        for (tileIndex, tile) in routes.tiles.enumerated() {
+                            let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: tileIndex, routes: routes)
+                            if !readsDone, expertIDs.contains(where: missExperts.contains), let reads {
+                                let fetched = try await reads.value
+                                views = Dictionary(uniqueKeysWithValues: zip(verifyPlan.experts, fetched))
+                                readsDone = true
+                                prefillTileFetchNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - fetchStart
+                            }
+                            let binding = try PrefillStreamedTileBinding(
+                                expertIDs: expertIDs, views: expertIDs.map { views[$0]! })
+                            let argumentBuffer = try prefillGroupedMoE.makeStreamedArgumentBuffer(
+                                device: ctx.device, binding: binding, reuseSlot: tileIndex)
+                            guard let tileCB = ctx.queue.makeCommandBuffer() else {
+                                throw ModelError.residentBufferWrapFailed
+                            }
+                            tileCB.label = "verify start=\(startPosition) layer=\(L) phase=routed_tile"
+                            _ = prefillGroupedMoE.encodeStreamedBatched(
+                                commandBuffer: tileCB,
+                                hidden: scratch.routedX,
+                                sortedPairs: metadata.sortedPairs,
+                                routePartials: scratch.routePartials,
+                                gateUpActScratch: scratch.routedGateUpActScratch,
+                                downScratch: scratch.routedDownScratch,
+                                argumentBuffer: argumentBuffer,
+                                binding: binding,
+                                params: PrefillGroupedRoutedMoEStreamedParams(
+                                    pairStart: tile.pairStart,
+                                    pairCount: tile.pairCount,
+                                    d: UInt32(D),
+                                    routedIntermediate: UInt32(cfg.moeIntermediateSize),
+                                    topK: UInt32(cfg.topKExperts),
+                                    hiddenStrideElements: UInt32(D),
+                                    binding: binding,
+                                    offsets: routedOffsets),
+                                pairMicrobatchRows: scratch.layout.routedPairMicrobatchRows)
+                            tileCB.commit()
+                            verifyTileCBs.append(tileCB)
+                        }
+                        if !readsDone, let reads { _ = try await reads.value }
+                    } else if routedOnHost {
                     for (tileIndex, tile) in routes.tiles.enumerated() {
                         let expertIDs = try PrefillStreamedTileBinding.expertIDs(
                             forTile: tileIndex,
@@ -1308,6 +1376,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     }
                     prefillRoutedWallNanos &+=
                         clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - routedWallStart
+                    defer {
+                        for tileCB in verifyTileCBs {
+                            prefillRoutedGPUNanos &+= UInt64(max(0, tileCB.gpuEndTime - tileCB.gpuStartTime) * 1e9)
+                        }
+                    }
                     guard let tailCB = ctx.queue.makeCommandBuffer() else {
                         throw ModelError.residentBufferWrapFailed
                     }
@@ -1348,6 +1421,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     try withExtendedLifetime(metadata) {
                         try waitForCompletion(tailCB)
                     }
+                    for tileCB in verifyTileCBs { try checkCommandBufferError(tileCB) }
                     prefillSharedGPUNanos += UInt64(max(0, sharedCB.gpuEndTime - sharedCB.gpuStartTime) * 1e9)
                     try checkCommandBufferError(sharedCB)
                     if L + 1 < cfg.numLayers {
