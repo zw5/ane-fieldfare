@@ -146,6 +146,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private let prefillAttentionPath: RuntimePrefillAttentionPath
     private let activeRoutedExperts: Int
     public let prefillExpertUnionCap: Int?
+    /// Set to record selected layer outputs and every layer's routes during
+    /// chunked prefill.
+    public var prefillCapture: PrefillCapture?
     public convenience init(model: Model, context: MetalContext, maxContext: Int,
                 runtimeConfiguration: RuntimeConfiguration = .production) throws {
         try self.init(model: model, context: context, maxContext: maxContext,
@@ -756,6 +759,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             outScale: sqrtHidden)
         }
 
+        let capture = prefillCapture
+        try capture?.prepare(device: ctx.device, chunkTokens: scratch.layout.chunkTokens,
+                             hiddenSize: D, numLayers: cfg.numLayers)
+
         for L in 0..<cfg.numLayers {
             model.beginOpeningRoutedExpertStreamer(layer: L)
             let views = layerViews[L]
@@ -943,6 +950,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         routeWeights.append(weightPtr[i])
                         recordExactRoute(expert: routeIDs[i], weight: routeWeights[i])
                     }
+                    capture?.routes[L] = routeIDs
                     let uncappedUnion = Set(routeIDs)
                     prefillUnionExpertsBeforeCap &+= UInt64(uncappedUnion.count)
                     prefillUnionLayerTiles &+= 1
@@ -1231,6 +1239,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                             hiddenStrideElements: UInt32(D),
                                             eps: eps,
                                             layerScalar: Quantization.bf16ToFloat(scalarBits))
+                    if let capture, let slot = capture.hiddenLayers.firstIndex(of: L),
+                       let blit = tailCB.makeBlitCommandEncoder() {
+                        let rowBytes = D * MemoryLayout<Float16>.stride
+                        blit.copy(from: scratch.hidden, sourceOffset: 0, to: capture.buffer!,
+                                  destinationOffset: slot * scratch.layout.chunkTokens * rowBytes,
+                                  size: t * rowBytes)
+                        blit.endEncoding()
+                    }
                     tailCB.commit()
                     try withExtendedLifetime(metadata) {
                         try waitForCompletion(tailCB)
@@ -1296,6 +1312,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             if outputMode == .greedyIfAvailable, useFusedGreedyHead {
                 lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
             }
+        }
+
+        if let capture, let buffer = capture.buffer {
+            // Compact the per-layer slots to `[layers][t][D]` for the consumer.
+            let base = buffer.contents().assumingMemoryBound(to: Float16.self)
+            let slotElements = scratch.layout.chunkTokens * D
+            for slot in capture.hiddenLayers.indices where slot > 0 {
+                memmove(base + slot * t * D, base + slot * slotElements, t * D * MemoryLayout<Float16>.stride)
+            }
+            try capture.onChunk(PrefillCaptureChunk(
+                startPosition: startPosition, tokenCount: t,
+                hidden: UnsafeBufferPointer(start: base, count: capture.hiddenLayers.count * t * D),
+                routes: capture.routes))
         }
 
         kv.advance(by: tokens.count)
