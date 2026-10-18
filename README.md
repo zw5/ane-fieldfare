@@ -51,7 +51,7 @@ to use a checkpoint outside the default location.
 
 | Option | Meaning |
 | --- | --- |
-| `--backend metal` | Everything on Metal. This is the numerical reference and the default. |
+| `--backend metal` | Everything on Metal. This is the default. |
 | `--backend hybrid-ane` | Routed top-8 experts on the ANE during prefill, all 30 layers. Requires exact top-8 routing and no expert cap. |
 | `--fault-policy fail-closed` | A guest fault aborts the request. This is the default. |
 | `--fault-policy failover-metal` | A guest fault evicts that guest. The layer, and every later one, re-executes on Metal. |
@@ -103,6 +103,14 @@ section with the placement, the fault policy, evictions and every recorded
 fault. It also includes a claim boundary that states whether the output mixes
 ANE and Metal arithmetic.
 
+### Performance controls
+
+| Variable | Effect |
+| --- | --- |
+| `ANE_FIELDFARE_PREFILL_SHARED_GEMM=0` | Restore the per-token shared-FFN GEMV order of the original numerical reference. By default the shared FFN runs as batched INT4 tensor-op GEMMs. |
+| `ANE_FIELDFARE_ANE_FETCH_LOOKAHEAD=n` | Expert groups read concurrently during ANE prefill (default 4; 1 = sequential). |
+| `ANE_FIELDFARE_TIMELINE=<path>` | Write a JSON interval trace of disk reads, GPU command buffers and ANE evaluations. |
+
 ### Experiment placements
 
 These variables select the experimental rails. Invalid values fail closed at
@@ -118,7 +126,7 @@ startup.
 
 The supervisor is held to these oracles:
 
-- **Regression parity.** After the refactor, `metal` and `hybrid-ane`
+- **Regression parity.** With `ANE_FIELDFARE_PREFILL_SHARED_GEMM=0`, `metal` and `hybrid-ane`
   reproduce their stored pre-refactor logits exactly: 17 × 262,144 FP16 values
   each, on a 3,015-token prompt plus 16 fixed continuation tokens. The hybrid run
   executed 4,407 ANE evaluations across 30 layers, from 1 compile and 1 load.
@@ -136,14 +144,35 @@ The supervisor is held to these oracles:
 Not yet covered: failover of the AOT decode rail, which needs compiled AOT
 artifacts.
 
+### Prefill optimizations
+
+The work was guided by `ANE_FIELDFARE_TIMELINE` traces of the 3,015-token prompt. These are
+single screening runs of prefill wall time on an M5, not the protocol below:
+
+| Change | `hybrid-ane` prefill | `metal` prefill | Numerics |
+| --- | ---: | ---: | --- |
+| Before | 22.2 s | 24.0 s | — |
+| ANE carrier on its own command queue. The ANE no longer idles while the shared FFN occupies the host queue. | 19.5 s | — | Bit-exact |
+| Batched shared FFN, 3 tensor-op GEMMs replacing 1,024 per-token GEMVs. Shared FFN goes from 7.1 s to 0.83 s. | 16.9 s | 18.7 s | Same FP32-reference error as the GEMV (relative L2 ≈ 3–4e-4); end-to-end mean KL 0.015 (metal) and 0.003 (hybrid); greedy 17/17 |
+| Concurrent expert-read lookahead of 4. SSD throughput: 4.7 GB/s at queue depth 1, 6.7 GB/s at depth 2. | 16.2 s | — | Bit-exact |
+
+The traces show where prefill time still goes on the hybrid path, in order of
+expected payoff:
+- **Disk.** About 32 GB of expert reads per prompt. Each 1,024-token chunk
+  re-reads most experts; a layer-major chunk order would read each expert once
+  per layer.
+- **Pre-router GPU work** (attention, QKV), 4.2 s, all on the critical path.
+- **Weight expansion**, about 35% redundant. An expert split across several
+  64-row jobs is expanded once per job.
+- **ANE row utilization**, 64%.
+
 ### Measured performance
 
-The table compares unmodified Turbo Fieldfare `4c6db1e`, this repo's Metal backend, and the
+The table below predates the optimizations above. It compares unmodified Turbo Fieldfare `4c6db1e`, this repo's Metal backend, and the
 ANE hybrid. Setup: M5 with 16 GiB, Swift 6.4, temperature 0.2, top-k 64,
 top-p 0.95, a 4,096-token context, and a 1,024-token output cap. Each value is
 the mean of two measured runs after warmups, with backend order reversed between
-passes. These results predate the supervisor refactor. The refactor keeps
-outputs bit-identical, but timing was not re-measured.
+passes. These results also predate the supervisor refactor.
 
 | Prompt tokens | Turbo Fieldfare | Metal | ANE hybrid |
 | ---: | ---: | ---: | ---: |

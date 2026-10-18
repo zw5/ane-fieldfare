@@ -221,7 +221,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     let supervisor: DeviceSupervisor
     public var aneRoutedPrefillProfile: [String: Any] { supervisor.routedPrefillProfile }
     public var aneSharedFFNProfile: [String: Any] { supervisor.sharedFFNProfile }
-    public var supervisorProfile: [String: Any] { supervisor.profile }
+    public var supervisorProfile: [String: Any] {
+        ExecutionTimeline.shared?.write()
+        return supervisor.profile
+    }
 
     private static let rdadviseBoundedMissCap = 12
     private static let rdadviseBoundedMaxCallNanos: UInt64 = 250_000
@@ -348,7 +351,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.prefillRouter = try PrefillRouter(context: context)
         self.prefillSharedExpert = try PrefillSharedExpert(
             context: context,
-            weightBits: model.sharedExpertWeightBits)
+            weightBits: model.sharedExpertWeightBits,
+            // Batched tensor-op GEMM by default; "0" restores the per-token
+            // GEMV accumulation order of the original numerical reference.
+            batched: ProcessInfo.processInfo.environment["ANE_FIELDFARE_PREFILL_SHARED_GEMM"] != "0")
         self.prefillGroupedMoE = try PrefillGroupedRoutedMoE(context: context)
         self.prefillMoE = try PrefillMoE(context: context)
         self.prefillLayerTail = try PrefillLayerTail(context: context)
@@ -1346,8 +1352,20 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
 
                     var anePrefill = supervisor.sharedFFN(layer: L, prefill: true)
                     try anePrefill?.encodeInput(cb, source: scratch.denseX, rows: t)
+                    // Clear routed partials here, in a command buffer the host
+                    // completes, so routed guests on other queues never race it.
+                    if let blit = cb.makeBlitCommandEncoder() {
+                        blit.fill(buffer: scratch.routePartials,
+                                  range: 0..<scratch.routePartials.length,
+                                  value: 0)
+                        blit.endEncoding()
+                    }
+                    ExecutionTimeline.shared?.track(cb, "pre-router")
                     cb.commit()
+                    let preRouterSubmitted = ExecutionTimeline.now()
                     try waitForCompletion(cb)
+                    ExecutionTimeline.shared?.record("host", "wait-pre-router", start: preRouterSubmitted, end: ExecutionTimeline.now())
+                    let routePlanStart = ExecutionTimeline.now()
                     prefillPreRouterGPUNanos += UInt64(max(0, cb.gpuEndTime - cb.gpuStartTime) * 1e9)
                     if let guest = anePrefill,
                        !(try await supervisor.supervise(.sharedFFNPrefill, layer: L, { try guest.begin() })) {
@@ -1460,12 +1478,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     }
                     sharedCB.label =
                         "prefill start=\(startPosition) count=\(t) layer=\(L) phase=shared_expert"
-                    if let blit = sharedCB.makeBlitCommandEncoder() {
-                        blit.fill(buffer: scratch.routePartials,
-                                  range: 0..<scratch.routePartials.length,
-                                  value: 0)
-                        blit.endEncoding()
-                    }
                     let sharedProj = sharedExpertProjections[L]
                     func encodeMetalSharedExpert(_ commandBuffer: MTLCommandBuffer) throws {
                     try prefillSharedExpert.encodeBlock(commandBuffer: commandBuffer,
@@ -1494,6 +1506,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     if anePrefill == nil {
                         try encodeMetalSharedExpert(sharedCB)
                     }
+                    ExecutionTimeline.shared?.track(sharedCB, "shared")
                     sharedCB.commit()
                     // Do not block here. Expert planning and pread are host
                     // work and can overlap the independent shared FFN. All
@@ -1524,6 +1537,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         }
                     }
 
+                    ExecutionTimeline.shared?.record("host", "route-plan", start: routePlanStart, end: ExecutionTimeline.now())
                     let routedWallStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                     let routedTileScheduler = PrefillRoutedTileScheduler(config: schedulerConfig)
                     var routedOnHost = true
@@ -1712,6 +1726,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             binding: fetch.binding,
                             params: streamedParams,
                             pairMicrobatchRows: scratch.layout.routedPairMicrobatchRows)
+                        ExecutionTimeline.shared?.track(tileCB, "metal-routed")
                         tileCB.commit()
                         pendingTiles.append(PendingPrefillTile(tileIndex: tileIndex,
                                                                commandBuffer: tileCB,
@@ -1784,10 +1799,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     try capture("layer_hidden", layer: L, buffer: scratch.hidden,
                                 offsetElements: (t - 1) * D, count: D,
                                 commandBuffer: tailCB)
+                    ExecutionTimeline.shared?.track(tailCB, "tail")
+                    let tailSubmitted = ExecutionTimeline.now()
                     tailCB.commit()
                     try withExtendedLifetime(metadata) {
                         try waitForCompletion(tailCB)
                     }
+                    ExecutionTimeline.shared?.record("host", "wait-tail", start: tailSubmitted, end: ExecutionTimeline.now())
                     try anePrefill?.finish()
                     prefillSharedGPUNanos += UInt64(max(0, sharedCB.gpuEndTime - sharedCB.gpuStartTime) * 1e9)
                     try checkCommandBufferError(sharedCB)

@@ -3,6 +3,12 @@ import Foundation
 import Metal
 import IOSurface
 
+/// Expert fetches are internally locked per layer streamer, so concurrent
+/// lookahead reads may share the model value.
+private struct ConcurrentExpertReader: @unchecked Sendable {
+    let model: Model
+}
+
 private final class SubmittedANEInput: @unchecked Sendable {
     let command: MTLCommandBuffer
     init(_ command: MTLCommandBuffer) { self.command = command }
@@ -11,6 +17,8 @@ private final class SubmittedANEInput: @unchecked Sendable {
 final class ANERoutedPrefillBackend: @unchecked Sendable {
     let layerCount: Int
     let batchExperts: Int
+    /// Upcoming expert groups read concurrently; 1 is the sequential fetch.
+    let fetchLookahead: Int
     private let argumentEncoder: MTLArgumentEncoder
     struct Job {
         let view: TensorView
@@ -19,6 +27,11 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
     }
     private let handle: OpaquePointer
     private let context: MetalContext
+    /// Carrier expansion and unpack run on their own queue so they overlap
+    /// the host queue's shared FFN. The host clears `partials` and completes
+    /// the producer of `hidden` before `runLayer`, and reads `partials` only
+    /// after `runLayer` has waited for every consumer.
+    private let carrierQueue: MTLCommandQueue
     private let weightsPipeline: MTLComputePipelineState
     private let inputsPipeline: MTLComputePipelineState
     private let outputsPipeline: MTLComputePipelineState
@@ -97,6 +110,12 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
                 built.append(Bank(input: input, output: output, event: event, arguments: arguments, metadata: metadata, validation: validation))
             }
         } catch { ANEFieldfareANEExpertDispatcherDestroy(handle); throw error }
+        guard let carrierQueue = context.device.makeCommandQueue() else {
+            ANEFieldfareANEExpertDispatcherDestroy(handle); throw ModelError.residentBufferWrapFailed
+        }
+        carrierQueue.label = "ane-fieldfare.routed-prefill.carrier"
+        self.carrierQueue = carrierQueue
+        self.fetchLookahead = max(1, Int(ProcessInfo.processInfo.environment["ANE_FIELDFARE_ANE_FETCH_LOOKAHEAD"] ?? "") ?? 4)
         self.handle = handle; self.banks = built; self.context = context; self.layerCount = layers
     }
 
@@ -111,7 +130,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
             "read_seconds": Double(readNanos) / 1e9, "request_banks": banks.count, "experts_per_request": batchExperts,
             "input_gpu_ms": inputGPUMilliseconds, "consumer_gpu_ms": consumerGPUMilliseconds,
             "carrier_bytes": banks.reduce(0) { $0 + $1.input.length + $1.output.length },
-            "input_scale": 64, "weight_pack_tile": "32x32",
+            "input_scale": 64, "weight_pack_tile": "32x32", "fetch_lookahead": fetchLookahead,
             "claim_boundary": "Routed top-8 prefill on ANE with ordinary runtime-input weights expanded by Metal; no mutable-weight or resident-expert claim."]
     }
 
@@ -159,7 +178,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
             metadata[slot * 2] = UInt32(job?.start ?? 0); metadata[slot * 2 + 1] = UInt32(job?.count ?? 0)
             argumentEncoder.setBuffer(job?.view.buffer, offset: Int(job?.view.offset ?? 0), index: slot)
         }
-        guard let cb = context.queue.makeCommandBuffer(), let enc = cb.makeComputeCommandEncoder() else {
+        guard let cb = carrierQueue.makeCommandBuffer(), let enc = cb.makeComputeCommandEncoder() else {
             throw ModelError.residentBufferWrapFailed
         }
         enc.setComputePipelineState(weightsPipeline)
@@ -177,6 +196,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
         bank.producer = cb; bank.pairs = pairs; bank.rows = jobs.reduce(0) { $0 + $1.count }
+        ExecutionTimeline.shared?.track(cb, "ane-expand")
         cb.commit()
         return cb
     }
@@ -212,7 +232,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
             let message = error.map { String(cString: $0) } ?? "output signal failed"
             free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
         }
-        guard let cb = context.queue.makeCommandBuffer() else { throw ModelError.residentBufferWrapFailed }
+        guard let cb = carrierQueue.makeCommandBuffer() else { throw ModelError.residentBufferWrapFailed }
         cb.encodeWaitForEvent(bank.event, value: bank.generation)
         guard let enc = cb.makeComputeCommandEncoder() else { throw ModelError.residentBufferWrapFailed }
         enc.setComputePipelineState(outputsPipeline)
@@ -223,13 +243,16 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
         bank.busy = true; bank.consumer = cb
+        ExecutionTimeline.shared?.track(cb, "ane-unpack")
         let input = SubmittedANEInput(producer)
         submission.async { [self, bank, input] in
             input.command.waitUntilCompleted()
             var error: UnsafePointer<CChar>?
+            let evaluationStart = ExecutionTimeline.now()
             let valid = input.command.error == nil
                 && bank.validation.contents().load(as: UInt32.self) == 0
                 && ANEFieldfareANEExpertDispatcherEvaluateDeviceCarrier(handle, UInt32(index), &error)
+            ExecutionTimeline.shared?.record("ane", "evaluate", start: evaluationStart, end: ExecutionTimeline.now())
             if !valid {
                 bank.failure = input.command.error.map(String.init(describing:)) ?? error.map { String(cString: $0) } ?? "non-finite ANE input or failed evaluation"
                 bank.event.signaledValue = bank.generation
@@ -277,6 +300,8 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
             }
         }
         func drain() throws {
+            let waitStart = ExecutionTimeline.now()
+            defer { ExecutionTimeline.shared?.record("host", "drain", start: waitStart, end: ExecutionTimeline.now()) }
             let first = pending.removeFirst()
             if !first.committed { first.consumer.commit() }
             try withExtendedLifetime(first.jobs) { try finish(bank: first.bank, consumer: first.consumer) }
@@ -291,25 +316,55 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
             pending.append(Pending(bank: bank, consumer: consumer, jobs: staging))
             staging.removeAll(keepingCapacity: true); ordinal += 1
         }
-        defer { while !pending.isEmpty { try? drain() } }
+        // Ordered lookahead: up to `fetchLookahead` upcoming groups read
+        // concurrently into reserved cache slots, consumed in group order so
+        // request batches are identical to a sequential fetch.
+        struct Fetch {
+            let plan: RoutedExpertFetchPlan
+            let task: Task<[TensorView], Error>
+        }
+        var inflight: [Fetch] = []
+        var nextGroup = 0
+        func reservedSlots() -> Set<Int> {
+            Set(pending.flatMap { $0.jobs.flatMap(\.slots) } + staging.flatMap(\.slots)
+                + inflight.flatMap(\.plan.assignedSlots))
+        }
+        func launch() throws {
+            while inflight.count < fetchLookahead, nextGroup < routes.groups.count {
+                let expert = Int(routes.groups[nextGroup].expert)
+                guard let plan = try model.planRoutedExpertsIfPossible(
+                    layer: layer, experts: [expert], avoidingSlots: reservedSlots()) else { return }
+                let timeline = ExecutionTimeline.shared
+                let reader = ConcurrentExpertReader(model: model)
+                inflight.append(Fetch(plan: plan, task: Task { [reader, plan, timeline] in
+                    let started = ExecutionTimeline.now()
+                    let views = try await reader.model.fetchRoutedExperts(plan: plan)
+                    timeline?.record("disk", plan.misses.isEmpty ? "hit" : "read",
+                                     start: started, end: ExecutionTimeline.now())
+                    return views
+                }))
+                readBytes += UInt64(plan.misses.count) * 3_358_720
+                nextGroup += 1
+            }
+        }
+        defer {
+            for fetch in inflight { fetch.task.cancel() }
+            while !pending.isEmpty { try? drain() }
+        }
         for group in routes.groups {
             try Task.checkCancellation()
-            func planNext() throws -> RoutedExpertFetchPlan? {
-                try model.planRoutedExpertsIfPossible(layer: layer, experts: [Int(group.expert)],
-                    avoidingSlots: Set(pending.flatMap { $0.jobs.flatMap(\.slots) } + staging.flatMap(\.slots)))
-            }
-            var plan = try planNext()
-            while plan == nil, !pending.isEmpty { try drain(); plan = try planNext() }
-            if plan == nil && !staging.isEmpty { try issue(); commitLast(); try drain(); plan = try planNext() }
-            guard let plan else { throw ANEExecutionError.rejected("routed cache cannot place ANE expert") }
+            try launch()
+            while inflight.isEmpty, !pending.isEmpty { try drain(); try launch() }
+            if inflight.isEmpty && !staging.isEmpty { try issue(); commitLast(); try drain(); try launch() }
+            guard !inflight.isEmpty else { throw ANEExecutionError.rejected("routed cache cannot place ANE expert") }
+            let fetch = inflight.removeFirst()
             let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            let views = try await model.fetchRoutedExperts(plan: plan)
+            let views = try await fetch.task.value
             readNanos += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started
-            readBytes += UInt64(plan.misses.count) * 3_358_720
             guard let view = views.first else { throw ModelError.residentBufferWrapFailed }
             for offset in stride(from: 0, to: Int(group.pairCount), by: 64) {
                 staging.append(Job(view: view, start: Int(group.pairStart) + offset,
-                                   count: min(64, Int(group.pairCount) - offset), slots: plan.assignedSlots))
+                                   count: min(64, Int(group.pairCount) - offset), slots: fetch.plan.assignedSlots))
                 if staging.count == batchExperts { try issue() }
             }
         }

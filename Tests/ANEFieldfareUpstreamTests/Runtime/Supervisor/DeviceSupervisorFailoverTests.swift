@@ -5,7 +5,7 @@ import Testing
 @testable import ANEFieldfareHotpath
 
 /// `ANE_FIELDFARE_TEST_CHECKPOINT`, else the repository's install location.
-private let installedCheckpointURL: URL? = {
+let installedCheckpointURL: URL? = {
     let environment = ProcessInfo.processInfo.environment["ANE_FIELDFARE_TEST_CHECKPOINT"]
     let url = environment.map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().appendingPathComponent("../../../../checkpoints/gturbo/gemma4.gturbo")

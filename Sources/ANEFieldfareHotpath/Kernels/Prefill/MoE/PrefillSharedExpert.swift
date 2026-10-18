@@ -2,10 +2,89 @@ import Foundation
 import Metal
 
 final class PrefillSharedExpert {
-    private let shared: SharedExpertRuntime
+    /// Chunks at least this long use batched tensor-op GEMMs; shorter ones
+    /// keep the per-token GEMV loop.
+    static let batchedMinimumTokens = 32
 
-    init(context: MetalContext, weightBits: Int = 8) throws {
+    private let shared: SharedExpertRuntime
+    private let context: MetalContext
+    private let batched: MPPPrefillInt4QMM?
+    private let geluMulPSO: MTLComputePipelineState?
+    private var batchScratch: (gate: MTLBuffer, up: MTLBuffer, act: MTLBuffer, tokens: Int, intermediate: Int)?
+
+    /// `batched` selects the INT4 tensor-op GEMM path for 4-bit weights. It
+    /// changes accumulation order relative to the per-token GEMV reference.
+    init(context: MetalContext, weightBits: Int = 8, batched: Bool = false) throws {
         self.shared = try SharedExpertRuntime(context: context, weightBits: weightBits)
+        self.context = context
+        if batched && weightBits == 4 {
+            let qmm = MPPPrefillInt4QMM(context: context)
+            self.batched = qmm.isAvailable ? qmm : nil
+            self.geluMulPSO = try context.pipeline("gelu_mul_fp16")
+        } else {
+            self.batched = nil
+            self.geluMulPSO = nil
+        }
+    }
+
+    var usesBatchedGEMM: Bool { batched != nil }
+
+    private func scratch(tokens: Int, intermediate: Int) throws -> (gate: MTLBuffer, up: MTLBuffer, act: MTLBuffer) {
+        if let existing = batchScratch, existing.tokens >= tokens, existing.intermediate == intermediate {
+            return (existing.gate, existing.up, existing.act)
+        }
+        let bytes = tokens * intermediate * MemoryLayout<Float16>.stride
+        func make(_ label: String) throws -> MTLBuffer {
+            guard let buffer = context.device.makeBuffer(length: bytes, options: .storageModePrivate) else {
+                throw SharedExpertError.scratchTooSmall("cannot allocate \(bytes) bytes for \(label)")
+            }
+            buffer.label = label
+            return buffer
+        }
+        let made = (gate: try make("prefill.sharedBatchGate"), up: try make("prefill.sharedBatchUp"),
+                    act: try make("prefill.sharedBatchAct"))
+        batchScratch = (made.gate, made.up, made.act, tokens, intermediate)
+        return made
+    }
+
+    /// Returns false when the batched path does not apply and the caller's
+    /// per-token loop must run.
+    private func encodeBatched(commandBuffer cb: MTLCommandBuffer, x: MTLBuffer, xOffset: Int,
+                               y: MTLBuffer, yOffset: Int,
+                               gate: SharedExpertInt8Proj, up: SharedExpertInt8Proj, down: SharedExpertInt8Proj,
+                               queryCount: Int, d: Int, intermediate: Int,
+                               xStrideElements: Int, yStrideElements: Int) throws -> Bool {
+        guard let batched, let geluMulPSO, queryCount >= Self.batchedMinimumTokens,
+              xStrideElements == d, yStrideElements == d else { return false }
+        let buffers = try scratch(tokens: queryCount, intermediate: intermediate)
+        func project(_ p: SharedExpertInt8Proj, x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int) -> Bool {
+            batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
+                           scales: p.scales, scalesOffset: p.scalesOffset,
+                           biases: p.biases, biasesOffset: p.biasesOffset,
+                           x: x, xOffset: xOffset, y: y, yOffset: yOffset,
+                           m: queryCount, n: Int(p.rows), k: Int(p.cols)).path != .fallback
+        }
+        // A fallback on the first projection leaves nothing encoded; any
+        // later one is a contract violation for these fixed shapes.
+        guard project(gate, x: x, xOffset: xOffset, y: buffers.gate, yOffset: 0) else { return false }
+        guard project(up, x: x, xOffset: xOffset, y: buffers.up, yOffset: 0),
+              let encoder = cb.makeComputeCommandEncoder() else {
+            throw SharedExpertError.dimensionMismatch("batched shared expert up projection fell back")
+        }
+        encoder.setComputePipelineState(geluMulPSO)
+        encoder.setBuffer(buffers.gate, offset: 0, index: 0)
+        encoder.setBuffer(buffers.up, offset: 0, index: 1)
+        encoder.setBuffer(buffers.act, offset: 0, index: 2)
+        var count = UInt32(queryCount * intermediate)
+        encoder.setBytes(&count, length: MemoryLayout<UInt32>.size, index: 3)
+        encoder.dispatchThreads(MTLSize(width: Int(count), height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: min(geluMulPSO.maxTotalThreadsPerThreadgroup, 256),
+                                                               height: 1, depth: 1))
+        encoder.endEncoding()
+        guard project(down, x: buffers.act, xOffset: 0, y: y, yOffset: yOffset) else {
+            throw SharedExpertError.dimensionMismatch("batched shared expert down projection fell back")
+        }
+        return true
     }
 
     func encodeBlock(commandBuffer cb: MTLCommandBuffer,
@@ -39,6 +118,12 @@ final class PrefillSharedExpert {
                 "expected gate/up=(\(intermediate),\(d)) down=(\(d),\(intermediate))")
         }
 
+        if try encodeBatched(commandBuffer: cb, x: x, xOffset: xOffset, y: y, yOffset: yOffset,
+                             gate: gate, up: up, down: down, queryCount: queryCount, d: d,
+                             intermediate: intermediate, xStrideElements: xStrideElements,
+                             yStrideElements: yStrideElements) {
+            return
+        }
         let halfBytes = MemoryLayout<Float16>.stride
         for row in 0..<queryCount {
             try shared.encode(commandBuffer: cb,
