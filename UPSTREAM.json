@@ -1,25 +1,45 @@
 {
-  "schema": "ane-fieldfare.upstream-sync.v1",
-  "repository": "https://github.com/drumih/turbo-fieldfare",
-  "revision": "4c6db1e698ea861609109d4bc517410ff302af46",
-  "previous_import_revision": "3249be40a33ea6560b35531c184609d7be67ac1a",
-  "date": "2026-09-15",
-  "method": "Namespace-adapted three-way merge against the original imported seed, preserving existing local changes",
-  "source_mappings": {
-    "Sources/TurboFieldfare": "Sources/ANEFieldfareHotpath",
-    "Sources/TurboFieldfareFormat": "Sources/ANEFieldfareImportedFormat",
-    "Sources/TurboFieldfareCLI": "Sources/ANEFieldfareHotpathCLICore",
-    "Sources/TurboFieldfareCLI/Command": "Sources/ANEFieldfareHotpathCLI"
-  },
-  "local_contracts": [
-    "Explicit hybrid-ane backend and native ANE lifecycle",
-    "All eight routed experts in ANE mode",
-    "1024-token prefill default and 32/64/128/256/512/1024 selections",
-    "Reference-order SIMD attention, including upstream image visibility",
-    "16-slot LFU default expert cache",
-    "32K CLI context default and legacy --prefill-chunk alias",
-    "Device supervisor with ANE routed-prefill guest, local profiling and numerical oracles"
-  ],
-  "scope": "Imported runtime, compact format, CLI, and their regression tests. Upstream GUI and server remain outside this repository. Repack writers are test-fixture support only.",
-  "benchmark_boundary": "September 16 post-merge comparison uses unmodified latest Turbo 4c6db1e with matched release toolchain, official generation fixtures/settings, nine discarded warmups and eighteen measured runs. See results/turbo-latest-20260916/REPORT.md and summary.json. September 8 receipts remain historical comparisons against 6c044011."
+ "schema": "ane-fieldfare.upstream-sync.v1",
+ "repository": "https://github.com/drumih/turbo-fieldfare",
+ "revision": "4c6db1e698ea861609109d4bc517410ff302af46",
+ "previous_import_revision": "3249be40a33ea6560b35531c184609d7be67ac1a",
+ "date": "2026-09-15",
+ "method": "Namespace-adapted three-way merge against the original imported seed, preserving existing local changes",
+ "source_mappings": {
+  "Sources/TurboFieldfare": "Sources/ANEFieldfareHotpath",
+  "Sources/TurboFieldfareFormat": "Sources/ANEFieldfareImportedFormat",
+  "Sources/TurboFieldfareCLI": "Sources/ANEFieldfareHotpathCLICore",
+  "Sources/TurboFieldfareCLI/Command": "Sources/ANEFieldfareHotpathCLI"
+ },
+ "local_contracts": [
+  "Explicit hybrid-ane backend and native ANE lifecycle",
+  "All eight routed experts in ANE mode",
+  "1024-token prefill default and 32/64/128/256/512/1024 selections",
+  "Reference-order SIMD attention, including upstream image visibility",
+  "48-slot LFU default expert cache",
+  "32K CLI context default and legacy --prefill-chunk alias",
+  "Device supervisor with ANE routed-prefill guest, local profiling and numerical oracles"
+ ],
+ "scope": "Imported runtime, compact format, CLI, and their regression tests. Upstream GUI and server remain outside this repository. Repack writers are test-fixture support only.",
+ "benchmark_boundary": "September 16 post-merge comparison uses unmodified latest Turbo 4c6db1e with matched release toolchain, official generation fixtures/settings, nine discarded warmups and eighteen measured runs. See results/turbo-latest-20260916/REPORT.md and summary.json. September 8 receipts remain historical comparisons against 6c044011.",
+ "additional_imports": [
+  {
+   "source": "https://github.com/drumih/turbo-fieldfare/pull/188 (includes #187)",
+   "author": "maxslamdunk",
+   "branch": "maxslamdunk/turbo-fieldfare:early-expert-read-fitted",
+   "license": "Apache-2.0",
+   "files": [
+    "Runtime/Inference/NextLayerExpertPrefetcher.swift",
+    "Runtime/Inference/NextLayerGuessWeights.swift",
+    "Infrastructure/Streaming/PreadExpertStreamer.swift (staging buffers, adoption)",
+    "Kernels/MoE/MoE.swift (encodeRouterLogitsGemma4)",
+    "NextLayerGuess/"
+   ],
+   "local_changes": [
+    "early reads never block decode: a layer with reads still in flight issues none",
+    "candidates limited to the guess's top 8, for a 48-slot cache",
+    "early reads use split concurrent preads"
+   ]
+  }
+ ]
 }

@@ -33,8 +33,7 @@ public struct Args: Equatable, Sendable {
     /// is known, which needs the tokenizer and, for images, their geometry.
     public var prefillChunkTokensAuto: Bool
     public var faultPolicy: RuntimeFaultPolicy
-    public var expertPrefetchLookahead: Int
-    public var expertPrefetchWidth: Int
+    public var earlyExpertRead: RuntimeEarlyExpertRead
 
     public init(model: String,
                 backend: RuntimeBackend = .metal,
@@ -64,11 +63,9 @@ public struct Args: Equatable, Sendable {
                 prefillChunkTokens: Int = RuntimeConfiguration.production.prefillChunkTokens,
                 prefillChunkTokensAuto: Bool = true,
                 faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration.production.faultPolicy,
-                expertPrefetchLookahead: Int = RuntimeConfiguration.production.expertPrefetchLookahead,
-                expertPrefetchWidth: Int = RuntimeConfiguration.production.expertPrefetchWidth) {
+                earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration.production.earlyExpertRead) {
         self.model = model
-        self.expertPrefetchLookahead = expertPrefetchLookahead
-        self.expertPrefetchWidth = expertPrefetchWidth
+        self.earlyExpertRead = earlyExpertRead
         self.backend = backend
         self.faultPolicy = faultPolicy
         self.promptFile = promptFile
@@ -177,13 +174,9 @@ extension Args {
       --quiet                    Suppress the timing footer.
       --expert-cache-slots <n>   Expert-cache slots: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedExpertCacheSlots)) (default \(RuntimeConfiguration.defaultExpertCacheSlots)).
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
-      --expert-prefetch-lookahead <n>
-                                 Layers ahead whose experts decode predicts and
-                                 prefetches: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedExpertPrefetchLookahead))
-                                 (default \(RuntimeConfiguration.defaultExpertPrefetchLookahead); 0 = off).
-      --expert-prefetch-width <n>
-                                 Top-ranked predicted experts prefetched per
-                                 layer, 1...8 (default \(RuntimeConfiguration.defaultExpertPrefetchWidth)).
+      --early-expert-read <s>    Decode early read of the next layer's likeliest
+                                 experts in idle storage time: off, router or
+                                 fitted (default fitted).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
                                  Chunked prefill requires 16 or more cache slots.
       --prefill-chunk-tokens <n|auto>
@@ -229,13 +222,6 @@ extension Args {
             throw ArgsError.invalidValue(
                 flag: "--prefill-chunk-tokens", value: "\(prefillChunkTokens)")
         }
-        guard RuntimeConfiguration.allowedExpertPrefetchLookahead.contains(expertPrefetchLookahead) else {
-            throw ArgsError.invalidValue(
-                flag: "--expert-prefetch-lookahead", value: "\(expertPrefetchLookahead)")
-        }
-        guard (1...8).contains(expertPrefetchWidth) else {
-            throw ArgsError.invalidValue(flag: "--expert-prefetch-width", value: "\(expertPrefetchWidth)")
-        }
         let chunkedPrefillSupported = expertCacheSlots >=
             RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill
         guard prefillPolicy == .off || chunkedPrefillSupported else {
@@ -254,8 +240,7 @@ extension Args {
             activeRoutedExperts: activeExperts,
             prefillExpertUnionCap: expertCap,
             faultPolicy: faultPolicy,
-            expertPrefetchLookahead: expertPrefetchLookahead,
-            expertPrefetchWidth: expertPrefetchWidth)
+            earlyExpertRead: earlyExpertRead)
     }
 
     public static func parse(_ argv: [String]) throws -> Args {
@@ -288,8 +273,7 @@ extension Args {
         var prefillPolicy = runtimeDefaults.prefillPolicy
         var prefillChunkTokens = runtimeDefaults.prefillChunkTokens
         var prefillChunkTokensAuto = true
-        var expertPrefetchLookahead = runtimeDefaults.expertPrefetchLookahead
-        var expertPrefetchWidth = runtimeDefaults.expertPrefetchWidth
+        var earlyExpertRead = runtimeDefaults.earlyExpertRead
 
         var index = 0
         while index < argv.count {
@@ -395,19 +379,12 @@ extension Args {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 expertCacheSlots = parsed
-            case "--expert-prefetch-lookahead":
+            case "--early-expert-read":
                 let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Int(value),
-                      RuntimeConfiguration.allowedExpertPrefetchLookahead.contains(parsed) else {
+                guard let parsed = RuntimeEarlyExpertRead(rawValue: value) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
-                expertPrefetchLookahead = parsed
-            case "--expert-prefetch-width":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Int(value), (1...8).contains(parsed) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                expertPrefetchWidth = parsed
+                earlyExpertRead = parsed
             case "--expert-cache-policy":
                 let value = try takeValue(argv, &index, flag: flag)
                 guard let parsed = RuntimeExpertCachePolicy(rawValue: value) else {
@@ -509,8 +486,7 @@ extension Args {
                              prefillChunkTokens: prefillChunkTokens,
                              prefillChunkTokensAuto: prefillChunkTokensAuto,
                              faultPolicy: faultPolicy,
-                             expertPrefetchLookahead: expertPrefetchLookahead,
-                             expertPrefetchWidth: expertPrefetchWidth)
+                             earlyExpertRead: earlyExpertRead)
         _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         return arguments
     }

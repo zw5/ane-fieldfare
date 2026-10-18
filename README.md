@@ -147,6 +147,33 @@ Remaining prefill time on the 3,015-token prompt (8.8 s): pre-router GPU work
 (attention and projections) 4.2 s, then the routed experts 4.4 s, of which the ANE
 evaluates for 3.5 s.
 
+### Decode
+
+Turbo Fieldfare's community protocol (`docs/COMMUNITY_BENCHMARKS.md` upstream:
+temperature 0.2, top-k 64, top-p 0.95, 4,096-token context, up to 1,024 tokens,
+fixed seeds), `--backend metal`, one run per case on an M5 with 16 GB. Every
+case stopped at the end of the model turn.
+
+| Case (prompt / generated tokens) | 16 slots | 48 slots | 48 slots + early read |
+| --- | ---: | ---: | ---: |
+| short (61 / 533) | — | 25.2 tok/s | 28.5 tok/s |
+| medium (430 / 745) | — | 23.0 tok/s | 24.2 tok/s |
+| long (3,015 / 613) | — | 18.9 tok/s | 20.2 tok/s |
+
+What changed, in order:
+
+- The expert cache defaults to 48 slots per layer instead of 16 (about 4.9 GB
+  resident). A greedy 256-token code prompt went from 22.2 to 25.7 tok/s.
+- Each expert read is four concurrent `pread`s, so one 3.4 MB read no longer
+  runs at queue depth 1.
+- Early expert read, adapted from Turbo Fieldfare PRs #187/#188: after a
+  layer's own reads, the two likeliest experts of the next layer that its cache
+  does not hold are read into staging buffers, scored by a fitted next-layer
+  guess. A staged read the next layer misses is swapped into its slot. Here a
+  layer with reads still in flight issues none, and candidates must rank in the
+  guess's top 8; about 63% of early reads are used. `--early-expert-read off`
+  disables it. Generated text and cache contents do not depend on it.
+
 ### Measured performance
 
 The table below predates all of the optimizations above. It compares unmodified Turbo Fieldfare `4c6db1e`, this repo's Metal backend, and the

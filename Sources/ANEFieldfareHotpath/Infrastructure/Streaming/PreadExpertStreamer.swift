@@ -16,50 +16,27 @@ public struct ExpertCachePlan: Sendable, Equatable {
     }
 }
 
+/// A slot-sized buffer outside every slot pool, which a routed expert is read
+/// into before its layer is planned. Adopting it into a plan swaps it with the
+/// slot the plan assigned to that expert, so afterwards this object holds the
+/// buffer that left the slot. Every slot buffer frees its own memory, so a
+/// buffer may move between layers' streamers.
+public final class ExpertStagingBuffer: @unchecked Sendable {
+    public fileprivate(set) var pointer: UnsafeMutableRawPointer
+    public fileprivate(set) var buffer: MTLBuffer
+
+    fileprivate init(pointer: UnsafeMutableRawPointer, buffer: MTLBuffer) {
+        self.pointer = pointer
+        self.buffer = buffer
+    }
+}
+
 public enum ExpertCachePolicy: String, Sendable {
     case lru
     case lfu
 }
 
-/// Counters for speculative expert prefetch on one streamer.
-public struct ExpertPrefetchStats: Sendable, Equatable {
-    /// Reads started for predicted experts.
-    public var issued: UInt64 = 0
-    /// Predicted experts already resident or already loading.
-    public var alreadyPresent: UInt64 = 0
-    /// Predictions dropped because no slot could be evicted for them.
-    public var skipped: UInt64 = 0
-    /// Prefetched slots a later plan hit before they were evicted.
-    public var useful: UInt64 = 0
-    /// Prefetched slots evicted, or overwritten, without ever being hit.
-    public var wasted: UInt64 = 0
-    /// Prefetch reads that failed; the slot is left empty.
-    public var failed: UInt64 = 0
-    /// Plans that waited for an in-flight prefetch of an expert they needed.
-    public var planWaits: UInt64 = 0
-
-    public init() {}
-
-    public static func + (lhs: Self, rhs: Self) -> Self {
-        var out = lhs
-        out.issued &+= rhs.issued
-        out.alreadyPresent &+= rhs.alreadyPresent
-        out.skipped &+= rhs.skipped
-        out.useful &+= rhs.useful
-        out.wasted &+= rhs.wasted
-        out.failed &+= rhs.failed
-        out.planWaits &+= rhs.planWaits
-        return out
-    }
-}
-
 /// `pread`-based routed-expert streamer with a fixed per-layer slot cache.
-///
-/// Slots are empty, resident (holding one expert) or loading (a speculative
-/// prefetch read is in flight). Plans never assign a loading slot; a plan that
-/// needs an expert being prefetched waits for that read. Prefetch never evicts
-/// a slot the most recent plan assigned, so it cannot race a plan's reads or
-/// the GPU work that consumes them.
 public final class PreadExpertStreamer: @unchecked Sendable {
     public static let scratchAlignment = 2 * 1024 * 1024
     /// Each expert read is split into this many concurrent `pread`s; one
@@ -73,8 +50,9 @@ public final class PreadExpertStreamer: @unchecked Sendable {
 
     private let fd: Int32
     private let device: MTLDevice
-    private let slotPointers: [UnsafeMutableRawPointer]
-    private let slotBuffers: [MTLBuffer]
+    // Mutated only by `adoptStagedExpert`, under `cacheLock`.
+    private var slotPointers: [UnsafeMutableRawPointer]
+    private var slotBuffers: [MTLBuffer]
     private let slotAllocationSize: Int
 
     private var nextSlot = 0
@@ -84,15 +62,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
     private var slotLastUse: [Int]
     private var expertUseCount: [Int]
     private var useClock = 0
-    /// Expert a prefetch read is writing into the slot, or -1.
-    private var slotLoadingExpert: [Int]
-    /// The slot was filled by prefetch and no plan has hit it yet.
-    private var slotPrefetchedUnused: [Bool]
-    private var prefetchCounters = ExpertPrefetchStats()
-    /// Guards all slot state; broadcast when a prefetch read settles.
-    private let cacheLock = NSCondition()
-    private static let prefetchQueue = DispatchQueue(
-        label: "ane-fieldfare.expert-prefetch", qos: .userInitiated, attributes: .concurrent)
+    private let cacheLock = NSLock()
 
     public convenience init(layout: StreamLayout,
                             device: MTLDevice,
@@ -164,13 +134,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
                 throw StreamerError.allocFailed(errno: result)
             }
             pointers.append(pointer)
-            nonisolated(unsafe) let capturedPointer = pointer
-            guard let buffer = device.makeBuffer(
-                bytesNoCopy: pointer,
-                length: allocationSize,
-                options: .storageModeShared,
-                deallocator: { _, _ in free(capturedPointer) })
-            else {
+            guard let buffer = Self.wrapSlot(pointer, length: allocationSize, device: device) else {
                 unwind()
                 throw StreamerError.bufferWrapFailed
             }
@@ -181,80 +145,71 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         self.slotBuffers = buffers
         self.slotExpert = [Int](repeating: -1, count: slotCount)
         self.slotLastUse = [Int](repeating: 0, count: slotCount)
-        self.slotLoadingExpert = [Int](repeating: -1, count: slotCount)
-        self.slotPrefetchedUnused = [Bool](repeating: false, count: slotCount)
         self.expertUseCount = [Int](repeating: 0, count: max(1, layout.expertsPerLayer))
         closeFDOnFailure = false
     }
 
     deinit {
-        // Prefetch reads hold `self`; none can be in flight here.
         close(fd)
     }
 
-    public var prefetchStats: ExpertPrefetchStats {
+    /// The buffer owns `pointer` from here on and frees it when released.
+    private static func wrapSlot(_ pointer: UnsafeMutableRawPointer,
+                                 length: Int,
+                                 device: MTLDevice) -> MTLBuffer? {
+        nonisolated(unsafe) let capturedPointer = pointer
+        return device.makeBuffer(
+            bytesNoCopy: pointer,
+            length: length,
+            options: .storageModeShared,
+            deallocator: { _, _ in free(capturedPointer) })
+    }
+
+    /// A buffer allocated exactly like one of this streamer's slots.
+    public func makeStagingBuffer() throws -> ExpertStagingBuffer {
+        var raw: UnsafeMutableRawPointer?
+        let result = posix_memalign(&raw, Self.scratchAlignment, slotAllocationSize)
+        guard result == 0, let pointer = raw else {
+            throw StreamerError.allocFailed(errno: result)
+        }
+        guard let buffer = Self.wrapSlot(pointer, length: slotAllocationSize, device: device) else {
+            free(pointer)
+            throw StreamerError.bufferWrapFailed
+        }
+        return ExpertStagingBuffer(pointer: pointer, buffer: buffer)
+    }
+
+    /// Experts currently held in a slot.
+    public func residentExperts() -> Set<Int> {
         cacheLock.lock()
         defer { cacheLock.unlock() }
-        return prefetchCounters
+        return Set(slotExpert.filter { $0 >= 0 })
     }
 
-    /// Starts background reads for predicted experts that are neither resident
-    /// nor loading, evicting the least valuable slots that are not loading,
-    /// not holding a predicted expert and not part of the most recent plan.
-    /// Returns immediately; correctness never depends on a prediction.
-    public func prefetch(experts rawExperts: [Int]) {
-        var seen = Set<Int>()
-        let experts = rawExperts.filter { $0 >= 0 && $0 < layout.expertsPerLayer && seen.insert($0).inserted }
-        guard !experts.isEmpty else { return }
-        cacheLock.lock()
-        let wanted = Set(experts)
-        var protected = [Bool](repeating: false, count: slotCount)
-        for slot in 0..<slotCount {
-            protected[slot] = slotLoadingExpert[slot] >= 0
-                || wanted.contains(slotExpert[slot])
-                || (useClock > 0 && slotLastUse[slot] == useClock)
+    /// Reads one expert into memory outside the slot pool, normally a staging
+    /// buffer's `pointer` captured before any adoption could swap it.
+    public func readEarly(expert: Int, into destination: UnsafeMutableRawPointer) throws {
+        let regionOffset = layout.expertOffset(layer: 0, expert: expert)
+        guard regionOffset + layout.expertStride <= layout.streamSize else {
+            throw StreamerError.offsetOutOfRange(regionOffset)
         }
-        var victims = (0..<slotCount).filter { !protected[$0] }
-            .sorted { shouldEvictSlot($0, before: $1) }[...]
-        var issued: [(slot: Int, expert: Int)] = []
-        for expert in experts {
-            if slotExpert.contains(expert) || slotLoadingExpert.contains(expert) {
-                prefetchCounters.alreadyPresent &+= 1
-                continue
-            }
-            guard let slot = victims.popFirst() else {
-                prefetchCounters.skipped &+= 1
-                continue
-            }
-            if slotPrefetchedUnused[slot] { prefetchCounters.wasted &+= 1 }
-            slotExpert[slot] = -1
-            slotPrefetchedUnused[slot] = false
-            slotLoadingExpert[slot] = expert
-            prefetchCounters.issued &+= 1
-            issued.append((slot, expert))
-        }
-        cacheLock.unlock()
-        for (slot, expert) in issued {
-            Self.prefetchQueue.async { [self] in
-                let succeeded = (try? loadExpert(layer: 0, expert: expert, slot: slot)) != nil
-                cacheLock.lock()
-                slotLoadingExpert[slot] = -1
-                if succeeded {
-                    slotExpert[slot] = expert
-                    slotPrefetchedUnused[slot] = true
-                } else {
-                    prefetchCounters.failed &+= 1
-                }
-                cacheLock.broadcast()
-                cacheLock.unlock()
-            }
-        }
+        try readSplitting(into: destination, fileOffset: layout.streamOffset + regionOffset,
+                          count: Int(layout.expertStride))
     }
 
-    /// Blocks until no prefetch read is in flight.
-    public func waitForPrefetches() {
+    /// Puts `staging`'s buffer in the slot `plan` assigned to its miss at
+    /// `index`, and leaves the slot's previous buffer in `staging`. Call it
+    /// before the plan's buffers are bound, and execute the plan skipping
+    /// `index`. The previous buffer was last used for an expert the plan
+    /// evicted, the same condition under which a miss is read into it.
+    public func adoptStagedExpert(_ staging: ExpertStagingBuffer, plan: ExpertCachePlan, index: Int) {
+        precondition(plan.misses.contains(index), "only a planned miss can adopt a staged read")
+        precondition(staging.buffer.length == slotAllocationSize,
+                     "staging buffer size differs from this streamer's slots")
+        let slot = plan.assignedSlots[index]
         cacheLock.lock()
-        while slotLoadingExpert.contains(where: { $0 >= 0 }) { cacheLock.wait() }
+        swap(&slotPointers[slot], &staging.pointer)
+        swap(&slotBuffers[slot], &staging.buffer)
         cacheLock.unlock()
     }
 
@@ -314,27 +269,9 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         cacheLock.lock()
         defer { cacheLock.unlock() }
 
-        // Wait for in-flight prefetches of requested experts, and for enough
-        // settled slots when loading slots would otherwise leave too few.
-        let requested = Set(experts)
-        var waited = false
-        while true {
-            let loading = slotLoadingExpert.filter { $0 >= 0 }
-            if loading.isEmpty { break }
-            let blocking = loading.contains(where: requested.contains)
-            let settled = slotCount - loading.count - avoidingSlots.count
-            if !blocking && settled >= experts.count { break }
-            waited = true
-            cacheLock.wait()
-        }
-        if waited { prefetchCounters.planWaits &+= 1 }
-
         let clock = useClock + 1
         var assignedSlots = [Int](repeating: -1, count: experts.count)
         var reserved = [Bool](repeating: false, count: slotCount)
-        for slot in 0..<slotCount where slotLoadingExpert[slot] >= 0 {
-            reserved[slot] = true
-        }
 
         for index in experts.indices {
             for slot in 0..<slotCount
@@ -361,19 +298,11 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         }
         for slot in assignedSlots where slot >= 0 {
             slotLastUse[slot] = clock
-            if slotPrefetchedUnused[slot] {
-                slotPrefetchedUnused[slot] = false
-                prefetchCounters.useful &+= 1
-            }
         }
         for (offset, index) in misses.enumerated() {
             let slot = evictable[offset]
             assignedSlots[index] = slot
             reserved[slot] = true
-            if slotPrefetchedUnused[slot] {
-                slotPrefetchedUnused[slot] = false
-                prefetchCounters.wasted &+= 1
-            }
             slotExpert[slot] = -1
             slotLastUse[slot] = clock
         }
@@ -387,15 +316,27 @@ public final class PreadExpertStreamer: @unchecked Sendable {
 
     public func executeExpertCachePlan(_ plan: ExpertCachePlan) throws
         -> [(buffer: MTLBuffer, offset: UInt64, size: UInt64)] {
+        try executeExpertCachePlan(plan, skippingMisses: [], beforeAdmitting: {})
+    }
+
+    /// Reads the plan's misses except `skippingMisses`, whose bytes arrive by
+    /// another route (an adopted staged read). `beforeAdmitting` runs after
+    /// this plan's reads and before any miss is marked resident; it must not
+    /// return until the skipped misses' bytes are in place.
+    public func executeExpertCachePlan(_ plan: ExpertCachePlan,
+                                       skippingMisses: Set<Int>,
+                                       beforeAdmitting: () throws -> Void) throws
+        -> [(buffer: MTLBuffer, offset: UInt64, size: UInt64)] {
         precondition(plan.experts.count <= slotCount,
                      "expert cache plan exceeds slot count")
         precondition(plan.assignedSlots.count == plan.experts.count,
                      "expert cache plan slot count mismatch")
 
+        let toRead = plan.misses.filter { !skippingMisses.contains($0) }
         let errorLock = NSLock()
         nonisolated(unsafe) var firstError: Error?
-        DispatchQueue.concurrentPerform(iterations: plan.misses.count) { missOffset in
-            let index = plan.misses[missOffset]
+        DispatchQueue.concurrentPerform(iterations: toRead.count) { missOffset in
+            let index = toRead[missOffset]
             do {
                 _ = try self.loadExpert(
                     layer: 0,
@@ -408,6 +349,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
             }
         }
         if let firstError { throw firstError }
+        try beforeAdmitting()
 
         cacheLock.lock()
         for index in plan.misses {
@@ -422,8 +364,11 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         -> [(buffer: MTLBuffer, offset: UInt64, size: UInt64)] {
         precondition(plan.assignedSlots.count == plan.experts.count,
                      "expert cache plan slot count mismatch")
+        cacheLock.lock()
+        let buffers = slotBuffers
+        cacheLock.unlock()
         return plan.assignedSlots.map { slot in
-            (slotBuffers[slot], 0, layout.expertStride)
+            (buffers[slot], 0, layout.expertStride)
         }
     }
 

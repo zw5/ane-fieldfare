@@ -106,21 +106,22 @@ final class MoE {
         self.reusableRoutedArgBuffer = reusable
     }
 
-    func encodeRouterGemma4(commandBuffer: MTLCommandBuffer,
-                                   weights: MTLBuffer, weightsOffset: Int = 0,
-                                   scales: MTLBuffer, scalesOffset: Int = 0,
-                                   biases: MTLBuffer, biasesOffset: Int = 0,
-                                   hidden: MTLBuffer,
-                                   effectiveScale: MTLBuffer, effectiveScaleOffset: Int = 0,
-                                   perExpertScale: MTLBuffer, perExpertScaleOffset: Int = 0,
-                                   outIndices: MTLBuffer,
-                                   outWeights: MTLBuffer,
-                                   numExperts: UInt32,
-                                   d: UInt32,
-                                   topK: UInt32) {
+    /// The router GEMV alone: `numExperts` Float32 scores into `outLogits`,
+    /// with no top-k. `encodeRouterGemma4` runs this into its own logits
+    /// buffer; the next-layer early read runs it with the next layer's
+    /// weights over this layer's router input.
+    func encodeRouterLogitsGemma4(commandBuffer: MTLCommandBuffer,
+                                  weights: MTLBuffer, weightsOffset: Int = 0,
+                                  scales: MTLBuffer, scalesOffset: Int = 0,
+                                  biases: MTLBuffer, biasesOffset: Int = 0,
+                                  hidden: MTLBuffer,
+                                  effectiveScale: MTLBuffer, effectiveScaleOffset: Int = 0,
+                                  outLogits: MTLBuffer,
+                                  numExperts: UInt32,
+                                  d: UInt32) {
         precondition(d.isMultiple(of: UInt32(Quantization.groupSize)))
         precondition(numExperts <= 256)
-        precondition(topK == UInt32(Self.maxStreamedExperts))
+        precondition(outLogits.length >= Int(numExperts) * MemoryLayout<Float>.stride)
 
         var expertCount = numExperts
         var dimension = d
@@ -134,7 +135,7 @@ final class MoE {
             encoder.setBuffer(biases, offset: biasesOffset, index: 2)
             encoder.setBuffer(hidden, offset: 0, index: 3)
             encoder.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 4)
-            encoder.setBuffer(routerLogits, offset: 0, index: 5)
+            encoder.setBuffer(outLogits, offset: 0, index: 5)
             encoder.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 6)
             encoder.setBytes(&dimension, length: MemoryLayout<UInt32>.stride, index: 7)
             encoder.dispatchThreadgroups(
@@ -142,6 +143,34 @@ final class MoE {
                 threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             encoder.endEncoding()
         }
+    }
+
+    func encodeRouterGemma4(commandBuffer: MTLCommandBuffer,
+                                   weights: MTLBuffer, weightsOffset: Int = 0,
+                                   scales: MTLBuffer, scalesOffset: Int = 0,
+                                   biases: MTLBuffer, biasesOffset: Int = 0,
+                                   hidden: MTLBuffer,
+                                   effectiveScale: MTLBuffer, effectiveScaleOffset: Int = 0,
+                                   perExpertScale: MTLBuffer, perExpertScaleOffset: Int = 0,
+                                   outIndices: MTLBuffer,
+                                   outWeights: MTLBuffer,
+                                   numExperts: UInt32,
+                                   d: UInt32,
+                                   topK: UInt32) {
+        precondition(topK == UInt32(Self.maxStreamedExperts))
+        var expertCount = numExperts
+        let useSpecialized = numExperts == Self.realDecodeNumExperts
+            && d == Self.realDecodeD
+        encodeRouterLogitsGemma4(commandBuffer: commandBuffer,
+                                 weights: weights, weightsOffset: weightsOffset,
+                                 scales: scales, scalesOffset: scalesOffset,
+                                 biases: biases, biasesOffset: biasesOffset,
+                                 hidden: hidden,
+                                 effectiveScale: effectiveScale,
+                                 effectiveScaleOffset: effectiveScaleOffset,
+                                 outLogits: routerLogits,
+                                 numExperts: numExperts,
+                                 d: d)
 
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             encoder.setComputePipelineState(

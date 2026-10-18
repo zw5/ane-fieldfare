@@ -27,6 +27,16 @@ public enum RuntimeExpertCachePolicy: String, Codable, Sendable {
     case lru
 }
 
+/// What scores the next layer's experts for the decode early read, or `off`.
+/// `router` uses the next layer's own router; `fitted` uses the fitted guess
+/// shipped for this model, or the router for a model with none. See
+/// `NextLayerExpertPrefetcher`.
+public enum RuntimeEarlyExpertRead: String, Codable, Sendable, CaseIterable {
+    case off
+    case router
+    case fitted
+}
+
 public struct RuntimeConfiguration: Sendable, Equatable {
     public static let defaultExpertCacheSlots = 48
     public static let defaultPrefillChunkTokens = 1024
@@ -35,11 +45,6 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public static let allowedExpertCacheSlots = [8, 16, 17, 18, 24, 32, 48, 64]
     public static let allowedPrefillChunkTokens = PrefillRuntimeConfig.allowedChunkTokens
     public static let minimumExpertCacheSlotsForChunkedPrefill = 16
-    /// Layers ahead whose experts decode predicts and prefetches.
-    public static let defaultExpertPrefetchLookahead = 0
-    public static let allowedExpertPrefetchLookahead = [0, 1, 2, 3]
-    /// Highest-ranked predicted experts prefetched per predicted layer.
-    public static let defaultExpertPrefetchWidth = 8
     /// The one rendering shared by every help text and every rejection that
     /// names one of the arrays above, so neither can name a value the guard
     /// does not accept: the hardcoded "32, 64, or 128" outlived the widening of
@@ -80,12 +85,8 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public let prefillExpertUnionCap: Int?
     /// What the device supervisor does when a guest rail faults.
     public let faultPolicy: RuntimeFaultPolicy
-    /// Decode runs layer L+d's router on layer L's router input for each
-    /// d in 1...lookahead and prefetches the predicted experts. 0 disables it.
-    /// Prefetch changes only which experts are resident, never results.
-    public let expertPrefetchLookahead: Int
-    /// How many of a layer's predicted experts, by router rank, are prefetched.
-    public let expertPrefetchWidth: Int
+    /// Decode early read of the next layer's likeliest experts in idle storage time.
+    public let earlyExpertRead: RuntimeEarlyExpertRead
 
     public init(backend: RuntimeBackend = .metal,
                 expertCacheSlots: Int = RuntimeConfiguration.defaultExpertCacheSlots,
@@ -97,8 +98,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
                 activeRoutedExperts: Int = 8,
                 prefillExpertUnionCap: Int? = nil,
                 faultPolicy: RuntimeFaultPolicy = .failClosed,
-                expertPrefetchLookahead: Int = RuntimeConfiguration.defaultExpertPrefetchLookahead,
-                expertPrefetchWidth: Int = RuntimeConfiguration.defaultExpertPrefetchWidth) {
+                earlyExpertRead: RuntimeEarlyExpertRead = .fitted) {
         precondition(Self.allowedExpertCacheSlots.contains(expertCacheSlots),
                      "unsupported expert-cache slot count")
         precondition(Self.allowedPrefillChunkTokens.contains(prefillChunkTokens),
@@ -108,9 +108,6 @@ public struct RuntimeConfiguration: Sendable, Equatable {
         precondition(prefillExpertUnionCap == nil ||
                      (1...128).contains(prefillExpertUnionCap!),
                      "prefill expert union cap must be in 1...128")
-        precondition(Self.allowedExpertPrefetchLookahead.contains(expertPrefetchLookahead),
-                     "unsupported expert prefetch lookahead")
-        precondition((1...8).contains(expertPrefetchWidth), "expert prefetch width must be in 1...8")
         self.expertCacheSlots = expertCacheSlots
         self.backend = backend
         self.expertCachePolicy = expertCachePolicy
@@ -121,8 +118,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
         self.activeRoutedExperts = activeRoutedExperts
         self.prefillExpertUnionCap = prefillExpertUnionCap
         self.faultPolicy = faultPolicy
-        self.expertPrefetchLookahead = expertPrefetchLookahead
-        self.expertPrefetchWidth = expertPrefetchWidth
+        self.earlyExpertRead = earlyExpertRead
     }
 
     public static var production: RuntimeConfiguration {

@@ -72,7 +72,7 @@ let package = Package(
                 .product(name: "Hub", package: "swift-transformers"),
             ],
             path: "Sources/ANEFieldfareHotpath",
-            resources: [.copy("Metal")]
+            resources: [.copy("Metal"), .copy("NextLayerGuess")]
         ),
         .target(
             name: "ANEFieldfareHotpathCLICore",

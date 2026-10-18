@@ -738,7 +738,6 @@ extension Model {
                 $0 + $1.diagnosticSlotScratchBytes
             }
             if policy == .onDemand {
-                streamersBox.streamers.compactMap { $0 }.forEach { $0.waitForPrefetches() }
                 var released = streamersBox.streamers
                 streamersBox.streamers = Array(
                     repeating: nil, count: packedExpertsLayout.numLayers)

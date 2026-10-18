@@ -118,7 +118,7 @@ import ANEFieldfareHotpath
             "--help", "--backend", "--fault-policy", "--prompt-file",
             "--count-tokens", "--verify-weights", "--expert-top-k", "--prefill-expert-cap",
             "--chat-prompt", "--image", "--vision-pack", "--vision-residency",
-            "--expert-prefetch-lookahead", "--expert-prefetch-width",
+            "--early-expert-read",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
         let options = Set(words.map(String.init).filter { $0.hasPrefix("--") })

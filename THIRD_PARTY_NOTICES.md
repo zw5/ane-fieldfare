@@ -20,3 +20,13 @@ Upstream regression tests and numerical reference helpers are included under
 `Tests/Support/Repack` support synthetic loader fixtures only. These files
 retain the same Apache 2.0 attribution and license. This import does not add
 the upstream GUI, server, or installer executables.
+
+The decode early expert read (`Runtime/Inference/NextLayerExpertPrefetcher.swift`,
+`Runtime/Inference/NextLayerGuessWeights.swift`, the staging-buffer adoption in
+`Infrastructure/Streaming/PreadExpertStreamer.swift`) and the fitted next-layer
+guess file `Sources/ANEFieldfareHotpath/NextLayerGuess/gemma-4-26b-a4b-it-4bit.bin`
+are adapted from Turbo Fieldfare pull requests #187 and #188 by maxslamdunk
+(https://github.com/maxslamdunk/turbo-fieldfare, branch
+`early-expert-read-fitted`), Apache License 2.0. The fitted file holds the
+Gemma 4 router weights plus a ridge-fitted correction and is used unmodified
+(SHA-256 `b18242445534d452b7efb9c7d1c358884ef56637ad6003c187e5bced50dc3dcd`).
