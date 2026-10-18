@@ -24,10 +24,9 @@ import Testing
         let input = try MultimodalPrefillInput(
             effectiveTokenIDs: [10, 20, 20, 20, 20, 30],
             embeddingTokenIDs: [10, 0, 0, 0, 0, 30],
-            imageTokenRange: 1..<5,
-            imageFeatures: features)
+            imageSpans: [MultimodalImageSpan(tokenRange: 1..<5, features: features)])
 
-        #expect(input.imageTokenRange == 1..<5)
+        #expect(input.imageSpans.map(\.tokenRange) == [1..<5])
         #expect(input.effectiveTokenIDs[1] == 20)
         #expect(input.embeddingTokenIDs[1] == 0)
     }
@@ -52,8 +51,7 @@ import Testing
             try MultimodalPrefillInput(
                 effectiveTokenIDs: [10, 20, 20, 30],
                 embeddingTokenIDs: [10, 0, 0, 30],
-                imageTokenRange: 1..<3,
-                imageFeatures: features)
+                imageSpans: [MultimodalImageSpan(tokenRange: 1..<3, features: features)])
         }
     }
 
