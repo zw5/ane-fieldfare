@@ -60,39 +60,6 @@ import Testing
         }
     }
 
-    /// The coordinate validator dereferences `contents()`, which is invalid for
-    /// private storage — the natural choice for a caller building buffers only
-    /// GPU kernels consume. The validation added to prevent GPU faults must
-    /// throw, not fault first.
-    @Test(.enabled(if: Self.visionModelURL != nil && Self.supportsVisionRuntime,
-                   "requires an installed vision model on M2 or newer"))
-    func privateStoragePositionsAreRefusedRatherThanDereferenced() throws {
-        let modelURL = try #require(Self.visionModelURL)
-        let context = try MetalContext()
-        let config = VisionConfig()
-        let runtime = try VisionRuntime.open(
-            textModelURL: modelURL, context: context, environment: [:])
-
-        let rows = config.poolingKernel * config.poolingKernel
-        let patches = try #require(context.device.makeBuffer(
-            length: rows * config.patchDimension * 2, options: .storageModeShared))
-        let positions = try #require(context.device.makeBuffer(
-            length: rows * 2 * MemoryLayout<Int32>.stride,
-            options: .storageModePrivate))
-        #expect {
-            _ = try runtime.encodePatches(
-                patchesBF16: patches,
-                positionsInt32x2: positions,
-                patchGridWidth: config.poolingKernel,
-                patchGridHeight: config.poolingKernel)
-        } throws: { error in
-            guard case VisionRuntimeError.invalidInput(let detail) = error else {
-                return false
-            }
-            return detail.contains("CPU-visible")
-        }
-    }
-
     /// The use lease opens its lock with `O_CREAT`, so pointing the runtime at
     /// a directory that merely exists — a `.partial` download, a mistyped path —
     /// left a zero-byte `.<name>.use.lock` there that nothing ever removes. The
@@ -117,7 +84,7 @@ import Testing
         #expect(throws: (any Error).self) {
             _ = try VisionRuntime.open(
                 textModelURL: modelURL, context: context,
-                visionPackURL: candidate, environment: [:])
+                visionPackURL: candidate)
         }
 
         let lock = parent.appendingPathComponent(".model.vision.gturbo.use.lock")
@@ -165,24 +132,6 @@ import Testing
             }
             return detail.contains("M2 or newer")
         }
-    }
-
-    @Test func defaultKernelSelectionKeepsPromotedAndBaselinePathsDistinct() {
-        let promoted = VisionRuntime.resolvedKernelEnvironment([:])
-        #expect(promoted["TURBO_FIELDFARE_VISION_ATTENTION_MPP"] == "1")
-        #expect(promoted["TURBO_FIELDFARE_VISION_REGISTER_GEMM"] == "1")
-
-        let baseline = VisionRuntime.resolvedKernelEnvironment(
-            ["TURBO_FIELDFARE_VISION_BASELINE_KERNELS": "1"])
-        #expect(baseline["TURBO_FIELDFARE_VISION_ATTENTION_MPP"] == nil)
-        #expect(baseline["TURBO_FIELDFARE_VISION_REGISTER_GEMM"] == nil)
-
-        let explicit = VisionRuntime.resolvedKernelEnvironment([
-            "TURBO_FIELDFARE_VISION_ATTENTION_Q8": "1",
-            "TURBO_FIELDFARE_VISION_REGISTER_ATTENTION": "1",
-        ])
-        #expect(explicit["TURBO_FIELDFARE_VISION_ATTENTION_MPP"] == nil)
-        #expect(explicit["TURBO_FIELDFARE_VISION_REGISTER_GEMM"] == nil)
     }
 
     private static func writeSolidPNG(width: Int, height: Int, to url: URL) throws {

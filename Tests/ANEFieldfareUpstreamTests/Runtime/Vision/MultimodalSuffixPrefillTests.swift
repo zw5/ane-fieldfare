@@ -18,7 +18,6 @@ import Testing
             hiddenSize: hidden,
             gpuNanoseconds: 0,
             scratchBytes: 0,
-            attentionVariant: .mppTensorOps72,
             projectorPath: .affineThreadgroupBF16Apple10,
             expertResidencyTransition: nil,
             preprocessing: nil)

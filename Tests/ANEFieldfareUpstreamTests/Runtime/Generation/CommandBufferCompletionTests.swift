@@ -147,7 +147,7 @@ import Testing
         #expect(!source.contains("if let error = commandBuffer.error"))
         let checkedWaits = source.components(
             separatedBy: "metalCommandBufferFailureDetail(").count - 1
-        #expect(checkedWaits == 3,
-                "expected all three VisionRuntime waits to preserve status diagnostics")
+        #expect(checkedWaits == 2,
+                "expected both VisionRuntime waits to preserve status diagnostics")
     }
 }

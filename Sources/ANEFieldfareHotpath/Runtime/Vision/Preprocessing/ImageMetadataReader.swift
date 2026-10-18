@@ -37,20 +37,6 @@ public struct VisionImageLimits: Sendable, Equatable {
         self.allowedTypeIdentifiers = allowedTypeIdentifiers
         self.maximumDecodedBytes = maximumDecodedBytes
     }
-
-    /// `allowedTypeIdentifiers` as `UTType`s, for the picker and pasteboard
-    /// gates that admit an attachment in the first place.
-    ///
-    /// Those gates used to admit anything conforming to `public.image`, which is
-    /// a far wider set than this one: a camera RAW, EXR or WebP was copied at
-    /// full size, decoded in-process for its thumbnail beside a loaded model,
-    /// and only then refused by `ImageMetadataReader`. Sorted so the picker's
-    /// type list is stable between launches.
-    public var allowedContentTypes: [UTType] {
-        allowedTypeIdentifiers
-            .compactMap(UTType.init(_:))
-            .sorted { $0.identifier < $1.identifier }
-    }
 }
 
 public struct VisionImageMetadata: Sendable, Equatable {
@@ -72,14 +58,7 @@ public struct ImageMetadataReader: Sendable {
         self.limits = limits
     }
 
-    /// `verifyStreamCompleteness` walks a JPEG's whole entropy-coded scan to
-    /// prove the file is not truncated — a read of every encoded byte. A
-    /// caller that only needs dimensions (admission token counting) can skip
-    /// it: a truncated file still fails at encode time, where the walk runs.
-    package func read(
-        opened: OpenedVisionImage,
-        verifyStreamCompleteness: Bool = true
-    ) throws -> VisionImageMetadata {
+    package func read(opened: OpenedVisionImage) throws -> VisionImageMetadata {
         let source = opened.source
         let frameCount = CGImageSourceGetCount(source)
         guard frameCount == 1 else {
@@ -98,14 +77,14 @@ public struct ImageMetadataReader: Sendable {
         }
         // A truncated JPEG decodes to gray filler rather than failing, so the
         // stream has to be checked structurally; see `hasCompleteJPEGStream`.
-        if verifyStreamCompleteness, sourceType.conforms(to: .jpeg),
+        if sourceType.conforms(to: .jpeg),
            !opened.hasCompleteJPEGStream() {
             throw VisionImageError.invalidMetadata(
                 "JPEG scan is not terminated: the file is truncated")
         }
         // PNG fails the same way and used to pass: the undecoded remainder
         // reads as black and the answer describes a black square.
-        if verifyStreamCompleteness, sourceType.conforms(to: .png),
+        if sourceType.conforms(to: .png),
            !opened.hasCompletePNGStream() {
             throw VisionImageError.invalidMetadata(
                 "PNG has no IEND chunk: the file is truncated")

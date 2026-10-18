@@ -30,7 +30,7 @@ import Testing
         let features = VisionFeatures(
             buffer: buffer, tokenCount: 2, hiddenSize: hidden,
             gpuNanoseconds: 0, scratchBytes: 0,
-            attentionVariant: .native72Q16, projectorPath: .fallback,
+            projectorPath: .fallback,
             expertResidencyTransition: nil, preprocessing: nil)
         // <boi> image image <eoi>: the span covers the two image tokens.
         let input = try MultimodalPrefillInput(

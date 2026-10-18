@@ -5,34 +5,16 @@ package final class VisionPrimitives {
     private let addPosition: MTLComputePipelineState
     private let rmsnorm: MTLComputePipelineState
     private let postnormResidual: MTLComputePipelineState
-    private let qkvNormRoPE: MTLComputePipelineState
     private let qkvNormRoPEPadded: MTLComputePipelineState
-    private let geglu: MTLComputePipelineState
     private let pool: MTLComputePipelineState
     private let bfloatToHalf: MTLComputePipelineState
 
-    package init(context: MetalContext,
-                 environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+    package init(context: MetalContext) throws {
         normalize = try context.pipeline("vision_normalize_patches")
         addPosition = try context.pipeline("vision_add_position")
-        if environment["TURBO_FIELDFARE_VISION_SAFE_RMS"] == "1" {
-            let library = try MetalContext.privateLibrary(
-                device: context.device, module: "vision", mathMode: .safe)
-            guard let rmsFunction = library.makeFunction(name: "vision_rmsnorm_rows"),
-                  let residualFunction = library.makeFunction(
-                    name: "vision_postnorm_residual") else {
-                throw MetalError.missingFunction("vision safe RMSNorm")
-            }
-            rmsnorm = try context.device.makeComputePipelineState(function: rmsFunction)
-            postnormResidual = try context.device.makeComputePipelineState(
-                function: residualFunction)
-        } else {
-            rmsnorm = try context.pipeline("vision_rmsnorm_rows")
-            postnormResidual = try context.pipeline("vision_postnorm_residual")
-        }
-        qkvNormRoPE = try context.pipeline("vision_qkv_norm_rope")
+        rmsnorm = try context.pipeline("vision_rmsnorm_rows")
+        postnormResidual = try context.pipeline("vision_postnorm_residual")
         qkvNormRoPEPadded = try context.pipeline("vision_qkv_norm_rope_padded")
-        geglu = try context.pipeline("vision_geglu")
         pool = try context.pipeline("vision_pool_standardize_norm")
         bfloatToHalf = try context.pipeline("vision_bfloat_to_half")
     }
@@ -99,14 +81,15 @@ package final class VisionPrimitives {
         encoder.endEncoding()
     }
 
+    /// Q/K/V are in attention's padded head-major layout, `paddedRowStride`
+    /// rows per head.
     package func encodeQKV(commandBuffer: MTLCommandBuffer,
                            q: MTLBuffer, k: MTLBuffer, v: MTLBuffer,
                            weights: MTLBuffer, qWeightOffset: Int, kWeightOffset: Int,
                            positions: MTLBuffer, rows: Int, heads: Int,
-                           paddedRowStride: Int = 0) {
+                           paddedRowStride: Int) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        let padded = paddedRowStride != 0
-        let pipeline = padded ? qkvNormRoPEPadded : qkvNormRoPE
+        let pipeline = qkvNormRoPEPadded
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(q, offset: 0, index: 0)
         encoder.setBuffer(k, offset: 0, index: 1)
@@ -117,22 +100,9 @@ package final class VisionPrimitives {
         var rowCount = UInt32(rows), headCount = UInt32(heads)
         encoder.setBytes(&rowCount, length: 4, index: 6)
         encoder.setBytes(&headCount, length: 4, index: 7)
-        if padded {
-            var stride = UInt32(paddedRowStride)
-            encoder.setBytes(&stride, length: 4, index: 8)
-        }
+        var stride = UInt32(paddedRowStride)
+        encoder.setBytes(&stride, length: 4, index: 8)
         dispatch1D(encoder, count: rows * heads, pipeline: pipeline)
-    }
-
-    package func encodeGeGLU(commandBuffer: MTLCommandBuffer,
-                             gate: MTLBuffer, up: MTLBuffer, count: Int) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        encoder.setComputePipelineState(geglu)
-        encoder.setBuffer(gate, offset: 0, index: 0)
-        encoder.setBuffer(up, offset: 0, index: 1)
-        var value = UInt32(count)
-        encoder.setBytes(&value, length: 4, index: 2)
-        dispatch1D(encoder, count: count, pipeline: geglu)
     }
 
     package func encodePool(commandBuffer: MTLCommandBuffer,

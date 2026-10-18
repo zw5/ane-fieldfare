@@ -16,7 +16,6 @@ import Testing
             hiddenSize: VisionConfig().textHiddenSize,
             gpuNanoseconds: 0,
             scratchBytes: bytes,
-            attentionVariant: .native72Q16,
             projectorPath: .affineThreadgroupF16,
             expertResidencyTransition: nil,
             preprocessing: nil)
@@ -43,7 +42,6 @@ import Testing
             hiddenSize: VisionConfig().textHiddenSize,
             gpuNanoseconds: 0,
             scratchBytes: buffer.length,
-            attentionVariant: .native72Q16,
             projectorPath: .affineThreadgroupF16,
             expertResidencyTransition: nil,
             preprocessing: nil)
@@ -67,7 +65,6 @@ import Testing
                 buffer: buffer, tokenCount: rows,
                 hiddenSize: VisionConfig().textHiddenSize,
                 gpuNanoseconds: 0, scratchBytes: bytes,
-                attentionVariant: .native72Q16,
                 projectorPath: .affineThreadgroupF16,
                 expertResidencyTransition: nil, preprocessing: nil)
         }

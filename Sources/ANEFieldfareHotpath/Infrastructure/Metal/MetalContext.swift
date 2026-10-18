@@ -190,16 +190,13 @@ public final class MetalContext: @unchecked Sendable {
     /// Compile one shader module into its own library, leaving the shared
     /// runtime library untouched.
     ///
-    /// Cached per device, module, math mode and source variant: libraries are
-    /// immutable, and
-    /// one `VisionRuntime` init otherwise compiles the identical tensorops
-    /// source three times (linear, attention, projector) on every load.
+    /// Cached per device, module and source variant: libraries are immutable,
+    /// and one `VisionRuntime` init otherwise compiles the identical tensorops
+    /// source twice (attention, projector) on every load.
     public static func privateLibrary(device: MTLDevice, module: String,
-                                      mathMode: MTLMathMode? = nil,
                                       includeVisionTensorOps: Bool = false) throws
         -> MTLLibrary {
-        let key = "\(ObjectIdentifier(device).hashValue)#\(module)"
-            + "#\(mathMode?.rawValue ?? -1)#\(includeVisionTensorOps)"
+        let key = "\(ObjectIdentifier(device).hashValue)#\(module)#\(includeVisionTensorOps)"
         privateLibraryLock.lock()
         defer { privateLibraryLock.unlock() }
         if let cached = privateLibraryCache[key] {
@@ -211,9 +208,6 @@ public final class MetalContext: @unchecked Sendable {
         let src = try String(contentsOf: url, encoding: .utf8)
         let opts = MTLCompileOptions()
         opts.languageVersion = .version4_0
-        if let mathMode {
-            opts.mathMode = mathMode
-        }
         if includeVisionTensorOps {
             opts.preprocessorMacros = [
                 "TURBO_FIELDFARE_VISION_TENSOROPS": NSNumber(value: true)
