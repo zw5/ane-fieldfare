@@ -1,0 +1,12 @@
+.build/
+checkpoints/
+.DS_Store
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+
+# Local-only research material (kept on disk, never published)
+results/
+docs/
+LOCAL_NOTES.md
+*.logits.f16
