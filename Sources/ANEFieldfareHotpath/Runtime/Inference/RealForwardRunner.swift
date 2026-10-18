@@ -519,9 +519,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                      embeddingOverride: MTLBuffer? = nil,
                                      bidirectionalBlock: Range<Int>? = nil) async throws {
         guard !tokens.isEmpty else { return }
-        guard kv != nil else {
-            throw PrefillError.chunkedUnsupported("chunked prefill attention requires FP16 KV")
-        }
         let kvPosition = kv.position
         guard kvPosition == startPosition else {
             throw PrefillError.chunkedUnsupported(
@@ -1451,9 +1448,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             }
 
             let gAttention: (MTLCommandBuffer) -> Void = { [self] cb in
-                guard kv != nil else {
-                    preconditionFailure("FP16 attention requires an FP16 KV cache")
-                }
                 if isFull {
                     attention.encodeFull(commandBuffer: cb,
                                          q: qScratch,

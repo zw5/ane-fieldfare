@@ -6,10 +6,10 @@
 
 // One compiled ANE program for Gemma 4 routed experts, with two request banks
 // whose IOSurfaces the host fills on the GPU. Each bank carries 4 experts as
-// [4, 2816, 2176] FP16: 64 activation lanes followed
-// by the expanded gate/up/down weights, which are ordinary runtime inputs.
-// Activation lanes must be scaled by 64; the program undoes the scale, and the
-// output is [4, 2816, 64] unscaled FP32. Uses private AppleNeuralEngine
+// [4, 2816, lanes + 2112] FP16: `lanes` activation positions followed by the
+// expanded gate/up/down weights, which are ordinary runtime inputs.
+// Activations must be scaled by 64; the program undoes the scale, and the
+// output is [4, 2816, lanes] unscaled FP32. Uses private AppleNeuralEngine
 // classes; construction fails cleanly when they are unavailable.
 typedef struct ANEExpertCarrier ANEExpertCarrier;
 
@@ -21,7 +21,7 @@ typedef struct {
 } ANEExpertCarrierInfo;
 
 // Errors are returned as strdup'd strings the caller frees.
-ANEExpertCarrier *ANEExpertCarrierCreate(const char **error);
+ANEExpertCarrier *ANEExpertCarrierCreate(uint32_t lanes, const char **error);
 IOSurfaceRef ANEExpertCarrierInput(ANEExpertCarrier *, uint32_t bank);
 IOSurfaceRef ANEExpertCarrierOutput(ANEExpertCarrier *, uint32_t bank);
 // Signal `metalSharedEvent` with `value` when the bank's next evaluation

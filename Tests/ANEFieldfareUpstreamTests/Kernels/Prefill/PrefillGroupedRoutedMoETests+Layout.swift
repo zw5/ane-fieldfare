@@ -39,7 +39,7 @@ extension PrefillGroupedRoutedMoETests {
 
     #expect(buffers.sortedPairs.storageMode == .shared)
     // The local scheduler keeps one bounded wide-prefill metadata allocation.
-    #expect(buffers.sortedPairs.length == max(pairBytes, 1024 * 8 * MemoryLayout<PrefillTokenExpertPair>.stride))
+    #expect(buffers.sortedPairs.length == max(pairBytes, PrefillRuntimeConfig.maxChunkTokens * 8 * MemoryLayout<PrefillTokenExpertPair>.stride))
     #expect(omittedBytes > 0)
 
     let pairPtr = buffers.sortedPairs.contents()

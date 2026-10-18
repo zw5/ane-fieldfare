@@ -184,12 +184,30 @@ public func run(args: Args,
         }
 
         let context = try MetalContext()
-        let model = try Model.load(
-            directoryURL: modelURL,
-            device: context.device,
-            streamingMode: .pread(slotCount: runtime.expertCacheSlots),
-            expertCachePolicy: runtime.modelExpertCachePolicy,
-            integrityPolicy: .fullSha256)
+        func loadModel(_ integrityPolicy: ModelIntegrityPolicy) throws -> Model {
+            try Model.load(
+                directoryURL: modelURL,
+                device: context.device,
+                streamingMode: .pread(slotCount: runtime.expertCacheSlots),
+                expertCachePolicy: runtime.modelExpertCachePolicy,
+                integrityPolicy: integrityPolicy)
+        }
+        // The installer hashes every file once and records the result. Trust
+        // that receipt when it matches the install, so a run does not re-hash
+        // 13 GB of experts; hash everything when it is absent or invalid.
+        let model: Model
+        if args.verifyWeights {
+            model = try loadModel(.fullSha256)
+        } else {
+            do {
+                model = try loadModel(.sizeCheckTrustedReceipt)
+            } catch ModelError.trustedReceiptInvalid(let detail) {
+                if !args.quiet {
+                    stderr.write(Data("[install receipt not usable (\(detail)); verifying weights]\n".utf8))
+                }
+                model = try loadModel(.fullSha256)
+            }
+        }
         let runner = try RealForwardRunner(
             model: model,
             context: context,

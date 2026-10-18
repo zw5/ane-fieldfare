@@ -127,20 +127,28 @@ wall time on an M5, not the protocol below:
 | ANE carrier on its own command queue. The ANE no longer idles while the shared FFN occupies the host queue. | 19.5 s | — | Bit-exact |
 | Batched shared FFN, 3 tensor-op GEMMs replacing 1,024 per-token GEMVs. Shared FFN goes from 7.1 s to 0.83 s. | 16.9 s | 18.7 s | Same FP32-reference error as the GEMV (relative L2 ≈ 3–4e-4; `PrefillSharedExpertBatchedTests`); against the previous logits, mean KL 0.015 (metal) and 0.003 (hybrid); greedy 17/17 |
 | Concurrent expert-read lookahead of 4. SSD throughput: 4.7 GB/s at queue depth 1, 6.7 GB/s at depth 2. | 16.2 s | — | Bit-exact |
+| Prefill chunks up to 4,096 tokens, chosen per prompt (`--prefill-chunk-tokens auto`, now the default). Each layer's experts are read once per prompt: 32.1 GB → 11.7 GB of reads. | 11.7 s | 15.3 s | Bit-exact |
+| ANE program with 128 activation lanes per expert instead of 64. Each request streams four experts' weights (about 0.95 ms), so more rows per request halve the evaluations: 3,352 → 1,980. | 9.2 s | — | Bit-exact |
 
-The traces show where prefill time still goes on the hybrid path, in order of
-expected payoff:
-- **Disk.** About 32 GB of expert reads per prompt. Each 1,024-token chunk
-  re-reads most experts; a layer-major chunk order would read each expert once
-  per layer.
-- **Pre-router GPU work** (attention, QKV), 4.2 s, all on the critical path.
-- **Weight expansion**, about 35% redundant. An expert split across several
-  64-row jobs is expanded once per job.
-- **ANE row utilization**, 64%.
+Short prompts were dominated by integrity checking rather than compute: the CLI
+hashed all 13 GB of expert files on every launch. It now trusts the installer's
+verified receipt when it matches the install, and `--verify-weights` restores the
+full SHA-256 check. Prefill on the 28-token prompt went from 6.3 s to 1.6 s, and on
+the 430-token prompt from 6.7 s to 2.2 s.
+
+Measured and rejected: running the two halves of a chunk one stage apart, so the
+GPU's attention overlaps the ANE's experts, took 13.4 s against 9.2 s. Each ANE
+request costs the GPU a weight expansion (the ANE cannot dequantize INT4 itself),
+so overlapping saturates the GPU, and the halves re-read and re-expand the same
+experts. A third request bank made no measurable difference.
+
+Remaining prefill time on the 3,015-token prompt (about 9 s): pre-router GPU work
+(attention and projections) 4.2 s, then the routed experts 4.4 s, of which the ANE
+evaluates for 3.5 s.
 
 ### Measured performance
 
-The table below predates the optimizations above. It compares unmodified Turbo Fieldfare `4c6db1e`, this repo's Metal backend, and the
+The table below predates all of the optimizations above. It compares unmodified Turbo Fieldfare `4c6db1e`, this repo's Metal backend, and the
 ANE hybrid. Setup: M5 with 16 GiB, Swift 6.4, temperature 0.2, top-k 64,
 top-p 0.95, a 4,096-token context, and a 1,024-token output cap. Each value is
 the mean of two measured runs after warmups, with backend order reversed between

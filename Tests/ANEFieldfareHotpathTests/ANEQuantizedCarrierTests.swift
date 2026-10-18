@@ -58,8 +58,9 @@ final class ANEQuantizedCarrierTests: XCTestCase {
         let packed = backend.banks[0].input.contents().assumingMemoryBound(to: Float16.self)
         var packErrors = 0
         for slot in 0..<rows { for column in 0..<d { for middle in 0..<f {
-            let base = (slot * d + column) * 2176
-            for (lane, source) in [(64, middle * d + column), (768, d * f + middle * d + column), (1472, 2 * d * f + column * f + middle)] {
+            let lanes = backend.lanes
+            let base = (slot * d + column) * (lanes + 3 * f)
+            for (lane, source) in [(lanes, middle * d + column), (lanes + f, d * f + middle * d + column), (lanes + 2 * f, 2 * d * f + column * f + middle)] {
                 if Double(packed[base + lane + middle]) != referenceWeights[slot][source] { packErrors += 1 }
             }
         } } }

@@ -116,7 +116,7 @@ import ANEFieldfareHotpath
             "--seed", "--stop", "--quiet", "--expert-cache-slots",
             "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
             "--help", "--backend", "--fault-policy", "--prompt-file",
-            "--count-tokens", "--expert-top-k", "--prefill-expert-cap",
+            "--count-tokens", "--verify-weights", "--expert-top-k", "--prefill-expert-cap",
             "--chat-prompt", "--image", "--vision-pack", "--vision-residency",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
@@ -184,7 +184,7 @@ import ANEFieldfareHotpath
             ("--expert-cache-slots", "7"),
             ("--expert-cache-policy", "fifo"),
             ("--prefill", "yes"),
-            ("--prefill-chunk-tokens", "2048"),
+            ("--prefill-chunk-tokens", "8192"),
         ]
         for (flag, value) in invalidValues {
             #expect(throws: ArgsError.invalidValue(flag: flag, value: value)) {
@@ -212,9 +212,9 @@ import ANEFieldfareHotpath
         }
 
         arguments.expertCacheSlots = RuntimeConfiguration.production.expertCacheSlots
-        arguments.prefillChunkTokens = 2048
+        arguments.prefillChunkTokens = 8192
         #expect(throws: ArgsError.invalidValue(
-            flag: "--prefill-chunk-tokens", value: "2048")) {
+            flag: "--prefill-chunk-tokens", value: "8192")) {
             _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         }
 

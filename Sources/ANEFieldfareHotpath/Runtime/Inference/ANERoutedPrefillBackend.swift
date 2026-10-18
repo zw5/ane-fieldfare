@@ -30,6 +30,11 @@ private final class SubmittedANEInput: @unchecked Sendable {
 final class ANERoutedPrefillBackend: @unchecked Sendable {
     let layerCount: Int
     let batchExperts = 4
+    /// Activation positions per expert in one request. Each request streams
+    /// all four experts' expanded weights (about 0.95 ms), so more lanes
+    /// amortize that transfer over more rows; past 128 the ANE is compute
+    /// bound and padding outweighs the saving.
+    let lanes: Int
     /// Upcoming expert groups read concurrently. SSD throughput rises from
     /// 4.7 GB/s at queue depth 1 to 6.7 GB/s at depth 2.
     let fetchLookahead = 4
@@ -83,18 +88,24 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         }
     }
 
-    init(context: MetalContext, layers: Int) throws {
+    init(context: MetalContext, layers: Int, lanes: Int = 128) throws {
+        self.lanes = lanes
         let library = try MetalContext.privateLibrary(device: context.device, module: "ane_prefill")
+        let constants = MTLFunctionConstantValues()
+        var laneCount = UInt32(lanes)
+        constants.setConstantValue(&laneCount, type: .uint, index: 80)
+        func function(_ name: String) throws -> MTLFunction {
+            try library.makeFunction(name: name, constantValues: constants)
+        }
         func pipeline(_ name: String) throws -> MTLComputePipelineState {
-            guard let f = library.makeFunction(name: name) else { throw MetalError.missingFunction(name) }
-            return try context.device.makeComputePipelineState(function: f)
+            try context.device.makeComputePipelineState(function: try function(name))
         }
         weightsPipeline = try pipeline("ane_expert_weights")
-        argumentEncoder = library.makeFunction(name: "ane_expert_weights")!.makeArgumentEncoder(bufferIndex: 0)
+        argumentEncoder = try function("ane_expert_weights").makeArgumentEncoder(bufferIndex: 0)
         inputsPipeline = try pipeline("ane_expert_inputs")
         outputsPipeline = try pipeline("ane_expert_outputs")
         var error: UnsafePointer<CChar>?
-        guard let handle = ANEExpertCarrierCreate(&error) else {
+        guard let handle = ANEExpertCarrierCreate(UInt32(lanes), &error) else {
             let message = error.map { String(cString: $0) } ?? "device carrier construction failed"
             free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
         }
@@ -111,8 +122,8 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         var built: [Bank] = []
         do {
             for index in 0..<2 {
-                let input = try wrap(ANEExpertCarrierInput(handle, UInt32(index)), minimum: batchExperts * 2816 * 2176 * 2)
-                let output = try wrap(ANEExpertCarrierOutput(handle, UInt32(index)), minimum: batchExperts * 2816 * 64 * 4)
+                let input = try wrap(ANEExpertCarrierInput(handle, UInt32(index)), minimum: batchExperts * 2816 * (lanes + 2112) * 2)
+                let output = try wrap(ANEExpertCarrierOutput(handle, UInt32(index)), minimum: batchExperts * 2816 * lanes * 4)
                 guard let event = context.device.makeSharedEvent() else { throw ModelError.residentBufferWrapFailed }
                 guard let arguments = context.device.makeBuffer(length: argumentEncoder.encodedLength, options: .storageModeShared),
                       let metadata = context.device.makeBuffer(length: 4 * 8, options: .storageModeShared),
@@ -141,7 +152,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
             "read_seconds": Double(readNanos) / 1e9, "request_banks": banks.count, "experts_per_request": batchExperts,
             "input_gpu_ms": inputGPUMilliseconds, "consumer_gpu_ms": consumerGPUMilliseconds,
             "carrier_bytes": banks.reduce(0) { $0 + $1.input.length + $1.output.length },
-            "input_scale": 64, "weight_pack_tile": "32x32", "fetch_lookahead": fetchLookahead,
+            "input_scale": 64, "lanes": lanes, "weight_pack_tile": "32x32", "fetch_lookahead": fetchLookahead,
             "claim_boundary": "Routed top-8 prefill on ANE with ordinary runtime-input weights expanded by Metal; no mutable-weight or resident-expert claim."]
     }
 
@@ -158,7 +169,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         let pairValues = pairs.contents().assumingMemoryBound(to: PrefillTokenExpertPair.self)
         var destinations = Set<UInt64>()
         for job in jobs {
-            guard (1...64).contains(job.count), job.start >= 0,
+            guard (1...lanes).contains(job.count), job.start >= 0,
                   job.start <= pairs.length / MemoryLayout<PrefillTokenExpertPair>.stride - job.count,
                   job.view.offset <= UInt64(job.view.buffer.length), job.view.length >= 3_358_720,
                   job.view.length <= UInt64(job.view.buffer.length) - job.view.offset,
@@ -197,7 +208,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         enc.setBuffer(hidden, offset: 0, index: 0); enc.setBuffer(bank.input, offset: 0, index: 1)
         enc.setBuffer(pairs, offset: 0, index: 2); enc.setBuffer(bank.metadata, offset: 0, index: 3)
         enc.setBuffer(bank.validation, offset: 0, index: 4)
-        enc.dispatchThreads(MTLSize(width: batchExperts * 2816 * 64, height: 1, depth: 1),
+        enc.dispatchThreads(MTLSize(width: batchExperts * 2816 * lanes, height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
         bank.producer = cb; bank.pairs = pairs; bank.rows = jobs.reduce(0) { $0 + $1.count }
@@ -243,7 +254,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         enc.setBuffer(bank.output, offset: 0, index: 0); enc.setBuffer(partials, offset: 0, index: 1)
         enc.setBuffer(pairs, offset: 0, index: 2); enc.setBuffer(bank.metadata, offset: 0, index: 3)
         enc.setBuffer(bank.validation, offset: 0, index: 4)
-        enc.dispatchThreads(MTLSize(width: batchExperts * 2816 * 64, height: 1, depth: 1),
+        enc.dispatchThreads(MTLSize(width: batchExperts * 2816 * lanes, height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
         bank.busy = true; bank.consumer = cb
@@ -307,8 +318,8 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         }
         func issue() throws {
             guard !staging.isEmpty else { return }
-            if pending.count == 2 { try drain() }
-            let bank = ordinal % 2
+            if pending.count == banks.count { try drain() }
+            let bank = ordinal % banks.count
             let producer = try prepareBatch(bank: bank, jobs: staging, offsets: offsets, hidden: hidden, pairs: pairs)
             commitLast()
             let consumer = try submit(bank: bank, producer: producer, partials: partials, pairs: pairs)
@@ -356,9 +367,9 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
             let views = try await fetch.task.value
             readNanos += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started
             guard let view = views.first else { throw ModelError.residentBufferWrapFailed }
-            for offset in stride(from: 0, to: Int(group.pairCount), by: 64) {
+            for offset in stride(from: 0, to: Int(group.pairCount), by: lanes) {
                 staging.append(Job(view: view, start: Int(group.pairStart) + offset,
-                                   count: min(64, Int(group.pairCount) - offset), slots: fetch.plan.assignedSlots))
+                                   count: min(lanes, Int(group.pairCount) - offset), slots: fetch.plan.assignedSlots))
                 if staging.count == batchExperts { try issue() }
             }
         }

@@ -171,8 +171,8 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
 
     // Preserve ANE Fieldfare's validated wide-prefill sizes while
     // accepting upstream's 256-token size and automatic selection.
-    public static let maxChunkTokens = 1024
-    public static let allowedChunkTokens = [32, 64, 128, 256, 512, 1024]
+    public static let maxChunkTokens = 4096
+    public static let allowedChunkTokens = [32, 64, 128, 256, 512, 1024, 2048, 4096]
 
     /// The smallest allowed chunk that covers `promptTokens`, capped.
     ///

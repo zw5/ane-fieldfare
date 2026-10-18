@@ -107,7 +107,7 @@ public struct ArchConfig: Sendable, Equatable {
 }
 
 /// Failure modes for the validation gates in `Model.load`.
-enum ModelError: Error, CustomStringConvertible, Equatable {
+public enum ModelError: Error, CustomStringConvertible, Equatable {
     case partialInstall(path: String)
     case notAGTurboDirectory
     case unsupportedVersion(major: Int, minor: Int)

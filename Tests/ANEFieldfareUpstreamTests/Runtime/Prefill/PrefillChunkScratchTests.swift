@@ -32,10 +32,10 @@ import Metal
 
     @Test func layoutClampsChunkSizeToRuntimeBounds() {
         #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 0).chunkTokens == 1)
-        // ANE Fieldfare preserves the wider, previously validated scratch cap.
-        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 2048).chunkTokens
+        // Chunks up to 4,096 tokens keep a long prompt layer-major.
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 8192).chunkTokens
                 == PrefillRuntimeConfig.maxChunkTokens)
-        #expect(PrefillRuntimeConfig.maxChunkTokens == 1024)
+        #expect(PrefillRuntimeConfig.maxChunkTokens == 4096)
         #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 256).chunkTokens == 256)
     }
 
@@ -47,7 +47,7 @@ import Metal
         #expect(PrefillRuntimeConfig.autoChunkTokens(promptTokens: 33) == 64)
         #expect(PrefillRuntimeConfig.autoChunkTokens(promptTokens: 200) == 256)
         // Beyond the ceiling it saturates rather than inventing a size.
-        #expect(PrefillRuntimeConfig.autoChunkTokens(promptTokens: 7_019) == 1024)
+        #expect(PrefillRuntimeConfig.autoChunkTokens(promptTokens: 7_019) == 4096)
         // A cap below the ceiling is honoured, so a caller can stay smaller.
         #expect(PrefillRuntimeConfig.autoChunkTokens(promptTokens: 7_019, cap: 64) == 64)
     }

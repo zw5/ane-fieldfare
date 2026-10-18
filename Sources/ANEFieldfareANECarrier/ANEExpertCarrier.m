@@ -9,13 +9,12 @@
 enum {
     Hidden = 2816,
     Intermediate = 704,
-    Positions = 64,
-    CarrierStride = Positions + 3 * Intermediate,
     Banks = 2,
     BatchExperts = 4,
 };
 
 struct ANEExpertCarrier {
+    uint32_t lanes;
     id model;
     id requests[Banks];
     IOSurfaceRef inputs[Banks];
@@ -53,7 +52,8 @@ static IOSurfaceRef makeSurface(uint64_t bytes) {
     });
 }
 
-static NSString *expertMIL(void) {
+static NSString *expertMIL(uint32_t Positions) {
+    uint32_t CarrierStride = Positions + 3 * Intermediate;
     return [NSString stringWithFormat:
         @"program(1.3)\n"
          "[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n"
@@ -123,19 +123,23 @@ static NSString *expertMIL(void) {
          Hidden, Positions, Hidden, Positions, Hidden, Positions];
 }
 
-static NSString *carrierMIL(void) {
-    NSMutableString *mil = [expertMIL() mutableCopy];
+static NSString *carrierMIL(uint32_t lanes) {
+    NSMutableString *mil = [expertMIL(lanes) mutableCopy];
     NSRange all = NSMakeRange(0, mil.length);
     // Power-of-two input scaling avoids ANE's loss of tiny products. Undo it
     // before the nonlinear gate and after the down product; the up branch
     // carries the scale through GELU(gate) * up.
     [mil replaceOccurrencesOfString:@"> gate=matmul(" withString:@"> gate_scaled=matmul(" options:0 range:all];
     all = NSMakeRange(0, mil.length);
-    [mil replaceOccurrencesOfString:@"    tensor<fp16,[1,1,64,704]> gate2=" withString:@"    tensor<fp16,[1,1,64,704]> gate=mul(x=gate_scaled,y=fp16(0.015625))[name=string(\"gate_unscale\")];\n    tensor<fp16,[1,1,64,704]> gate2=" options:0 range:all];
+    [mil replaceOccurrencesOfString:[NSString stringWithFormat:@"    tensor<fp16,[1,1,%u,704]> gate2=", lanes]
+                         withString:[NSString stringWithFormat:@"    tensor<fp16,[1,1,%u,704]> gate=mul(x=gate_scaled,y=fp16(0.015625))[name=string(\"gate_unscale\")];\n    tensor<fp16,[1,1,%u,704]> gate2=", lanes, lanes]
+                            options:0 range:all];
     all = NSMakeRange(0, mil.length);
     [mil replaceOccurrencesOfString:@"> o2=matmul(" withString:@"> o2_scaled=matmul(" options:0 range:all];
     all = NSMakeRange(0, mil.length);
-    [mil replaceOccurrencesOfString:@"    tensor<fp16,[1,1,2816,64]> ot=" withString:@"    tensor<fp16,[1,1,64,2816]> o2=mul(x=o2_scaled,y=fp16(0.015625))[name=string(\"down_unscale\")];\n    tensor<fp16,[1,1,2816,64]> ot=" options:0 range:all];
+    [mil replaceOccurrencesOfString:[NSString stringWithFormat:@"    tensor<fp16,[1,1,2816,%u]> ot=", lanes]
+                         withString:[NSString stringWithFormat:@"    tensor<fp16,[1,1,%u,2816]> o2=mul(x=o2_scaled,y=fp16(0.015625))[name=string(\"down_unscale\")];\n    tensor<fp16,[1,1,2816,%u]> ot=", lanes, lanes]
+                            options:0 range:all];
     // Keep each expert's D/F matrix axes and add a leading batch dimension.
     // External channels flatten batch and D.
     all = NSMakeRange(0, mil.length);
@@ -145,9 +149,13 @@ static NSString *carrierMIL(void) {
     return mil;
 }
 
-ANEExpertCarrier *ANEExpertCarrierCreate(const char **errorMessage) {
+ANEExpertCarrier *ANEExpertCarrierCreate(uint32_t lanes, const char **errorMessage) {
     @autoreleasepool {
         if (errorMessage) *errorMessage = NULL;
+        if (lanes < 64 || lanes > 512 || lanes % 32) {
+            if (errorMessage) *errorMessage = retainError(@"carrier lanes must be a multiple of 32 in 64...512");
+            return NULL;
+        }
         mach_timebase_info(&timebase);
         void *framework = dlopen(
             "/System/Library/PrivateFrameworks/AppleNeuralEngine.framework/AppleNeuralEngine",
@@ -160,7 +168,7 @@ ANEExpertCarrier *ANEExpertCarrierCreate(const char **errorMessage) {
             if (errorMessage) *errorMessage = retainError(@"private ANE runtime surface unavailable");
             return NULL;
         }
-        NSData *mil = [carrierMIL() dataUsingEncoding:NSUTF8StringEncoding];
+        NSData *mil = [carrierMIL(lanes) dataUsingEncoding:NSUTF8StringEncoding];
         id descriptor = ((id (*)(Class, SEL, id, id, id))objc_msgSend)(
             descriptorClass, @selector(modelWithMILText:weights:optionsPlist:), mil, @{}, nil);
         id model = descriptor ? ((id (*)(Class, SEL, id))objc_msgSend)(
@@ -177,6 +185,7 @@ ANEExpertCarrier *ANEExpertCarrierCreate(const char **errorMessage) {
         [mil writeToFile:[temporary stringByAppendingPathComponent:@"model.mil"] atomically:YES];
 
         ANEExpertCarrier *carrier = calloc(1, sizeof(*carrier));
+        carrier->lanes = lanes;
         carrier->model = model;
         carrier->temporaryPath = temporary;
         NSError *error = nil;
@@ -199,8 +208,8 @@ ANEExpertCarrier *ANEExpertCarrierCreate(const char **errorMessage) {
             ANEExpertCarrierDestroy(carrier);
             return NULL;
         }
-        uint64_t inputBytes = (uint64_t)BatchExperts * Hidden * CarrierStride * sizeof(__fp16);
-        uint64_t outputBytes = (uint64_t)BatchExperts * Hidden * Positions * sizeof(float);
+        uint64_t inputBytes = (uint64_t)BatchExperts * Hidden * (lanes + 3 * Intermediate) * sizeof(__fp16);
+        uint64_t outputBytes = (uint64_t)BatchExperts * Hidden * lanes * sizeof(float);
         for (uint32_t bank = 0; bank < Banks; ++bank) {
             carrier->inputs[bank] = makeSurface(inputBytes);
             carrier->outputs[bank] = makeSurface(outputBytes);

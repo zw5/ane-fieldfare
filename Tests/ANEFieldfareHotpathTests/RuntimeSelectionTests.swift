@@ -16,7 +16,7 @@ final class RuntimeSelectionTests: XCTestCase {
         let failover = try Args.parse(required + ["--backend", "hybrid-ane", "--fault-policy", "failover-metal"])
         XCTAssertEqual(try failover.resolvedRuntimeConfiguration(forceLogitsHead: false).faultPolicy, .failoverMetal)
         XCTAssertThrowsError(try Args.parse(required + ["--fault-policy", "retry"]))
-        XCTAssertThrowsError(try Args.parse(required + ["--prefill-chunk", "4096"]))
+        XCTAssertThrowsError(try Args.parse(required + ["--prefill-chunk", "8192"]))
     }
 
     func testUpstreamRuntimeControlsPreserveANEContracts() throws {
