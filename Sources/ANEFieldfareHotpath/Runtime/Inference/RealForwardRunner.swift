@@ -913,6 +913,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let metadata: Any
         }
         var pendingTail: PendingLayerTail?
+        /// Experts of the next layer found resident by this layer's early read.
+        var guessedResident = Set<Int>()
         func settle(_ pending: PendingLayerTail) throws {
             try waitForCompletion(pending.tail)
             try checkCommandBufferError(pending.attention)
@@ -1166,8 +1168,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             }
                     // Clear routed partials here, in a command buffer the host
                     // completes, so routed guests on other queues never race it.
-                    // Only this chunk's `t * topK` rows are read.
-                    if let blit = cb.makeBlitCommandEncoder() {
+                    // Only this chunk's `t * topK` rows are read. A verify's
+                    // tiles write every routed row, so it clears only when a
+                    // route is dropped, below.
+                    if verifyTokens == nil, let blit = cb.makeBlitCommandEncoder() {
                         blit.fill(buffer: scratch.routePartials,
                                   range: 0..<(t * cfg.topKExperts * D * MemoryLayout<Float16>.stride),
                                   value: 0)
@@ -1279,15 +1283,28 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                                                    topK: cfg.topKExperts)
                         .filter { $0.weight != 0 }
                     prefillUnionExpertsAfterCap &+= UInt64(Set(pairs.map(\.expert)).count)
+                    if verifyTokens != nil, pairs.count < routeCount {
+                        guard let clearCB = ctx.queue.makeCommandBuffer(),
+                              let blit = clearCB.makeBlitCommandEncoder() else {
+                            throw ModelError.residentBufferWrapFailed
+                        }
+                        blit.fill(buffer: scratch.routePartials,
+                                  range: 0..<(routeCount * D * MemoryLayout<Float16>.stride), value: 0)
+                        blit.endEncoding()
+                        clearCB.commit()
+                    }
                     // Every expert has a fixed buffer, so the whole union binds
                     // at once. Tiles of resident experts go first and run while
                     // the absent experts read, in tile order.
                     let unionExperts = Array(Set(pairs.map { Int($0.expert) })).sorted()
                     // A verify checks 2 pages per expert, as decode's binding
                     // does: 8 cost ~120 us a layer on the critical path.
+                    // Experts the previous layer's early read found resident
+                    // are not probed again on the critical path.
                     let absent = Set(try model.nonResidentRoutedExperts(
-                        layer: L, experts: unionExperts,
+                        layer: L, experts: unionExperts.filter { !guessedResident.contains($0) },
                         probes: verifyTokens != nil ? Self.bindProbes : MappedExpertLayer.residencyProbes))
+                    guessedResident.removeAll(keepingCapacity: true)
                     prefillTileHits &+= UInt64(unionExperts.count - absent.count)
                     prefillTileMisses &+= UInt64(absent.count)
                     var expertSortKeys = model.routedExpertPhysicalOffsets(layer: L)
@@ -1450,6 +1467,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         let likely = Set((0..<(t * cfg.topKExperts)).map { unsafe min(Int(ids[$0]), cfg.numExperts - 1) })
                         let absentNext = try model.nonResidentRoutedExperts(
                             layer: L + 1, experts: likely.sorted(), probes: Self.bindProbes)
+                        guessedResident = likely.subtracting(absentNext)
                         // Advisory reads go out off the critical path.
                         let nextLayer = try model.expertLayer(L + 1)
                         Self.readAheadQueue.async { nextLayer.prefetch(absentNext) }
