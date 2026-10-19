@@ -244,6 +244,35 @@ machine's measured ~132 GB/s is 16.4 ms. The largest remaining costs are the
 routed experts (7.4 ms), QKV (4.0 ms), the head (3.9 ms) and the shared FFN
 (3.2 ms). `ANE_FIELDFARE_KERNEL_PROFILE=1` prints that per-kernel breakdown.
 
+#### Hot-vocabulary head
+
+Plain greedy decoding reads the 262k-row head once per 4 tokens instead of
+once per token, with output bitwise equal to the full head's
+(`Runtime/Generation/HotHeadDecoder.swift`).
+
+- **Guess.** Each step scores only the hot vocabulary: 56k token IDs shipped
+  in `HotVocabulary/vocab-262144.bin`, plus every prompt token and every token a
+  check found outside the list. The kernel reads those rows where they sit in
+  the head, so the list costs 4 bytes per token and no copy (0.37 ms → 0.75
+  ms GPU for 32k → 56k rows, against 3.3 ms for the full head). The step feeds
+  its guess to the next step.
+- **Check.** The fourth step skips the guess and runs the full head over all
+  four saved normalized rows in one pass, 2 weight rows per SIMD group (3.4 ms
+  for 4 rows). Each row's logits repeat the single-row head operation for
+  operation, so each token is the one plain decoding would have produced
+  (tested bitwise, ties included). Guesses up to the first wrong one are
+  kept; the wrong one is replaced by the checked token and the KV rows after
+  it are rewound.
+- **Misses.** On the quick suite, 0–3 guesses in 192 tokens were wrong; on
+  the chat and essay prompts, 5–7. A miss costs the steps after it in its block.
+  The list was ranked from ShareGPT English answers and Python sources
+  (`Scripts/hotvocab/build.py`). With 28k tokens the essay and chat prompts
+  missed about 5% of the time, so the list grew to 56k.
+
+The CLI uses it for greedy text decoding with chunked prefill;
+`ANE_FIELDFARE_HOT_HEAD=0` turns it off in the bench. A list for another
+vocabulary only changes speed: every token is checked against the full head.
+
 ### Speculative decoding
 
 `--drafter` runs greedy DFlash speculative decoding through the ordinary
@@ -314,6 +343,26 @@ What made verification affordable:
 - **INT4 drafter.** The drafter's projections are quantized at load to the
   target's INT4 format: ~860 MB → ~360 MB resident, with acceptance about
   unchanged (τ 4.9 vs 5.1 at block 8).
+- **Pruned draft head.** The drafter scores only a 16k-token hot vocabulary
+  (the plain decoder's list, cut down) plus the prompt's and every accepted
+  token, through the SIMD-group matrix GEMV reading listed head rows in place.
+  A draft outside it is just a rejected draft, so nothing is checked. With 8k
+  to 56k listed tokens, acceptance did not change beyond noise.
+- **Draft projections on the matrix units.** The draft step's BF16
+  activations used to force the ALU kernel, which is ALU-bound at 8 rows; the
+  matrix kernel now takes BF16 in and out. With the pruned head, an 8-row draft
+  went from ~8.6 to ~4.6 ms.
+- **Context append.** Appends of up to 16 rows (after a verify or plain
+  steps) read INT4 copies of `fc` and the K/V projections instead of BF16
+  (~150 → ~43 MB), and the append is committed without a wait: the next
+  propose, on the same queue, runs after it. Host time per step fell from
+  2.6 ms to ~0.
+- **Verify tweaks.** The shared FFN's down projection (K = 2112) now runs on
+  the matrix kernel, which takes a final 64-wide group as a half step; a
+  verify no longer zero-fills routed partials it overwrites; and experts the
+  previous layer's early read found resident are not probed again (0.63 →
+  0.19 ms of host time per verify). None of these moved the step timings
+  beyond noise.
 
 Measured and rejected:
 
@@ -330,15 +379,40 @@ Measured and rejected:
 - An ANE drafter, from the numbers: the draft is 8–15 ms of a 50–95 ms step and
   cannot overlap the verify it depends on, and the ANE would stream ~860 MB of
   FP16 weights at ~70 GB/s, slower than the GPU's INT4 drafter.
+- Faster 8-row matrix GEMV. At 8 rows it runs at ~105 GB/s and at 16 rows half
+  that: it is bound by FP32 multiply throughput (~3 TFLOPS), not by memory.
+  Half-precision fragments gave the same time, and so did rearranging the x
+  loads so that none is wasted (kept, since it is no slower). A tensor-unit
+  version (`matmul2d`, weights dequantized to FP16 in threadgroup memory, or
+  fed as `uint4b_format` with the affine terms applied per group) ran at a
+  flat ~75 GB/s for 4–16 rows: slower at 8 rows, faster only at 16.
+- Binding more of the guess in GPU-routed decode: the top 48 gave the same
+  speed as the top 24; all 128 cut decode to ~30 tok/s.
 
-At 8 rows a verify is now ~56 ms: routed experts ~28 ms, attention and
-projections ~13 ms, head 4.4 ms, and ~5 ms of GPU idle while the host plans
-each layer's routes. That idle, and the union's bandwidth floor, are what
-remain.
+A verify of 8 rows is ~50 ms, and the GPU is busy for all but ~5–6 ms of it
+(command buffer timestamps): routed experts ~26.7 ms, QKV 4.5, the shared FFN
+4.6, the head 4.2, O 2.6, the router 1.8, attention 1.4. Most of the idle,
+~100 µs a layer at any row count, is the round trip from the router's event
+to the host and back to a committed tile, which outlasts the shared FFN queued
+to cover it; the rest waits on expert reads. Closing it would take decode's
+GPU-side routing, which needs a bound superset of the union's experts.
 
-End to end, current build: `Scripts/bench/ab.sh` quick suite (192 tokens, two
-ABBA rounds of 2 reps), M5 16 GB with desktop apps running; the A/A noise
-floor was 3%. "Before" is the build preceding the verify work above.
+End to end, current build against the build before the hot-vocabulary head
+and the drafter changes above: `Scripts/bench/ab.sh` quick suite (192 tokens,
+two ABBA rounds of 2 reps), M5 16 GB with few apps running; the A/A noise floor
+was 2.8%.
+
+| Prompt | plain before | plain now | `--drafter` before | `--drafter` now |
+| --- | ---: | ---: | ---: | ---: |
+| code | 46.3 tok/s | 49.2 tok/s (+6%) | 73.8 tok/s | 89.4 tok/s (+21%) |
+| math word problem | 45.2 tok/s | 48.0 tok/s (+6%) | 62.6 tok/s | 66.4 tok/s (+6%) |
+| explanation | 45.5 tok/s | 48.1 tok/s (+6%) | 58.2 tok/s | 65.0 tok/s (+12%) |
+
+Plain output was byte-identical between the builds. Speculative output first
+differed from plain greedy at token 90 on math, in both builds.
+
+The verify work before that, same suite but with desktop apps running (A/A
+noise floor 3%); "before" is the build preceding it:
 
 | Prompt | plain | `--drafter` before | `--drafter` now |
 | --- | ---: | ---: | ---: |
