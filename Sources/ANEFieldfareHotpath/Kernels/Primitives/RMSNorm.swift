@@ -69,7 +69,7 @@ final class RMSNorm {
                               out: any MTLBuffer, outOffset: Int = 0,
                               d: UInt32,
                               eps: Float) {
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         let pso = d == 2816 ? psoNoScaleD2816 : psoNoScale
         enc.setComputePipelineState(pso)
         enc.setBuffer(x,   offset: xOffset,   index: 0)
@@ -92,7 +92,7 @@ final class RMSNorm {
                                    out: any MTLBuffer, outOffset: Int = 0,
                                    headDim: UInt32, numHeads: Int,
                                    eps: Float) {
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         let pso = perHeadPipeline(headDim: headDim,
                                   base: psoBF16PerHead,
                                   p256: psoBF16PerHead256,
@@ -117,7 +117,7 @@ final class RMSNorm {
                                      out: any MTLBuffer, outOffset: Int = 0,
                                      headDim: UInt32, numHeads: Int,
                                      eps: Float) {
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         let pso = perHeadPipeline(headDim: headDim,
                                   base: psoNoScalePerHead,
                                   p256: psoNoScalePerHead256,
@@ -142,7 +142,7 @@ final class RMSNorm {
                                 out: any MTLBuffer, outOffset: Int,
                                 d: UInt32,
                                 eps: Float) {
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(x,      offset: xOffset,      index: 0)
         enc.setBuffer(weight, offset: weightOffset, index: 1)

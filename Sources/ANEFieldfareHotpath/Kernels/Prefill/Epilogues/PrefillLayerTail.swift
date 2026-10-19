@@ -31,7 +31,7 @@ final class PrefillLayerTail {
         precondition(h2StrideElements >= d, "h2 stride is too small")
         precondition(h1StrideElements >= d, "h1 stride is too small")
         precondition(hiddenStrideElements >= d, "hidden stride is too small")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(h2, offset: h2Offset, index: 0)
         enc.setBuffer(h1, offset: h1Offset, index: 1)

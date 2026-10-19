@@ -180,7 +180,7 @@ final class SharedExpertInt8 {
                                       up: SharedExpertInt8Proj,
                                       scratchAct: any MTLBuffer,
                                       scratchActOffset: Int) throws {
-        guard let enc = cb.makeComputeCommandEncoder() else {
+        guard let enc = cb.makeTracedComputeEncoder() else {
             throw SharedExpertInt8Error.dimensionMismatch("encoder alloc failed")
         }
         enc.setComputePipelineState(

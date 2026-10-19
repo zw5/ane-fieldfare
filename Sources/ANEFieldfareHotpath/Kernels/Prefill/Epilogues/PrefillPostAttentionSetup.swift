@@ -40,7 +40,7 @@ final class PrefillPostAttentionSetup {
         precondition(denseStrideElements >= d, "dense stride is too small")
         precondition(routedStrideElements >= d, "routed stride is too small")
         precondition(routerStrideElements >= d, "router stride is too small")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(hidden, offset: hiddenOffset, index: 0)
         enc.setBuffer(attn, offset: attnOffset, index: 1)

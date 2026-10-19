@@ -60,7 +60,7 @@ final class DequantInt8GEMV {
         precondition(n % UInt32(Quantization.groupSize) == 0,
                      "N must be a multiple of \(Quantization.groupSize)")
         precondition(xOffset >= 0 && yOffset >= 0, "buffer offsets must be non-negative")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(specializedPSOs[Shape(m: m, n: n)] ?? pso)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(scales,  offset: scalesOffset,  index: 1)

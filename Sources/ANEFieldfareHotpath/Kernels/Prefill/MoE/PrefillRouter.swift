@@ -62,7 +62,7 @@ final class PrefillRouter {
         precondition(d % UInt32(Quantization.groupSize) == 0,
                      "D must be a multiple of \(Quantization.groupSize)")
         precondition(hiddenStrideElements >= d, "hidden stride is too small")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)

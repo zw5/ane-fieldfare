@@ -42,14 +42,19 @@ private struct Generation: Decodable {
                 for (m, n) in [(4096, 2816), (2048, 2816), (2816, 4096), (2112, 2816), (2816, 2112), (8192, 2816)] {
                     print(try KernelBench.coldGEMV(context: context, m: m, n: n))
                 }
-            } else if args.count == 4, args[1] == "verify-check" {
-                try await verifyCheck(modelPath: args[2], generationPath: args[3])
+            } else if (4...5).contains(args.count), args[1] == "verify-check" {
+                try await verifyCheck(modelPath: args[2], generationPath: args[3],
+                                      block: args.count == 5 ? Int(args[4]) ?? 0 : RealForwardRunner.maxVerifyTokens)
             } else if args.count == 5, args[1] == "capture" {
                 try await capture(modelPath: args[2], generationPath: args[3], prefix: args[4])
             } else {
                 fail("usage: ANEFieldfareDFlashCapture capture <model-directory> <generation.json> <output-prefix>\n"
-                    + "       ANEFieldfareDFlashCapture embedding <model-directory> <output-prefix>")
+                    + "       ANEFieldfareDFlashCapture embedding <model-directory> <output-prefix>\n"
+                    + "       ANEFieldfareDFlashCapture verify-check <model-directory> <generation.json> [rows]\n"
+                    + "       ANEFieldfareDFlashCapture draft-check <model-directory> <drafter> <generation.json> <anchors>\n"
+                    + "       ANEFieldfareDFlashCapture generate <model-directory> <drafter> <generation.json> <block>")
             }
+            if let path = try GPUTrace.finish() { FileHandle.standardError.write(Data("[gpu trace] wrote \(path)\n".utf8)) }
         } catch {
             fail("\(error)", 1)
         }
@@ -143,12 +148,12 @@ private struct Generation: Decodable {
     /// Teacher-forces a greedy generation through `verify` in full blocks and
     /// counts rows whose greedy token disagrees with the recorded next token.
     /// With `rewind`, a junk block is verified and rewound before each real one.
-    static func verifyCheck(modelPath: String, generationPath: String) async throws {
+    static func verifyCheck(modelPath: String, generationPath: String, block: Int) async throws {
         let generation = try JSONDecoder().decode(
             Generation.self, from: Data(contentsOf: URL(fileURLWithPath: generationPath)))
         let context = try MetalContext()
         let model = try loadModel(modelPath, context: context)
-        let block = RealForwardRunner.maxVerifyTokens
+        guard (1...RealForwardRunner.maxVerifyTokens).contains(block) else { fail("block \(block)") }
         for useRewind in [false] {
             let runner = try RealForwardRunner(
                 model: model, context: context, maxContext: 4096,
@@ -190,6 +195,7 @@ private struct Generation: Decodable {
                 + "misses=\(runner.routedExpertCacheMisses) union=\(runner.prefillUnionExpertsBeforeCap) "
                 + "tile_fetch=\(sec(runner.prefillTileFetchNanos)) tile_drain=\(sec(runner.prefillTileDrainNanos)) "
                 + "tile_hits=\(runner.prefillTileHits) tile_misses=\(runner.prefillTileMisses)")
+            print("  bound_routes=\(runner.boundVerifyRoutes) patched_layers=\(runner.patchedVerifyLayers)")
             print("rewind=\(useRewind) rows=\(rows) mismatches=\(mismatches) first=\(firstMismatch) "
                 + "verify_seconds=\(fixed(seconds, 2)) per_block_ms="
                 + fixed(seconds * 1000 / Double((rows + block - 1) / block) / (useRewind ? 2 : 1), 1))
@@ -197,7 +203,8 @@ private struct Generation: Decodable {
     }
 
     /// Speculative greedy generation of as many tokens as the recorded plain
-    /// greedy generation, reporting agreement and timing.
+    /// greedy generation, with blocks of at most `block` rows, reporting
+    /// agreement and timing.
     static func generate(modelPath: String, drafterPath: String, generationPath: String, block: Int) async throws {
         let generation = try JSONDecoder().decode(
             Generation.self, from: Data(contentsOf: URL(fileURLWithPath: generationPath)))
@@ -206,31 +213,43 @@ private struct Generation: Decodable {
         let runner = try RealForwardRunner(
             model: model, context: context, maxContext: 4096,
             runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
-        let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
+        let drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
-        let reference = generation.generated_token_ids
-        let (tokens, stats) = try await DFlashGeneration.generateGreedy(
-            runner: runner, drafter: drafter, context: context, prompt: generation.prompt_token_ids,
-            maxNewTokens: reference.count, blockSize: block, prefillChunkTokens: 1024)
+        let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter, maxBlock: block)
+        guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
+                                                     options: .storageModeShared) else { fail("alloc", 1) }
+        let prompt = generation.prompt_token_ids, reference = generation.generated_token_ids
+        let prefillStart = Date()
+        let prefill = try await decoder.prefillChunked(
+            tokens: prompt[...], startPosition: 0, outputMode: .greedyIfAvailable,
+            config: .production(chunkTokens: 1024), into: logits, onProgress: { _ in })
+        let prefillSeconds = Date().timeIntervalSince(prefillStart)
+        guard case .greedyToken(let first) = prefill.seed else { fail("prefill gave no greedy token", 1) }
+        var token = Int32(bitPattern: first)
+        var tokens = [token]
+        let decodeStart = Date()
+        while tokens.count < reference.count {
+            try await decoder.produce(token: token, position: prompt.count + tokens.count - 1, into: logits)
+            token = Int32(bitPattern: decoder.lastGreedyToken)
+            tokens.append(token)
+        }
+        let decodeSeconds = Date().timeIntervalSince(decodeStart)
         let firstDiff = zip(tokens, reference).enumerated().first { $0.element.0 != $0.element.1 }?.offset ?? -1
-        var profile = stats.profile
+        var profile = decoder.stats.profile
         profile["block"] = block
+        profile["prefill_seconds"] = prefillSeconds
+        profile["decode_seconds"] = decodeSeconds
+        profile["decode_tokens_per_second"] = Double(tokens.count - 1) / decodeSeconds
         profile["tokens_match_plain_greedy"] = tokens == reference
         profile["first_divergence"] = firstDiff
         profile["generated_token_ids"] = tokens.map(Int.init)
-        func sec(_ n: UInt64) -> Double { Double(n) / 1e9 }
-        profile["runner_including_prompt"] = [
-            "pre_router_gpu": sec(runner.prefillPreRouterGPUNanos), "shared_gpu": sec(runner.prefillSharedGPUNanos),
-            "routed_gpu": sec(runner.prefillRoutedGPUNanos), "routed_wall": sec(runner.prefillRoutedWallNanos),
-            "tile_fetch": sec(runner.prefillTileFetchNanos), "tile_drain": sec(runner.prefillTileDrainNanos),
-            "tile_hits": runner.prefillTileHits, "tile_misses": runner.prefillTileMisses,
-            "union_experts": runner.prefillUnionExpertsBeforeCap, "layer_tiles": runner.prefillUnionLayerTiles]
         let data = try JSONSerialization.data(withJSONObject: profile, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }
 
-    /// Drafts at given anchor positions over teacher-forced context, for
-    /// comparison with the numpy reference (`Scripts/dflash/dflash_ref.py`).
+    /// Drafts at given anchor positions (descending) over teacher-forced
+    /// context, for comparison with the numpy reference
+    /// (`Scripts/dflash/dflash_ref.py`).
     static func draftCheck(modelPath: String, drafterPath: String, generationPath: String, anchors: [Int]) async throws {
         let generation = try JSONDecoder().decode(
             Generation.self, from: Data(contentsOf: URL(fileURLWithPath: generationPath)))
@@ -240,23 +259,17 @@ private struct Generation: Decodable {
         let runner = try RealForwardRunner(
             model: model, context: context, maxContext: 4096,
             runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
-        let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
+        let drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
-        var failure: any Error?
-        runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { chunk in
-            do {
-                try chunk.withHidden {
-                    try drafter.appendContext(captured: $0, stride: chunk.tokenCount, rows: chunk.tokenCount)
-                }
-            }
-            catch { failure = error }
-        }
+        let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter)
         guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2, options: .storageModeShared) else {
             fail("alloc", 1)
         }
-        _ = try await runner.prefillChunked(tokens: tokens[...], startPosition: 0, outputMode: .logits,
-                                            config: .production(chunkTokens: 1024), into: logits, onProgress: { _ in })
-        if let failure { throw failure }
+        // Prefill puts every position's target features in the drafter's
+        // context.
+        _ = try await decoder.prefillChunked(tokens: tokens[...], startPosition: 0, outputMode: .logits,
+                                             config: .production(chunkTokens: 1024), into: logits,
+                                             onProgress: { _ in })
         var result: [String: [Int]] = [:]
         for anchor in anchors {
             try drafter.truncateContext(to: anchor)

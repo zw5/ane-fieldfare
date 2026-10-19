@@ -69,6 +69,67 @@ import ANEFieldfareValidationSupport
         #expect(rel < 4e-3, "rel=\(rel) maxAbs=\(maxAbs) refNorm=\(refNorm)")
     }
 
+    /// The norm-fusing tail against the three dispatches it replaces in
+    /// decode: post-FFN-1 norm of h1, the tail, the next layer's input norm.
+    @Test(arguments: [true, false])
+    func fusedLayerTailNorms_isBitwiseTheSeparateDispatches(hasNext: Bool) throws {
+        var rng = SplitMix64(seed: hasNext ? 0x7A11_0001 : 0x7A11_0002)
+        func halves(_ lo: Float, _ hi: Float) -> [Float16] { (0..<Self.d).map { _ in Float16(rng.uniform(lo, hi)) } }
+        func bf16(_ lo: Float, _ hi: Float) -> [UInt16] { (0..<Self.d).map { _ in Quantization.bf16Bits(rng.uniform(lo, hi)) } }
+        let h2 = halves(-1, 1), h1 = halves(-3, 3), hidden = halves(-2, 2)
+        let weights = [bf16(0.5, 1.5), bf16(0.5, 1.5), bf16(0.5, 1.5), bf16(0.5, 1.5)]  // post 1, post 2, post, next input
+        let layerScalar = rng.uniform(0.75, 1.25)
+
+        let ctx = try MetalContext()
+        let tail = try FusedLayerTail(context: ctx)
+        let rms = try RMSNorm(context: ctx)
+        try #require(tail.fusesNorms)
+        func buffer<T: BitwiseCopyable>(_ values: [T]) throws -> any MTLBuffer {
+            try #require(unsafe ctx.device.makeBuffer(bytes: values, length: values.count * MemoryLayout<T>.stride,
+                                                      options: .storageModeShared))
+        }
+        func view(_ b: any MTLBuffer) -> TensorView {
+            TensorView(buffer: b, offset: 0, length: UInt64(b.length), scaleOffset: 0, scaleLength: 0,
+                       biasOffset: 0, biasLength: 0, shape: (UInt32(Self.d), 1, 1, 1), dtype: 1)
+        }
+        func halves(of b: any MTLBuffer) -> [UInt16] {
+            (0..<Self.d).map { unsafe b.contents().load(fromByteOffset: $0 * 2, as: UInt16.self) }
+        }
+        let w = try weights.map(buffer)
+        let d = UInt32(Self.d)
+
+        // Separate: rmsnorm(h1) in place, tail, rmsnorm(hidden) -> normed.
+        let sepH2 = try buffer(h2), sepH1 = try buffer(h1), sepHidden = try buffer(hidden)
+        let sepNormed = try buffer([Float16](repeating: 0, count: Self.d))
+        let cb1 = try #require(ctx.queue.makeCommandBuffer())
+        rms.encodeBF16W(commandBuffer: cb1, x: sepH1, weight: w[0], out: sepH1, d: d, eps: Self.eps)
+        tail.encode(commandBuffer: cb1, h2: sepH2, h1: sepH1, hidden: sepHidden,
+                    postFFN2Weight: w[1], postFFNWeight: w[2], d: d, eps: Self.eps, layerScalar: layerScalar)
+        if hasNext {
+            rms.encodeBF16W(commandBuffer: cb1, x: sepHidden, weight: w[3], out: sepNormed, d: d, eps: Self.eps)
+        }
+        cb1.commit()
+        cb1.waitUntilCompleted()
+        if let error = cb1.error { throw error }
+
+        // Fused.
+        let h2Buf = try buffer(h2), h1Buf = try buffer(h1), hiddenBuf = try buffer(hidden)
+        let normed = try buffer([Float16](repeating: 0, count: Self.d))
+        let cb2 = try #require(ctx.queue.makeCommandBuffer())
+        tail.encodeWithNorms(commandBuffer: cb2, h2: h2Buf, h1: h1Buf, hidden: hiddenBuf,
+                             postFFN1Weight: view(w[0]), postFFN2Weight: view(w[1]), postFFNWeight: view(w[2]),
+                             next: hasNext ? (view(w[3]), normed) : nil,
+                             d: d, eps: Self.eps, layerScalar: layerScalar)
+        cb2.commit()
+        cb2.waitUntilCompleted()
+        if let error = cb2.error { throw error }
+
+        #expect(halves(of: hiddenBuf) == halves(of: sepHidden))
+        #expect(halves(of: normed) == halves(of: sepNormed))
+        // The fused tail leaves h1 as it found it: a patch reruns the tail from it.
+        #expect(halves(of: h1Buf) == h1.map(\.bitPattern))
+    }
+
     private static func cpuReference(h2: [Float16],
                                      h1: [Float16],
                                      hidden: [Float16],

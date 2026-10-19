@@ -82,9 +82,10 @@ import Metal
         let maxContext = 4096
         let runner = try RealForwardRunner(model: model, context: context, maxContext: maxContext,
                                            runtimeConfiguration: RuntimeConfiguration())
-        let drafter = try options.drafter.map {
-            try DFlashDrafter(directory: URL(fileURLWithPath: $0), model: model, context: context,
-                              maxContext: maxContext)
+        var drafter: DFlashDrafter?
+        if let path = options.drafter {
+            drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: path), model: model, context: context,
+                                              maxContext: maxContext)
         }
         let scratch = try RawCompletionScratch(context: context, vocab: model.config.vocabSize)
         let promptSet = options.suite == "full" ? prompts : Array(prompts.prefix(3))
@@ -115,6 +116,7 @@ import Metal
                 // Alternate mode order per rep so drift does not favour one mode.
                 for mode in rep % 2 == 0 ? modes : modes.reversed() {
                     let before = Counters(runner)
+                    let traceCase = GPUTrace.begin()
                     let decoder = try drafter.flatMap { drafter in
                         try mode == "spec" ? SpeculativeDecoder(runner: runner, drafter: drafter) : nil
                     }
@@ -123,6 +125,7 @@ import Metal
                     let result = try await generate(prompt: text, tokens: options.tokens,
                                                     producer: decoder ?? plain, tokenizer: tokenizer,
                                                     context: context, scratch: scratch)
+                    GPUTrace.end("case \(name) \(mode) rep \(rep)", since: traceCase)
                     let delta = Counters(runner).minus(before)
                     let decodeTPS = result.result.decodeSeconds > 0
                         ? Double(result.result.newTokens) / result.result.decodeSeconds : 0
@@ -175,6 +178,7 @@ import Metal
         } else {
             FileHandle.standardOutput.write(data)
         }
+        if let path = try GPUTrace.finish() { log("[bench \(options.label)] gpu trace \(path)") }
     }
 
     struct Generation {
@@ -212,6 +216,7 @@ import Metal
                 "decode_io_s": s(runner.totalIoNanos),
                 "expert_hits": Double(runner.routedExpertCacheHits),
                 "expert_misses": Double(runner.routedExpertCacheMisses),
+                "decode_layer_patches": Double(runner.decodeLayerPatches),
                 "verify_pre_router_gpu_s": s(runner.prefillPreRouterGPUNanos),
                 "verify_shared_gpu_s": s(runner.prefillSharedGPUNanos),
                 "verify_routed_gpu_s": s(runner.prefillRoutedGPUNanos),
@@ -219,6 +224,8 @@ import Metal
                 "verify_expert_hits": Double(runner.prefillTileHits),
                 "verify_expert_misses": Double(runner.prefillTileMisses),
                 "verify_early_reads": Double(runner.prefillEarlyReads),
+                "verify_bound_routes": Double(runner.boundVerifyRoutes),
+                "verify_patched_layers": Double(runner.patchedVerifyLayers),
                 "early_reads": Double(runner.earlyExpertReadStats?.reads ?? 0),
                 "early_reads_used": Double(runner.earlyExpertReadStats?.used ?? 0),
             ]

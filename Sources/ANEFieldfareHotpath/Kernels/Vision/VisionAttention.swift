@@ -21,7 +21,7 @@ public final class VisionAttention {
     /// Zeroes the padded lanes the projections never write. Called once per image;
     /// nothing writes lanes 72 to 79 afterwards, so they stay zero across layers.
     public func encodeClearPadding(commandBuffer: any MTLCommandBuffer) {
-        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        guard let blit = commandBuffer.makeTracedBlitEncoder() else { return }
         for buffer in [fusedQ, fusedK, fusedV] {
             blit.fill(buffer: buffer, range: 0..<buffer.length, value: 0)
         }
@@ -80,7 +80,7 @@ public final class VisionAttention {
                               q: any MTLBuffer, k: any MTLBuffer, v: any MTLBuffer,
                               output: any MTLBuffer,
                               sequenceLength: Int, numHeads: Int) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(nativePipeline)
         encoder.setBuffer(q, offset: 0, index: 0)
         encoder.setBuffer(k, offset: 0, index: 1)
@@ -104,7 +104,7 @@ public final class VisionAttention {
         output: any MTLBuffer,
         inputRowStride: Int
     ) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         let rows = UInt32(sequenceLength), heads = UInt32(numHeads)
         // Row-major unpadded output; parallelExp softmax keeps the tile sum
         // sequential per query, bit-identical to the serial phase and faster.

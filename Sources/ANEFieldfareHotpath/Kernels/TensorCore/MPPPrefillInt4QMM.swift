@@ -150,7 +150,7 @@ public final class MPPPrefillInt4QMM {
               xOffset.isMultiple(of: MemoryLayout<Float16>.stride),
               yOffset.isMultiple(of: MemoryLayout<Float16>.stride),
               let pso = selectedPSO,
-              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+              let encoder = commandBuffer.makeTracedComputeEncoder() else {
             return metadata(path: .fallback,
                             weightsOffset: weightsOffset,
                             fallbackCount: 1)

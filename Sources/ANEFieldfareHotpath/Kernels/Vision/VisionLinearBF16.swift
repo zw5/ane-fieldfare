@@ -63,7 +63,7 @@ public final class VisionLinearBF16 {
         paddedHeadStore: PaddedHeadStore?,
         pipeline: any MTLComputePipelineState
     ) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setBuffer(input, offset: inputOffset, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)
         encoder.setBuffer(output, offset: outputOffset, index: 2)

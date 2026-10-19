@@ -83,7 +83,7 @@ final class PrefillSharedExpert {
         // later one is a contract violation for these fixed shapes.
         guard try project(gate, x: x, xOffset: xOffset, y: buffers.gate, yOffset: 0) else { return false }
         guard try project(up, x: x, xOffset: xOffset, y: buffers.up, yOffset: 0),
-              let encoder = cb.makeComputeCommandEncoder() else {
+              let encoder = cb.makeTracedComputeEncoder() else {
             throw SharedExpertError.dimensionMismatch("batched shared expert up projection fell back")
         }
         encoder.setComputePipelineState(geluMulPSO)

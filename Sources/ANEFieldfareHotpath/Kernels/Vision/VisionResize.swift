@@ -193,7 +193,7 @@ public final class VisionResize {
         gridWidth: Int,
         gridHeight: Int
     ) throws {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else {
             throw MetalError.noQueue
         }
         var params = params

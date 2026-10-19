@@ -58,7 +58,8 @@ final class MoE {
     /// `[maxRouterRows][256]` FP32 logits for `encodeRouterRowsGemma4`: the
     /// router's, then the next layer's guess.
     private let routerRowsLogits: any MTLBuffer
-    private let guessRowsLogits: any MTLBuffer
+    /// The last row router's next-layer guess scores, `[rows][numExperts]` FP32.
+    let guessRowsLogits: any MTLBuffer
     static let maxRouterRows = 16
     private let routerLogits: any MTLBuffer
     private let phase1U16PSO: any MTLComputePipelineState
@@ -99,7 +100,7 @@ final class MoE {
         guard let rowsLogits = context.device.makeBuffer(
                 length: Self.maxRouterRows * 256 * MemoryLayout<Float>.stride, options: .storageModePrivate),
               let guessLogits = context.device.makeBuffer(
-                length: Self.maxRouterRows * 256 * MemoryLayout<Float>.stride, options: .storageModePrivate) else {
+                length: Self.maxRouterRows * 256 * MemoryLayout<Float>.stride, options: .storageModeShared) else {
             throw MetalError.noDevice
         }
         self.routerRowsLogits = rowsLogits
@@ -156,7 +157,7 @@ final class MoE {
         let dimension = d
         let useSpecialized = numExperts == Self.realDecodeNumExperts
             && d == Self.realDecodeD
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             encoder.setComputePipelineState(
                 useSpecialized ? routerGemvSpecializedPSO : routerGemvPSO)
             encoder.setBuffer(weights, offset: weightsOffset, index: 0)
@@ -200,7 +201,7 @@ final class MoE {
         let expertCount = numExperts
         let useSpecialized = numExperts == Self.realDecodeNumExperts
             && d == Self.realDecodeD
-        if useSpecialized, let next, let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if useSpecialized, let next, let encoder = commandBuffer.makeTracedComputeEncoder() {
             let dimension = d
             encoder.setComputePipelineState(routerGemvPairSpecializedPSO)
             encoder.setBuffer(weights, offset: weightsOffset, index: 0)
@@ -241,7 +242,7 @@ final class MoE {
                                  d: d)
         }
 
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             encoder.setComputePipelineState(
                 useSpecialized ? routerSelectK8SIMDPSO : routerSelectK8PSO)
             encoder.setBuffer(routerLogits, offset: 0, index: 0)
@@ -283,7 +284,7 @@ final class MoE {
         let dimension = d
         let stride = hiddenStrideElements
         let groups = (Int(numExperts) + 3) / 4
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             encoder.setComputePipelineState(routerGemvPairRowsSpecializedPSO)
             encoder.setBuffer(weights, offset: weightsOffset, index: 0)
             encoder.setBuffer(scales, offset: scalesOffset, index: 1)
@@ -310,7 +311,7 @@ final class MoE {
         ]
         for (logits, scale, scaleOffset, indices, weightsOut) in selects.prefix(next == nil ? 1 : 2) {
             guard let scale, let indices, let weightsOut,
-                  let encoder = commandBuffer.makeComputeCommandEncoder() else { continue }
+                  let encoder = commandBuffer.makeTracedComputeEncoder() else { continue }
             encoder.setComputePipelineState(routerSelectK8SIMDRowsPSO)
             encoder.setBuffer(logits, offset: 0, index: 0)
             encoder.setBuffer(scale, offset: scaleOffset, index: 1)
@@ -375,7 +376,7 @@ final class MoE {
         let dimension = d
         let intermediate = f
         let expertCount = topK
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(
             useRealDecodeConstants(d: d, f: f, topK: topK)
                 ? phase1U16SpecializedPSO
@@ -417,7 +418,7 @@ final class MoE {
         let intermediate = f
         let expertCount = topK
         let active = activeCount
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(
             useRealDecodeConstants(d: d, f: f, topK: topK)
                 ? phase1SubsetU16SpecializedPSO
@@ -457,7 +458,7 @@ final class MoE {
         validate(routedBlobs: routedBlobs, topK: topK)
         let dimension = d
         let intermediate = f
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(
             useRealDecodeConstants(d: d, f: f, topK: topK)
                 ? phase2ReduceK8SpecializedPSO
@@ -497,7 +498,7 @@ final class MoE {
                                  fallback: UInt64) {
         precondition(topK <= UInt32(Self.maxStreamedExperts))
         let k = topK, n = numExperts, dimension = d, zero = fallback
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(gatherRoutedSlotsPSO)
         encoder.setBuffer(indices, offset: 0, index: 0)
         encoder.setBuffer(table, offset: tableOffset, index: 1)
@@ -529,7 +530,7 @@ final class MoE {
         let specialized = useRealDecodeConstants(d: d, f: f, topK: topK)
         let offsets = routedOffsets
         let dimension = d, intermediate = f, expertCount = topK
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             encoder.setComputePipelineState(specialized ? phase1U16SpecializedPSO : phase1U16PSO)
             encoder.setBuffer(slots, offset: 0, index: 0)
             encoder.useResources(resident, usage: .read)
@@ -544,7 +545,7 @@ final class MoE {
                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             encoder.endEncoding()
         }
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             encoder.setComputePipelineState(specialized ? phase2ReduceK8SpecializedPSO : phase2ReduceK8PSO)
             encoder.setBuffer(slots, offset: 0, index: 0)
             encoder.useResources(resident, usage: .read)

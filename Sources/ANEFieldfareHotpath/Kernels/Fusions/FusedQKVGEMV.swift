@@ -58,7 +58,7 @@ final class FusedQKVGEMV {
                      kWeightsOffset % 2 == 0 &&
                      vWeightsOffset % 2 == 0,
                      "FusedQKVGEMV needs 2-aligned weights offsets")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         let shape = Shape(qRows: qRows, kvRows: kvRows, n: n)
         enc.setComputePipelineState(specializedPSOs[shape] ?? pso)
         enc.setBuffer(qWeights, offset: qWeightsOffset, index: 0)

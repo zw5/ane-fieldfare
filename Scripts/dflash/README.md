@@ -19,10 +19,14 @@ The drafter must be at `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash`.
 
 `ANEFieldfareDFlashCapture` also drives the runtime implementation
 (`Sources/ANEFieldfareHotpath/Runtime/DFlash`). Experts stream through the OS
-page cache; there is no expert cache to size.
+page cache; there is no expert cache to size. The drafter's INT4 weights are
+installed on first use as `fieldfare-dflash-int4.bin` next to its checkpoint.
 
 ```bash
-$B verify-check $CK <dir>/code.gen.json                       # teacher-forced verify == greedy decode
-$B draft-check $CK $DRAFTER <dir>/code.gen.json 200,150,100   # Metal drafts, compare with dflash_ref.py
-$B generate $CK $DRAFTER <dir>/code.gen.json 8                # speculative greedy vs recorded plain greedy
+$B verify-check $CK <dir>/code.gen.json [rows]                # teacher-forced verify == greedy decode (rows default 16)
+$B draft-check $CK $DRAFTER <dir>/code.gen.json 200,150,100   # Metal drafts at descending anchors, compare with dflash_ref.py
+$B generate $CK $DRAFTER <dir>/code.gen.json 16               # speculative greedy (blocks of at most 16) vs recorded plain greedy
 ```
+
+`ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` runs `verify-check` with every layer's
+experts planned on the CPU, for comparison with the GPU-routed default.

@@ -27,7 +27,7 @@ final class PrefillPerHeadNorm {
         precondition(numHeads > 0, "numHeads must be positive")
         precondition(tokenStrideElements >= headDim * numHeads,
                      "token stride is too small")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(psoBF16W)
         enc.setBuffer(x, offset: xOffset, index: 0)
         enc.setBuffer(weight, offset: weightOffset, index: 1)
@@ -63,7 +63,7 @@ final class PrefillPerHeadNorm {
         precondition(numHeads > 0, "numHeads must be positive")
         precondition(tokenStrideElements >= headDim * numHeads,
                      "token stride is too small")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(psoNoScale)
         enc.setBuffer(x, offset: xOffset, index: 0)
         enc.setBuffer(out, offset: outOffset, index: 1)

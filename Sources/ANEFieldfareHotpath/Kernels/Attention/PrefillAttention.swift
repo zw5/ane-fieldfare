@@ -146,7 +146,7 @@ final class PrefillAttention {
         precondition(threadCount <= pipeline.maxTotalThreadsPerThreadgroup,
                      "tiled prefill attention requires headDim <= maxTotalThreadsPerThreadgroup")
 
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pipeline)
         enc.setBuffer(q, offset: qOffset, index: 0)
         enc.setBuffer(k, offset: kOffset, index: 1)
@@ -201,7 +201,7 @@ final class PrefillAttention {
     func encodeParamsSmoke(commandBuffer: any MTLCommandBuffer,
                            params: PrefillAttentionParams,
                            out: any MTLBuffer) {
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(psoParamsSmoke)
         let p = params
         enc.setValue(p, index: 0)

@@ -23,7 +23,7 @@ final class PrefillRoPE {
         precondition(headDim % 2 == 0, "headDim must be even")
         precondition(tokenStrideElements >= numHeads * headDim,
                      "token stride is too small")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(psoDefaultNeox)
         enc.setBuffer(data, offset: dataOffset, index: 0)
         let start = startPosition
@@ -62,7 +62,7 @@ final class PrefillRoPE {
                      "rotatedPairs * 2 must not exceed headDim")
         precondition(tokenStrideElements >= numHeads * headDim,
                      "token stride is too small")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(psoProportionalNeox)
         enc.setBuffer(data, offset: dataOffset, index: 0)
         let start = startPosition

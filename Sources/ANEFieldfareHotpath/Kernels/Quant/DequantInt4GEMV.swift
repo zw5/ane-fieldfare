@@ -102,7 +102,7 @@ final class DequantInt4GEMV {
                 MetalFunctionConstant(index: 32, value: .uint32(UInt32(weightRows))),
             ],
             maxTotalThreadsPerThreadgroup: 256)
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
@@ -166,7 +166,7 @@ final class DequantInt4GEMV {
                 MetalFunctionConstant(index: 33, value: .bool(ids != nil)),
             ],
             maxTotalThreadsPerThreadgroup: 128)
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(pipeline)
         if let ids { encoder.setBuffer(ids, offset: 0, index: 10) }
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
@@ -201,7 +201,7 @@ final class DequantInt4GEMV {
         // guarantees two-byte sub-tensor alignment but not four-byte alignment.
         precondition(weightsOffset % 2 == 0,
                      "dequant_int4_gemv_simd needs a 2-aligned weightsOffset, got \(weightsOffset)")
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(
             specializedPipelines[Shape(m: m, n: n)] ?? pipeline)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
