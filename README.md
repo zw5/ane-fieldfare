@@ -148,13 +148,6 @@ curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/jso
   "messages": [{"role": "user", "content": "What is the capital of France?"}]}'
 ```
 
-**Built-in chat page.** Open `http://127.0.0.1:8080/` in a browser for a
-chat UI served by the server itself: streaming replies with markdown and code
-blocks, a Stop button (closing the stream cancels the generation), chats kept
-in the browser, and settings for the system prompt, temperature, top-p, top-k,
-max tokens, seed and API key. It is one self-contained page with no external
-scripts.
-
 Point a client at base URL `http://127.0.0.1:8080/v1` with any API key (or the
 one given to `--api-key`). In Open WebUI: *Admin Settings → Connections →
 OpenAI API → +*, URL `http://127.0.0.1:8080/v1` (from Open WebUI in Docker,
