@@ -22,7 +22,7 @@ package final class VisionPrimitives {
     package func encodeNormalize(commandBuffer: any MTLCommandBuffer,
                                  input: any MTLBuffer, output: any MTLBuffer,
                                  rows: Int, paddedRows: Int) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(normalize)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(output, offset: 0, index: 1)
@@ -36,7 +36,7 @@ package final class VisionPrimitives {
                                    hidden: any MTLBuffer,
                                    table: any MTLBuffer, tableOffset: Int,
                                    positions: any MTLBuffer, rows: Int) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(addPosition)
         encoder.setBuffer(hidden, offset: 0, index: 0)
         encoder.setBuffer(table, offset: tableOffset, index: 1)
@@ -50,7 +50,7 @@ package final class VisionPrimitives {
                                input: any MTLBuffer, output: any MTLBuffer,
                                weightBuffer: any MTLBuffer, weightOffset: Int,
                                rows: Int, width: Int = 1_152) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(rmsnorm)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(weightBuffer, offset: weightOffset, index: 1)
@@ -67,7 +67,7 @@ package final class VisionPrimitives {
                                         residual: any MTLBuffer, branch: any MTLBuffer,
                                         weightBuffer: any MTLBuffer, weightOffset: Int,
                                         output: any MTLBuffer, rows: Int) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(postnormResidual)
         encoder.setBuffer(residual, offset: 0, index: 0)
         encoder.setBuffer(branch, offset: 0, index: 1)
@@ -88,7 +88,7 @@ package final class VisionPrimitives {
                            weights: any MTLBuffer, qWeightOffset: Int, kWeightOffset: Int,
                            positions: any MTLBuffer, rows: Int, heads: Int,
                            paddedRowStride: Int) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         let pipeline = qkvNormRoPEPadded
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(q, offset: 0, index: 0)
@@ -112,7 +112,7 @@ package final class VisionPrimitives {
                             output: any MTLBuffer,
                             patchWidth: Int, patchHeight: Int) {
         let rows = (patchWidth / 3) * (patchHeight / 3)
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(pool)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(weights, offset: stdBiasOffset, index: 1)
@@ -129,7 +129,7 @@ package final class VisionPrimitives {
     package func encodeBFloatToHalf(commandBuffer: any MTLCommandBuffer,
                                     input: any MTLBuffer, output: any MTLBuffer,
                                     count: Int) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(bfloatToHalf)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(output, offset: 0, index: 1)

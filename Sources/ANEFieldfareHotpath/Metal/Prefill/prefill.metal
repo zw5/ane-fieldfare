@@ -1282,26 +1282,15 @@ static inline float verify_dot8(thread const float* q, half4 xa, half4 xb, threa
     return dot;
 }
 
-kernel void verify_routed_gate_up_act(
-    device const half*                                   hidden       [[buffer(0)]],
-    device const PrefillTokenExpertPairMSL*              sorted_pairs [[buffer(1)]],
-    device half*                                         acts         [[buffer(7)]],
-    device const PrefillStreamedRoutedBlobsMSL&          routed       [[buffer(9)]],
-    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p            [[buffer(10)]],
-    constant uint2*                                      segments     [[buffer(11)]],
-    uint2 tg   [[threadgroup_position_in_grid]],
-    uint  sg   [[simdgroup_index_in_threadgroup]],
-    uint  lane [[thread_index_in_simdgroup]]
+/// One gate/up weight row `f` of `expert` applied to `n` rows: row r reads
+/// `hidden` row `tokens[r]` and writes its activation to `acts` row
+/// `act_rows[r]`.
+static inline void verify_gate_up_act_rows(
+    device const half* hidden, device half* acts, device const uint8_t* expert,
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL& p, uint f, uint lane, uint n,
+    thread const uint* tokens, thread const uint* act_rows
 ) {
     const uint R = FC_VERIFY_ROWS;
-    const uint slot = tg.y;
-    const uint f = tg.x * 8u + sg;
-    if (slot >= p.live_expert_count || f >= p.F) return;
-    const uint2 seg = segments[slot];
-    const uint n = min(seg.y, R);
-    if (n == 0) return;
-
-    device const uint8_t* expert = routed.blob[slot];
     const uint D = p.D;
     const uint n_groups = D / kPrefillGroupSize;
     device const uint8_t* gW = expert + p.gate_W_off + f * (D / 2u);
@@ -1314,7 +1303,7 @@ kernel void verify_routed_gate_up_act(
     device const half* xrow[kVerifyMaxRows];
     float ga[kVerifyMaxRows], ua[kVerifyMaxRows];
     for (uint r = 0; r < R; ++r) {
-        xrow[r] = hidden + sorted_pairs[seg.x + min(r, n - 1u)].token * p.hidden_stride_elements;
+        xrow[r] = hidden + tokens[min(r, n - 1u)] * p.hidden_stride_elements;
         ga[r] = 0.0f; ua[r] = 0.0f;
     }
 
@@ -1363,33 +1352,21 @@ kernel void verify_routed_gate_up_act(
             const float gv = simd_sum(ga[r]);
             const float uv = simd_sum(ua[r]);
             if (lane == 0) {
-                acts[(seg.x + r) * p.F + f] = half(prefill_gelu_pytorch_tanh(gv) * uv);
+                acts[act_rows[r] * p.F + f] = half(prefill_gelu_pytorch_tanh(gv) * uv);
             }
         }
     }
 }
 
-kernel void verify_routed_down(
-    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
-    device half*                                         route_partials [[buffer(5)]],
-    device const half*                                   acts           [[buffer(7)]],
-    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
-    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
-    constant uint2*                                      segments       [[buffer(11)]],
-    uint2 tg   [[threadgroup_position_in_grid]],
-    uint  sg   [[simdgroup_index_in_threadgroup]],
-    uint  lane [[thread_index_in_simdgroup]]
+/// Down weight rows `d0` and `d0 + 1` of `expert` applied to `n` rows: row r
+/// reads `acts` row `act_rows[r]` and writes `route_partials` row
+/// `out_rows[r]`. Two rows per SIMD share each activation load.
+static inline void verify_down_rows(
+    device half* route_partials, device const half* acts, device const uint8_t* expert,
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL& p, uint d0, uint lane, uint n,
+    thread const uint* act_rows, thread const uint* out_rows
 ) {
-    // Two down rows per SIMD share each activation load and conversion.
     const uint R = FC_VERIFY_ROWS;
-    const uint slot = tg.y;
-    const uint d0 = (tg.x * 8u + sg) * 2u;
-    if (slot >= p.live_expert_count || d0 >= p.D) return;
-    const uint2 seg = segments[slot];
-    const uint n = min(seg.y, R);
-    if (n == 0) return;
-
-    device const uint8_t* expert = routed.blob[slot];
     const uint F = p.F;
     const uint n_groups = F / kPrefillGroupSize;
     const uint d1 = min(d0 + 1u, p.D - 1u);
@@ -1418,7 +1395,7 @@ kernel void verify_routed_down(
         const uint elem = byte_base * 2u;
         for (uint r = 0; r < R; ++r) {
             if (r < n) {
-                device const half* a = acts + (seg.x + r) * F;
+                device const half* a = acts + act_rows[r] * F;
                 const half4 xa = *((device const half4*)(a + elem));
                 const half4 xb = *((device const half4*)(a + elem + 4u));
                 float sum;
@@ -1434,11 +1411,161 @@ kernel void verify_routed_down(
             const float v0 = simd_sum(acc0[r]);
             const float v1 = simd_sum(acc1[r]);
             if (lane == 0) {
-                const PrefillTokenExpertPairMSL pair = sorted_pairs[seg.x + r];
-                device half* out = route_partials + (pair.token * p.top_k + pair.rank) * p.D;
+                device half* out = route_partials + out_rows[r] * p.D;
                 out[d0] = half(v0);
                 if (d0 + 1u < p.D) out[d0 + 1u] = half(v1);
             }
         }
     }
+}
+
+kernel void verify_routed_gate_up_act(
+    device const half*                                   hidden       [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs [[buffer(1)]],
+    device half*                                         acts         [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed       [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p            [[buffer(10)]],
+    constant uint2*                                      segments     [[buffer(11)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint  sg   [[simdgroup_index_in_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]]
+) {
+    const uint slot = tg.y;
+    const uint f = tg.x * 8u + sg;
+    if (slot >= p.live_expert_count || f >= p.F) return;
+    const uint2 seg = segments[slot];
+    const uint n = min(seg.y, FC_VERIFY_ROWS);
+    if (n == 0) return;
+    uint tokens[kVerifyMaxRows], act_rows[kVerifyMaxRows];
+    for (uint r = 0; r < n; ++r) { tokens[r] = sorted_pairs[seg.x + r].token; act_rows[r] = seg.x + r; }
+    verify_gate_up_act_rows(hidden, acts, routed.blob[slot], p, f, lane, n, tokens, act_rows);
+}
+
+kernel void verify_routed_down(
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device half*                                         route_partials [[buffer(5)]],
+    device const half*                                   acts           [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    constant uint2*                                      segments       [[buffer(11)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint  sg   [[simdgroup_index_in_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]]
+) {
+    const uint slot = tg.y;
+    const uint d0 = (tg.x * 8u + sg) * 2u;
+    if (slot >= p.live_expert_count || d0 >= p.D) return;
+    const uint2 seg = segments[slot];
+    const uint n = min(seg.y, FC_VERIFY_ROWS);
+    if (n == 0) return;
+    uint act_rows[kVerifyMaxRows], out_rows[kVerifyMaxRows];
+    for (uint r = 0; r < n; ++r) {
+        const PrefillTokenExpertPairMSL pair = sorted_pairs[seg.x + r];
+        act_rows[r] = seg.x + r;
+        out_rows[r] = pair.token * p.top_k + pair.rank;
+    }
+    verify_down_rows(route_partials, acts, routed.blob[slot], p, d0, lane, n, act_rows, out_rows);
+}
+
+// ============================================================================
+// GPU-routed verify experts: the same row math over a bound list of experts
+// fixed before the routes are known. `verify_bound_plan` finds each bound
+// expert's routes once and compacts the routed ones, then the two expert
+// kernels run indirectly over exactly those. A route to an expert outside the
+// list is left for the host to patch. Activations and partials are indexed
+// by route (row * top_k + rank).
+// ============================================================================
+struct VerifyBoundExpertMSL {
+    device const uint8_t* blob;
+    uint expert;
+    uint pad;
+};
+
+struct VerifyRoutedExpertMSL {
+    device const uint8_t* blob;
+    uint n;
+    uint pad;
+    uint routes[kVerifyMaxRows];
+};
+
+constant constexpr uint kVerifyRowClasses = 4;     // up to 2, 4, 8, 16 rows
+constant constexpr uint kVerifyClassEntries = 128;
+
+/// One thread per bound expert: finds the expert's routes once and lists the
+/// routed ones by row class (the power of two at or above its row count, at
+/// least 2), so
+/// each class runs a kernel specialized for it. `counters` holds the classes'
+/// counts, `routed` their lists of `kVerifyClassEntries` entries each, and
+/// `args` per class the two kernels' indirect grids.
+kernel void verify_bound_plan(
+    device const uint*                  route_ids   [[buffer(1)]],
+    device const VerifyBoundExpertMSL*  bound       [[buffer(2)]],
+    constant uint&                      route_count [[buffer(3)]],
+    constant uint&                      bound_count [[buffer(4)]],
+    device atomic_uint*                 counters    [[buffer(6)]],
+    device VerifyRoutedExpertMSL*       routed      [[buffer(8)]],
+    device uint*                        args        [[buffer(12)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL& p [[buffer(10)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint threads [[threads_per_threadgroup]]
+) {
+    if (tid < kVerifyRowClasses) atomic_store_explicit(&counters[tid], 0u, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_device);
+    for (uint b = tid; b < bound_count; b += threads) {
+        const uint expert = bound[b].expert;
+        uint routes[kVerifyMaxRows];
+        uint n = 0;
+        for (uint i = 0; i < route_count; ++i) {
+            if (route_ids[i] == expert && n < kVerifyMaxRows) { routes[n] = i; ++n; }
+        }
+        if (n == 0) continue;
+        const uint c = n <= 2u ? 0u : n <= 4u ? 1u : n <= 8u ? 2u : 3u;
+        const uint slot = c * kVerifyClassEntries + atomic_fetch_add_explicit(&counters[c], 1u, memory_order_relaxed);
+        routed[slot].blob = bound[b].blob;
+        routed[slot].n = n;
+        for (uint r = 0; r < n; ++r) routed[slot].routes[r] = routes[r];
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+    if (tid < kVerifyRowClasses) {
+        const uint count = atomic_load_explicit(&counters[tid], memory_order_relaxed);
+        device uint* a = args + tid * 6u;
+        a[0] = (p.F + 7u) / 8u;             a[1] = count; a[2] = 1u;
+        a[3] = ((p.D + 1u) / 2u + 7u) / 8u; a[4] = count; a[5] = 1u;
+    }
+}
+
+kernel void verify_bound_gate_up_act(
+    device const half*                                   hidden      [[buffer(0)]],
+    device half*                                         acts        [[buffer(7)]],
+    device const VerifyRoutedExpertMSL*                  routed      [[buffer(8)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p           [[buffer(10)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint  sg   [[simdgroup_index_in_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]]
+) {
+    const uint f = tg.x * 8u + sg;
+    if (f >= p.F) return;
+    device const VerifyRoutedExpertMSL& e = routed[tg.y];
+    const uint n = min(e.n, FC_VERIFY_ROWS);
+    uint tokens[kVerifyMaxRows], routes[kVerifyMaxRows];
+    for (uint r = 0; r < n; ++r) { routes[r] = e.routes[r]; tokens[r] = routes[r] / p.top_k; }
+    verify_gate_up_act_rows(hidden, acts, e.blob, p, f, lane, n, tokens, routes);
+}
+
+kernel void verify_bound_down(
+    device half*                                         route_partials [[buffer(5)]],
+    device const half*                                   acts           [[buffer(7)]],
+    device const VerifyRoutedExpertMSL*                  routed         [[buffer(8)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint  sg   [[simdgroup_index_in_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]]
+) {
+    const uint d0 = (tg.x * 8u + sg) * 2u;
+    if (d0 >= p.D) return;
+    device const VerifyRoutedExpertMSL& e = routed[tg.y];
+    const uint n = min(e.n, FC_VERIFY_ROWS);
+    uint routes[kVerifyMaxRows];
+    for (uint r = 0; r < n; ++r) routes[r] = e.routes[r];
+    verify_down_rows(route_partials, acts, e.blob, p, d0, lane, n, routes, routes);
 }

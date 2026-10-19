@@ -21,7 +21,7 @@ final class PrefillMoE {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(topK > 0, "topK must be positive")
         precondition(d > 0, "D must be positive")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(reducePSO)
         enc.setBuffer(routePartials, offset: routePartialsOffset, index: 0)
         enc.setBuffer(routeWeights, offset: routeWeightsOffset, index: 1)

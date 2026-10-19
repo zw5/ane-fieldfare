@@ -69,9 +69,11 @@ private struct ANEEvaluation: @unchecked Sendable {
     func run() {
         producer.waitUntilCompleted()
         var error: UnsafePointer<CChar>?
-        let valid = unsafe producer.error == nil
+        let inputValid = unsafe producer.error == nil
             && validation.contents().load(as: UInt32.self) == 0
-            && ANEExpertCarrierEvaluate(program.handle, UInt32(bank), &error)
+        let traceEval = GPUTrace.begin()
+        let valid = unsafe inputValid && ANEExpertCarrierEvaluate(program.handle, UInt32(bank), &error)
+        GPUTrace.end("ane_eval", since: traceEval, track: .ane)
         var failure: String?
         if !valid {
             failure = unsafe producer.error.map(String.init(describing:))
@@ -251,7 +253,7 @@ final class ANERoutedPrefillBackend {
             unsafe metadata[slot * 2] = UInt32(job?.start ?? 0); unsafe metadata[slot * 2 + 1] = UInt32(job?.count ?? 0)
             argumentEncoder.setBuffer(job?.view.buffer, offset: Int(job?.view.offset ?? 0), index: slot)
         }
-        guard let cb = carrierQueue.makeCommandBuffer(), let enc = cb.makeComputeCommandEncoder() else {
+        guard let cb = carrierQueue.makeCommandBuffer(), let enc = cb.makeTracedComputeEncoder() else {
             throw ModelError.residentBufferWrapFailed
         }
         enc.setComputePipelineState(weightsPipeline)
@@ -306,7 +308,7 @@ final class ANERoutedPrefillBackend {
         }
         guard let cb = carrierQueue.makeCommandBuffer() else { throw ModelError.residentBufferWrapFailed }
         cb.encodeWaitForEvent(bank.event, value: bank.generation)
-        guard let enc = cb.makeComputeCommandEncoder() else { throw ModelError.residentBufferWrapFailed }
+        guard let enc = cb.makeTracedComputeEncoder() else { throw ModelError.residentBufferWrapFailed }
         enc.setComputePipelineState(outputsPipeline)
         enc.setBuffer(bank.output, offset: 0, index: 0); enc.setBuffer(partials, offset: 0, index: 1)
         enc.setBuffer(pairs, offset: 0, index: 2); enc.setBuffer(bank.metadata, offset: 0, index: 3)

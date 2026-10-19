@@ -47,7 +47,7 @@ package final class VisionScratch {
     /// rows of the two buffers whose tails are read back — `hiddenB` and
     /// `attention` — which is under 300 KB.
     package func encodeClear(commandBuffer: any MTLCommandBuffer) throws {
-        guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+        guard let blit = commandBuffer.makeTracedBlitEncoder() else {
             throw MetalError.noDevice
         }
         let liveBytes = rows * hiddenSize * MemoryLayout<UInt16>.stride

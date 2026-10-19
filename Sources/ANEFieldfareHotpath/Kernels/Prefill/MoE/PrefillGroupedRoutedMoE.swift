@@ -99,11 +99,36 @@ struct PrefillGroupedRoutedMoEStreamedParams: Equatable, Sendable {
         self.downSOff = offsets.downSOff
         self.downBOff = offsets.downBOff
     }
+
+    /// Parameters for the GPU-routed verify kernels, which take their
+    /// experts from a bound list instead of a tile binding.
+    init(d: UInt32, routedIntermediate: UInt32, topK: UInt32, hiddenStrideElements: UInt32,
+         offsets: MoEExpertOffsets) {
+        self.init(pairStart: 0, pairCount: 0, d: d, routedIntermediate: routedIntermediate, topK: topK,
+                  hiddenStrideElements: hiddenStrideElements,
+                  binding: PrefillStreamedTileBinding.unbound, offsets: offsets)
+    }
+}
+
+/// One entry of a GPU-routed verify layer's bound list: an expert's GPU
+/// address and ID, as `VerifyBoundExpertMSL` reads it.
+struct VerifyBoundExpert {
+    var address: UInt64
+    var expert: UInt32
+    var pad: UInt32 = 0
 }
 
 public struct PrefillStreamedTileBinding: Equatable {
     public let expertIDs: [Int]
     public let views: [TensorView]
+
+    /// No experts: for parameters whose kernels take experts elsewhere.
+    static var unbound: PrefillStreamedTileBinding { PrefillStreamedTileBinding(unchecked: [], views: []) }
+
+    private init(unchecked expertIDs: [Int], views: [TensorView]) {
+        self.expertIDs = expertIDs
+        self.views = views
+    }
 
     public init(expertIDs: [Int], views: [TensorView]) throws {
         guard !expertIDs.isEmpty else {
@@ -219,6 +244,18 @@ final class PrefillGroupedRoutedMoE {
     private let context: MetalContext
     /// Verify activations, `[pair][F]` by the pair's index in the layer.
     private var verifyActs: any MTLBuffer?
+    /// The GPU-routed verify kernels' activations, one row per route.
+    private var boundActs: any MTLBuffer?
+    /// `verify_bound_plan`'s output: a counter, the routed experts and the
+    /// two indirect grids.
+    private let boundPlan: any MTLBuffer
+    private let boundPlanPSO: any MTLComputePipelineState
+    private static let boundPlanRoutedEntryBytes = 80
+    private static let boundPlanRowClasses = 4
+    private static let boundPlanClassEntries = 128
+    private static let boundPlanRoutedOffset = 256
+    private static let boundPlanArgsOffset = boundPlanRoutedOffset
+        + boundPlanRowClasses * boundPlanClassEntries * boundPlanRoutedEntryBytes
     /// Pairs per expert one verify dispatch takes (`FC_VERIFY_ROWS` <= 16).
     static let verifyMaxRows = 16
 
@@ -238,6 +275,13 @@ final class PrefillGroupedRoutedMoE {
     }
 
     init(context: MetalContext) throws {
+        guard let plan = context.device.makeBuffer(length: Self.boundPlanArgsOffset + Self.boundPlanRowClasses * 24,
+                                                   options: .storageModePrivate) else {
+            throw MetalError.noDevice
+        }
+        plan.label = "prefill.groupedMoe.boundPlan"
+        self.boundPlan = plan
+        self.boundPlanPSO = try context.pipeline("verify_bound_plan")
         self.batchedPhase1PSO = try context.pipeline("prefill_grouped_routed_moe_batched_phase1")
         self.batchedDownPSO = try context.pipeline("prefill_grouped_routed_moe_batched_down")
         guard let streamedFn = context.library.makeFunction(name: "prefill_grouped_routed_moe_batched_phase1") else {
@@ -313,7 +357,7 @@ final class PrefillGroupedRoutedMoE {
             p.pairStart = params.pairStart + consumed
             p.pairCount = min(UInt32(pairMicrobatchRows), params.pairCount - consumed)
 
-            if let enc = commandBuffer.makeComputeCommandEncoder() {
+            if let enc = commandBuffer.makeTracedComputeEncoder() {
                 enc.setComputePipelineState(batchedPhase1PSO)
                 enc.setBuffer(hidden, offset: hiddenOffset, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
                 enc.setBuffer(sortedPairs, offset: sortedPairsOffset, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
@@ -332,7 +376,7 @@ final class PrefillGroupedRoutedMoE {
                 enc.endEncoding()
             }
 
-            if let enc = commandBuffer.makeComputeCommandEncoder() {
+            if let enc = commandBuffer.makeTracedComputeEncoder() {
                 enc.setComputePipelineState(batchedDownPSO)
                 enc.setBuffer(sortedPairs, offset: sortedPairsOffset, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
                 enc.setBuffer(routePartials, offset: routePartialsOffset,
@@ -396,7 +440,7 @@ final class PrefillGroupedRoutedMoE {
         let segs = segments
         for (name, width) in [("verify_routed_gate_up_act", Int(params.routedIntermediate)),
                               ("verify_routed_down", (Int(params.d) + 1) / 2)] {
-            guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+            guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
             enc.setComputePipelineState(try context.pipeline(name, constants: constants))
             enc.setBuffer(hidden, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
             enc.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
@@ -411,6 +455,74 @@ final class PrefillGroupedRoutedMoE {
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             enc.endEncoding()
         }
+    }
+
+    /// A verify block's routed experts on the GPU, before the host has read
+    /// its routes: every route of `routeIDs` (`[rows][topK]`) to an expert in
+    /// the `boundCount`-entry list at `bound`/`boundOffset` writes its
+    /// partial; routes to any other expert are left for a host patch.
+    /// `resident` holds every listed expert's buffer.
+    func encodeVerifyBound(commandBuffer: any MTLCommandBuffer,
+                           hidden: any MTLBuffer,
+                           routeIDs: any MTLBuffer,
+                           bound: any MTLBuffer, boundOffset: Int, boundCount: Int,
+                           resident: [any MTLBuffer],
+                           routePartials: any MTLBuffer,
+                           rows: Int,
+                           params: PrefillGroupedRoutedMoEStreamedParams) throws {
+        guard boundCount > 0 else { return }
+        precondition(rows > 0 && rows <= Self.verifyMaxRows)
+        let routeCount = rows * Int(params.topK)
+        let actBytes = routeCount * Int(params.routedIntermediate) * MemoryLayout<Float16>.stride
+        let acts: any MTLBuffer
+        if let existing = boundActs, existing.length >= actBytes {
+            acts = existing
+        } else {
+            guard let buffer = context.device.makeBuffer(
+                length: Self.verifyMaxRows * Int(params.topK) * Int(params.routedIntermediate) * 2,
+                options: .storageModePrivate) else { throw MetalError.noDevice }
+            buffer.label = "prefill.groupedMoe.boundActs"
+            boundActs = buffer
+            acts = buffer
+        }
+        let p = params
+        let count = UInt32(routeCount), bounds = UInt32(boundCount)
+        // One serial encoder, so the experts are made resident once (each
+        // costs ~2.7 µs of host time per encoder).
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        enc.setBuffer(hidden, offset: 0, index: 0)
+        enc.setBuffer(routeIDs, offset: 0, index: 1)
+        enc.setBuffer(bound, offset: boundOffset, index: 2)
+        enc.setValue(count, index: 3)
+        enc.setValue(bounds, index: 4)
+        enc.setBuffer(routePartials, offset: 0, index: 5)
+        enc.setBuffer(boundPlan, offset: 0, index: 6)
+        enc.setBuffer(acts, offset: 0, index: 7)
+        enc.setBuffer(boundPlan, offset: Self.boundPlanRoutedOffset, index: 8)
+        enc.setValue(p, index: 10)
+        enc.setBuffer(boundPlan, offset: Self.boundPlanArgsOffset, index: 12)
+        enc.useResources(resident, usage: .read)
+        enc.setComputePipelineState(boundPlanPSO)
+        enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+        // Each row class (up to 2, 4, 8 or 16 rows) runs kernels
+        // specialized to it: register arrays sized for the block's rows cost
+        // occupancy (measured: an 8-row block's experts 8% slower).
+        let threads = MTLSize(width: 256, height: 1, depth: 1)
+        let entryBytes = Self.boundPlanClassEntries * Self.boundPlanRoutedEntryBytes
+        for c in 0..<Self.boundPlanRowClasses where c == 0 || 1 << c < rows {
+            let constants = [MetalFunctionConstant(index: 90, value: .uint32(UInt32(2 << c)))]
+            let args = Self.boundPlanArgsOffset + c * 6 * MemoryLayout<UInt32>.stride
+            enc.setBuffer(boundPlan, offset: Self.boundPlanRoutedOffset + c * entryBytes, index: 8)
+            enc.setComputePipelineState(try context.pipeline("verify_bound_gate_up_act", constants: constants))
+            enc.dispatchThreadgroups(indirectBuffer: boundPlan, indirectBufferOffset: args,
+                                     threadsPerThreadgroup: threads)
+            enc.setComputePipelineState(try context.pipeline("verify_bound_down", constants: constants))
+            enc.dispatchThreadgroups(indirectBuffer: boundPlan,
+                                     indirectBufferOffset: args + 3 * MemoryLayout<UInt32>.stride,
+                                     threadsPerThreadgroup: threads)
+        }
+        enc.endEncoding()
     }
 
 }

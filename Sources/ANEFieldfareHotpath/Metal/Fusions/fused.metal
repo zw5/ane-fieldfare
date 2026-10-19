@@ -6,6 +6,8 @@ using namespace metal;
 //   fused_qkv_epilogue:     per-head Q/K/V RMSNorm + NeoX RoPE after projection.
 //   fused_post_attn_setup:  post-attention residual + pre-FFN/router norms.
 //   fused_layer_tail:       real Gemma 4 decoder-layer tail.
+//   fused_layer_tail_norms: the tail with the shared expert's post-FFN-1 norm
+//                           before it and the next layer's input norm after.
 // ============================================================================
 
 constant constexpr uint kFusedThreads        = 256;
@@ -316,30 +318,16 @@ void fused_post_attn_setup(
     }
 }
 
-[[kernel, max_total_threads_per_threadgroup(kFusedThreads)]]
-void fused_layer_tail(
-    device const half*   h2             [[buffer(0)]],  // [D] FP16
-    device const half*   h1             [[buffer(1)]],  // [D] FP16
-    device       half*   hidden         [[buffer(2)]],  // [D] FP16 in-place
-    device const bfloat* w_postffn2     [[buffer(3)]],  // [D] BF16
-    device const bfloat* w_postffn      [[buffer(4)]],  // [D] BF16
-    constant     uint&   D              [[buffer(5)]],
-    constant     float&  rms_eps        [[buffer(6)]],
-    constant     float&  layer_scalar   [[buffer(7)]],
-    uint  lid              [[thread_position_in_threadgroup]],
-    uint  lsize            [[threads_per_threadgroup]],
-    uint  simd_lane_id     [[thread_index_in_simdgroup]],
-    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
-    uint  simdgroups       [[simdgroups_per_threadgroup]]
-) {
-    threadgroup half  tmp_tg[kFusedMaxD];
-    threadgroup half  h12_tg[kFusedMaxD];
-    threadgroup float partial[kFusedMaxSimdGroups];
-    const uint DD = fused_fc_d(D);
-
+// rms_block_inv from rmsnorm.metal over a device row, in the same per-thread
+// order, SIMD reduction and partial merge, so a norm computed here is bitwise
+// the standalone rmsnorm_bf16w's.
+static inline float fused_rms_inv(device const half* x, uint DD, float rms_eps,
+                                  uint lid, uint lsize, uint simd_lane_id,
+                                  uint simd_group_id, uint simdgroups,
+                                  threadgroup float* partial) {
     float acc = 0.0f;
     for (uint i = lid; i < DD; i += lsize) {
-        float v = float(h2[i]);
+        float v = float(x[i]);
         acc = fma(v, v, acc);
     }
     acc = simd_sum(acc);
@@ -357,27 +345,73 @@ void fused_layer_tail(
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = partial[0];
+    // Slot 0 is rewritten by the next reduction; nobody may still read it.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return inv;
+}
 
-    const float inv_h2 = partial[0];
+// The layer tail. With `norm_h1`, `h1` is the shared expert's raw output and
+// the tail first applies its post-FFN-1 norm (w_postffn1), as the standalone
+// rmsnorm_bf16w did in place. With `norm_next`, it then writes the next
+// layer's input norm of the new hidden state into `next_normed`, as that
+// layer's first rmsnorm_bf16w would.
+static inline void fused_layer_tail_body(
+    device const half*   h2,
+    device const half*   h1,
+    device       half*   hidden,
+    device const bfloat* w_postffn2,
+    device const bfloat* w_postffn,
+    uint                 DD,
+    float                rms_eps,
+    float                layer_scalar,
+    bool                 norm_h1,
+    device const bfloat* w_postffn1,
+    bool                 norm_next,
+    device const bfloat* w_next_input,
+    device       half*   next_normed,
+    uint lid, uint lsize, uint simd_lane_id, uint simd_group_id, uint simdgroups,
+    threadgroup half* tmp_tg, threadgroup half* h12_tg, threadgroup float* partial
+) {
+    const uint D4 = DD / 4u;
+    const uint tailStart = D4 * 4u;
+    threadgroup half4* h12_4 = reinterpret_cast<threadgroup half4*>(h12_tg);
+    threadgroup half4* tmp_4 = reinterpret_cast<threadgroup half4*>(tmp_tg);
+
+    if (norm_h1) {
+        const float inv_h1 = fused_rms_inv(h1, DD, rms_eps, lid, lsize, simd_lane_id,
+                                           simd_group_id, simdgroups, partial);
+        for (uint i = lid; i < DD; i += lsize) {
+            h12_tg[i] = half(float(h1[i]) * inv_h1 * float(w_postffn1[i]));
+        }
+    }
+
+    const float inv_h2 = fused_rms_inv(h2, DD, rms_eps, lid, lsize, simd_lane_id,
+                                       simd_group_id, simdgroups, partial);
     for (uint i = lid; i < DD; i += lsize) {
         tmp_tg[i] = half(float(h2[i]) * inv_h2 * float(w_postffn2[i]));
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    const uint D4 = DD / 4u;
-    threadgroup half4* h12_4 = reinterpret_cast<threadgroup half4*>(h12_tg);
-    threadgroup half4* tmp_4 = reinterpret_cast<threadgroup half4*>(tmp_tg);
-    device const half4* h1_4 = reinterpret_cast<device const half4*>(h1);
-    for (uint i = lid; i < D4; i += lsize) {
-        h12_4[i] = h1_4[i] + tmp_4[i];
-    }
-    const uint tailStart = D4 * 4u;
-    for (uint i = tailStart + lid; i < DD; i += lsize) {
-        h12_tg[i] = h1[i] + tmp_tg[i];
+    if (norm_h1) {
+        for (uint i = lid; i < D4; i += lsize) {
+            h12_4[i] = h12_4[i] + tmp_4[i];
+        }
+        for (uint i = tailStart + lid; i < DD; i += lsize) {
+            h12_tg[i] = h12_tg[i] + tmp_tg[i];
+        }
+    } else {
+        device const half4* h1_4 = reinterpret_cast<device const half4*>(h1);
+        for (uint i = lid; i < D4; i += lsize) {
+            h12_4[i] = h1_4[i] + tmp_4[i];
+        }
+        for (uint i = tailStart + lid; i < DD; i += lsize) {
+            h12_tg[i] = h1[i] + tmp_tg[i];
+        }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    acc = 0.0f;
+    float acc = 0.0f;
     for (uint i = lid; i < DD; i += lsize) {
         float v = float(h12_tg[i]);
         acc = fma(v, v, acc);
@@ -420,4 +454,72 @@ void fused_layer_tail(
     for (uint i = tailStart + lid; i < DD; i += lsize) {
         hidden[i] = hidden[i] * hScale;
     }
+
+    if (norm_next) {
+        threadgroup_barrier(mem_flags::mem_device);
+        const float inv_next = fused_rms_inv(hidden, DD, rms_eps, lid, lsize, simd_lane_id,
+                                             simd_group_id, simdgroups, partial);
+        for (uint i = lid; i < DD; i += lsize) {
+            next_normed[i] = half(float(hidden[i]) * inv_next * float(w_next_input[i]));
+        }
+    }
+}
+
+[[kernel, max_total_threads_per_threadgroup(kFusedThreads)]]
+void fused_layer_tail(
+    device const half*   h2             [[buffer(0)]],  // [D] FP16
+    device const half*   h1             [[buffer(1)]],  // [D] FP16
+    device       half*   hidden         [[buffer(2)]],  // [D] FP16 in-place
+    device const bfloat* w_postffn2     [[buffer(3)]],  // [D] BF16
+    device const bfloat* w_postffn      [[buffer(4)]],  // [D] BF16
+    constant     uint&   D              [[buffer(5)]],
+    constant     float&  rms_eps        [[buffer(6)]],
+    constant     float&  layer_scalar   [[buffer(7)]],
+    uint  lid              [[thread_position_in_threadgroup]],
+    uint  lsize            [[threads_per_threadgroup]],
+    uint  simd_lane_id     [[thread_index_in_simdgroup]],
+    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
+    uint  simdgroups       [[simdgroups_per_threadgroup]]
+) {
+    threadgroup half  tmp_tg[kFusedMaxD];
+    threadgroup half  h12_tg[kFusedMaxD];
+    threadgroup float partial[kFusedMaxSimdGroups];
+    fused_layer_tail_body(h2, h1, hidden, w_postffn2, w_postffn, fused_fc_d(D), rms_eps,
+                          layer_scalar, false, w_postffn, false, w_postffn, hidden,
+                          lid, lsize, simd_lane_id, simd_group_id, simdgroups,
+                          tmp_tg, h12_tg, partial);
+}
+
+// fused_layer_tail with the shared expert's post-FFN-1 norm in front and,
+// when `has_next`, the next layer's input norm behind: the decode chain
+//     rmsnorm_bf16w(h1, post_ffn_1) -> fused_layer_tail
+//     -> rmsnorm_bf16w(hidden, next input_layernorm) -> next_normed
+// in one dispatch, bitwise the same as the three.
+[[kernel, max_total_threads_per_threadgroup(kFusedThreads)]]
+void fused_layer_tail_norms(
+    device const half*   h2             [[buffer(0)]],  // [D] FP16
+    device const half*   h1             [[buffer(1)]],  // [D] FP16, before post_ffn_1
+    device       half*   hidden         [[buffer(2)]],  // [D] FP16 in-place
+    device const bfloat* w_postffn2     [[buffer(3)]],  // [D] BF16
+    device const bfloat* w_postffn      [[buffer(4)]],  // [D] BF16
+    constant     uint&   D              [[buffer(5)]],
+    constant     float&  rms_eps        [[buffer(6)]],
+    constant     float&  layer_scalar   [[buffer(7)]],
+    device const bfloat* w_postffn1     [[buffer(8)]],  // [D] BF16
+    device const bfloat* w_next_input   [[buffer(9)]],  // [D] BF16
+    device       half*   next_normed    [[buffer(10)]], // [D] FP16
+    constant     uint&   has_next       [[buffer(11)]],
+    uint  lid              [[thread_position_in_threadgroup]],
+    uint  lsize            [[threads_per_threadgroup]],
+    uint  simd_lane_id     [[thread_index_in_simdgroup]],
+    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
+    uint  simdgroups       [[simdgroups_per_threadgroup]]
+) {
+    threadgroup half  tmp_tg[kFusedMaxD];
+    threadgroup half  h12_tg[kFusedMaxD];
+    threadgroup float partial[kFusedMaxSimdGroups];
+    fused_layer_tail_body(h2, h1, hidden, w_postffn2, w_postffn, fused_fc_d(D), rms_eps,
+                          layer_scalar, true, w_postffn1, has_next != 0u, w_next_input,
+                          next_normed, lid, lsize, simd_lane_id, simd_group_id, simdgroups,
+                          tmp_tg, h12_tg, partial);
 }

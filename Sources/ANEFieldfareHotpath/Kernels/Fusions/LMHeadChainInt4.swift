@@ -148,7 +148,7 @@ final class LMHeadChainInt4 {
                                   m: vocab, n: d, rows: rowCount,
                                   xStrideElements: Int(d), yStrideElements: Int(vocab),
                                   types: .f16ToF32)
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             let vocabValue = vocab
             encoder.setComputePipelineState(rowsArgmax)
             encoder.setBuffer(rowsLogitsBuffer, offset: 0, index: 0)
@@ -200,7 +200,7 @@ final class LMHeadChainInt4 {
                                             ids: table.ids, x: xNormedRowsBuffer, y: rowsLogitsBuffer,
                                             m: UInt32(table.count), n: d, rows: rowCount,
                                             xStrideElements: Int(d), yStrideElements: table.count)
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             let count = UInt32(table.count)
             encoder.setComputePipelineState(rowsArgmax)
             encoder.setBuffer(rowsLogitsBuffer, offset: 0, index: 0)
@@ -252,7 +252,7 @@ final class LMHeadChainInt4 {
                         d: d,
                         eps: rmsEps)
 
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             let specialized = d == Self.realDecodeD && vocab == Self.realDecodeVocab
             encoder.setComputePipelineState(specialized ? rowGreedySpecialized : rowGreedy)
             encoder.setBuffer(xNormedBuffer, offset: 0, index: 0)
@@ -275,7 +275,7 @@ final class LMHeadChainInt4 {
             encoder.endEncoding()
         }
 
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        if let encoder = commandBuffer.makeTracedComputeEncoder() {
             encoder.setComputePipelineState(rowReducer)
             encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 0)
             encoder.setBuffer(outToken, offset: outTokenOffset, index: 1)
@@ -316,7 +316,7 @@ final class LMHeadChainInt4 {
                       d: d, rmsEps: rmsEps)
         let rowOffset = row * Int(d) * MemoryLayout<Float16>.stride
         let rowGroups = (table.count + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(hotGreedy)
         encoder.setBuffer(normedRows, offset: rowOffset, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)
@@ -374,7 +374,7 @@ final class LMHeadChainInt4 {
         let rowsPerGroup = Self.rowsPerThreadgroup * Self.checkRowsPerSimd
         let rowGroups = (Int(vocab) + rowsPerGroup - 1) / rowsPerGroup
         let specialized = d == Self.realDecodeD && vocab == Self.realDecodeVocab
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState((specialized ? checkSpecialized : checkGeneric)[rowCount - 1])
         encoder.setBuffer(normedRows, offset: 0, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)

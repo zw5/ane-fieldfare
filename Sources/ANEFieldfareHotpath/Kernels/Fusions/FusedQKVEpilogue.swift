@@ -66,7 +66,7 @@ final class FusedQKVEpilogue {
                     theta: Float, rotatedPairs: UInt32, eps: Float) -> Bool {
         guard let pipeline = rowsPSOs[Shape(headDim: headDim, numQHeads: numQHeads,
                                             numKVHeads: numKVHeads, rotatedPairs: rotatedPairs)],
-              let enc = cb.makeComputeCommandEncoder() else { return false }
+              let enc = cb.makeTracedComputeEncoder() else { return false }
         enc.setComputePipelineState(pipeline)
         enc.setBuffer(q, offset: 0, index: 0)
         enc.setBuffer(k, offset: 0, index: 1)
@@ -111,7 +111,7 @@ final class FusedQKVEpilogue {
                      "headDim > 512 exceeds the fused QKV epilogue scratch")
         precondition(rotatedPairs * 2 <= headDim,
                      "rotatedPairs must fit inside one NeoX head")
-        guard let enc = cb.makeComputeCommandEncoder() else { return }
+        guard let enc = cb.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(
             specializedPSOs[Shape(headDim: headDim,
                                   numQHeads: numQHeads,

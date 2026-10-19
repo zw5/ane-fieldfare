@@ -33,14 +33,6 @@ public struct PrefillCaptureChunk {
         return try body(unsafe elements.span)
     }
 
-    /// A copy of `withHidden`'s elements that outlives the chunk.
-    public var hiddenValues: [Float16] {
-        withHidden { hidden in
-            var values = [Float16](repeating: 0, count: hidden.count)
-            for index in hidden.indices { values[index] = hidden[index] }
-            return values
-        }
-    }
 }
 
 /// Opt-in capture of layer outputs and routes during chunked prefill. Off by

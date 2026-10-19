@@ -39,7 +39,7 @@ final class FusedPostAttentionSetup {
                        eps: Float) {
         precondition(d <= 4096,
                      "D > 4096 exceeds the fused post-attention setup scratch")
-        guard let enc = cb.makeComputeCommandEncoder() else { return }
+        guard let enc = cb.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState((d == 2816 ? specializedPSO : nil) ?? pso)
         enc.setBuffer(hidden,              offset: 0,                         index: 0)
         enc.setBuffer(attn,                offset: 0,                         index: 1)

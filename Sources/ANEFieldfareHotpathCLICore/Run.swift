@@ -303,6 +303,7 @@ public func run(args: Args,
                 "fused_head_seconds": Double(runner.totalHeadFusedNanos) / nanosPerSecond,
                 "routed_expert_cache_hits": runner.routedExpertCacheHits,
                 "routed_expert_cache_misses": runner.routedExpertCacheMisses,
+                "decode_layer_patches": runner.decodeLayerPatches,
                 "early_expert_read": runner.earlyExpertReadStats.map { early -> [String: Any] in
                     ["guess": runner.earlyExpertReadGuess.rawValue, "forwards": early.forwards,
                      "misses": early.misses, "reads": early.reads, "used": early.used,
@@ -350,6 +351,9 @@ public func run(args: Args,
             let data = try JSONSerialization.data(withJSONObject: profile, options: [.sortedKeys])
             stderr.write(data)
             stderr.write(Data("\n".utf8))
+        }
+        if let path = try GPUTrace.finish() {
+            stderr.write(Data("[gpu trace] wrote \(path)\n".utf8))
         }
         return RunResult(exitCode: 0)
     } catch let error as ArgsError {

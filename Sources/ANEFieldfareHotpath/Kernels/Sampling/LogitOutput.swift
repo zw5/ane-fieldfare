@@ -24,7 +24,7 @@ final class LogitSoftcapSoftmax {
                        probs: any MTLBuffer,
                        v: UInt32,
                        softcap: Float = 30.0) {
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(logits, offset: 0, index: 0)
         enc.setBuffer(probs,  offset: 0, index: 1)
@@ -69,7 +69,7 @@ final class Sample {
                        topP: Float = 1.0,
                        seed: UInt64,
                        position: UInt32 = 0) {
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(probs,    offset: 0, index: 0)
         enc.setBuffer(outToken, offset: 0, index: 1)
@@ -167,7 +167,7 @@ final class SampleTopK64 {
                        seed: UInt64) {
         let threads = MTLSize(width: 256, height: 1, depth: 1)
 
-        if let enc = commandBuffer.makeComputeCommandEncoder() {
+        if let enc = commandBuffer.makeTracedComputeEncoder() {
             enc.setComputePipelineState(stage1PSO)
             enc.setBuffer(probs, offset: 0, index: 0)
             enc.setBuffer(stage1Values, offset: 0, index: 1)
@@ -179,7 +179,7 @@ final class SampleTopK64 {
             enc.endEncoding()
         }
 
-        if let enc = commandBuffer.makeComputeCommandEncoder() {
+        if let enc = commandBuffer.makeTracedComputeEncoder() {
             enc.setComputePipelineState(reducePSO)
             enc.setBuffer(stage1Values, offset: 0, index: 0)
             enc.setBuffer(stage1Indices, offset: 0, index: 1)
@@ -192,7 +192,7 @@ final class SampleTopK64 {
             enc.endEncoding()
         }
 
-        if let enc = commandBuffer.makeComputeCommandEncoder() {
+        if let enc = commandBuffer.makeTracedComputeEncoder() {
             enc.setComputePipelineState(finalPSO)
             enc.setBuffer(stage2Values, offset: 0, index: 0)
             enc.setBuffer(stage2Indices, offset: 0, index: 1)

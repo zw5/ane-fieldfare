@@ -70,7 +70,7 @@ public final class SharedExpertInt4 {
 
         if gate.weightsOffset % 2 == 0, up.weightsOffset % 2 == 0,
            gate.cols % UInt32(Quantization.groupSize) == 0,
-           let encoder = cb.makeComputeCommandEncoder() {
+           let encoder = cb.makeTracedComputeEncoder() {
             let d = gate.cols, f = gate.rows
             encoder.setComputePipelineState(try gateUpActPipeline(d: d, f: f))
             encoder.setBuffer(gate.weights, offset: gate.weightsOffset, index: 0)
@@ -111,7 +111,7 @@ public final class SharedExpertInt4 {
                     y: scratchUp, yOffset: scratchUpOffset,
                     m: up.rows, n: up.cols)
 
-        guard let encoder = cb.makeComputeCommandEncoder() else { return }
+        guard let encoder = cb.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(geluMulPSO)
         encoder.setBuffer(scratchGate, offset: scratchGateOffset, index: 0)
         encoder.setBuffer(scratchUp, offset: scratchUpOffset, index: 1)

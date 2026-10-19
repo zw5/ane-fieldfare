@@ -19,7 +19,7 @@ final class PrefillEmbedLookupInt4 {
                        outScale: Float) {
         precondition(d % UInt32(Quantization.groupSize) == 0,
                      "D must be a multiple of \(Quantization.groupSize)")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(table, offset: tableOffset, index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)
@@ -52,7 +52,7 @@ final class PrefillRMSNorm {
                             t: UInt32,
                             d: UInt32,
                             eps: Float) {
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(psoBF16W)
         enc.setBuffer(x, offset: xOffset, index: 0)
         enc.setBuffer(weight, offset: weightOffset, index: 1)
@@ -88,7 +88,7 @@ final class PrefillInt4QMM {
                        k: Int) {
         precondition(k % Quantization.groupSize == 0,
                      "K must be a multiple of \(Quantization.groupSize)")
-        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)

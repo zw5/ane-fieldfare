@@ -33,7 +33,7 @@ final class RoPE {
                                   numTokens: UInt32 = 1,
                                   theta: Float = 10_000.0) {
         precondition(headDim.isMultiple(of: 2), "head_dim must be even")
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         let pipeline = defaultPipeline(headDim: headDim, numHeads: numHeads)
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(data, offset: dataOffset, index: 0)
@@ -65,7 +65,7 @@ final class RoPE {
         precondition(headDim.isMultiple(of: 2), "head_dim must be even")
         precondition(rotatedPairs * 2 <= headDim,
                      "rotatedPairs * 2 must not exceed head_dim")
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         let pipeline = proportionalPipeline(
             headDim: headDim,
             numHeads: numHeads,

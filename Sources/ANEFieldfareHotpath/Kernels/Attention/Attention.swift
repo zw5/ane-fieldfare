@@ -256,7 +256,7 @@ final class Attention {
                                          ringCapacity: ringCapacity)
         let tgWidth = min(Self.threadsPerGroup, Int(partialPSO.maxTotalThreadsPerThreadgroup))
 
-        guard let p1 = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let p1 = commandBuffer.makeTracedComputeEncoder() else { return }
         p1.setComputePipelineState(partialPSO)
         p1.setBuffer(q, offset: qOffset, index: 0)
         p1.setBuffer(k, offset: kOffset, index: 1)
@@ -279,7 +279,7 @@ final class Attention {
                                 threadsPerThreadgroup: MTLSize(width: tgWidth, height: 1, depth: 1))
         p1.endEncoding()
 
-        guard let p2 = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let p2 = commandBuffer.makeTracedComputeEncoder() else { return }
         let combinePSO = combinePipeline(headDim: headDim,
                                          numQHeads: numQHeads,
                                          numKVHeads: numKVHeads,
