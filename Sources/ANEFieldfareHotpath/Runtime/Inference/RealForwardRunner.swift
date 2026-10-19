@@ -1103,6 +1103,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                outputMode: .greedyIfAvailable)
     }
 
+    /// One decode step that writes the full logits whichever head the runner
+    /// was built with; `LogitsHeadProducer` samples through it.
+    func produceLogits(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
+        try prefillChunkState.requireClean(operation: "produce")
+        try await produceToken(token: token,
+                               position: position,
+                               into: logits,
+                               outputMode: .logits)
+    }
+
     public func prefillChunked(tokens: ArraySlice<Int32>,
                                startPosition: Int,
                                outputMode: PrefillOutputMode,

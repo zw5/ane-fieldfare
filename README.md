@@ -86,7 +86,7 @@ single runs). Every step is in [PERFORMANCE.md](PERFORMANCE.md).
 ## Quick start
 
 ```bash
-Scripts/build.sh     # builds the CLI into .build/
+Scripts/build.sh     # builds the CLI and the server into .build/
 
 .build/swift-hotpath/release/ANEFieldfareHotpathCLI \
   --model checkpoints/gturbo/gemma4.gturbo \
@@ -125,6 +125,96 @@ option, including `--image` for image input.
 | `ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` | Plan every verify layer's experts on the CPU instead of routing them on the GPU. Same output, slower. |
 | `ANE_FIELDFARE_VERIFY_BIND_TOP=n` | Guessed experts per verify row bound for GPU routing. Default 48. |
 | `ANE_FIELDFARE_TEST_CHECKPOINT=<path>` | Model location for tests, if not the default. |
+| `ANE_FIELDFARE_API_KEY=<key>` | Server only: require `Authorization: Bearer <key>`, like `--api-key`, without putting the key on the command line. |
+
+## OpenAI-compatible server
+
+`ANEFieldfareServer` serves the model over the OpenAI HTTP API, so chat apps
+that speak it (Open WebUI, LibreChat, Jan, Msty, Chatbox, SillyTavern,
+continue.dev, the `openai` SDKs) can use it. It keeps one model in memory and
+generates through the same loop as the CLI: for the same prompt and settings
+it returns the CLI's text.
+
+```bash
+Scripts/build.sh     # also builds the server
+
+.build/swift-hotpath/release/ANEFieldfareServer \
+  --model checkpoints/gturbo/gemma4.gturbo \
+  --drafter checkpoints/dflash/gemma-4-26B-A4B-it-DFlash   # optional
+# [server] listening on http://127.0.0.1:8080/v1 (model id gemma-4-26b-a4b-it)
+
+curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "gemma-4-26b-a4b-it", "temperature": 0, "stream": true,
+  "messages": [{"role": "user", "content": "What is the capital of France?"}]}'
+```
+
+Point a client at base URL `http://127.0.0.1:8080/v1` with any API key (or the
+one given to `--api-key`). In Open WebUI: *Admin Settings → Connections →
+OpenAI API → +*, URL `http://127.0.0.1:8080/v1` (from Open WebUI in Docker,
+`http://host.docker.internal:8080/v1` with `--host 0.0.0.0`). Clients that
+expect OpenRouter's base URL can use `http://127.0.0.1:8080/api/v1`.
+
+| Server option | What it does |
+| --- | --- |
+| `--model <dir>` | The `.gturbo` model. Required. |
+| `--drafter <dir>` | DFlash drafter: greedy and sampled requests decode speculatively (not with a repetition penalty). |
+| `--host <address>`, `--port <n>` | Where to listen. Default `127.0.0.1:8080`; `--host 0.0.0.0` for other machines. |
+| `--max-context <n>` | Prompt plus completion limit in tokens. Default 32768. |
+| `--model-id <id>` | The id `/v1/models` advertises. Default `gemma-4-26b-a4b-it`. Requests may name any model. |
+| `--api-key <key>` | Require `Authorization: Bearer <key>` on `/v1` (not on `/health`). Also `ANE_FIELDFARE_API_KEY`. |
+| `--max-queue <n>` | Requests that may wait while one generates. Default 8; beyond that, 503. |
+| `--temperature`, `--top-k`, `--top-p`, `--max-tokens` | Defaults for requests that leave the field out. Default 0.2, 64, 0.95 (the CLI's), and the rest of the context. |
+| `--backend`, `--fault-policy`, `--early-expert-read` | As for the CLI. |
+
+**Endpoints.** `GET /v1/models`, `GET /v1/models/{id}`,
+`POST /v1/chat/completions`, `POST /v1/completions` (raw prompt: `<bos>` plus
+the text, like `--prompt`; or token IDs), `GET /health`; every `/v1` route also
+under `/api/v1`. CORS is open (`Access-Control-Allow-Origin: *`, preflights
+answered), so browser apps can call it.
+
+**Request fields.** `messages` (`system`, `developer`, `user`, `assistant`;
+string content or an array of `text` parts), `max_tokens` /
+`max_completion_tokens` (clamped to the context), `temperature`, `top_p`,
+`top_k` (0 or -1: off), `repetition_penalty`, `stop` (string or up to 16
+strings, matched on the decoded text, also across token boundaries while
+streaming), `seed`, `stream`, `stream_options.include_usage`, `n` (1 only),
+`user`. Other fields are ignored, among them `tools`, `response_format`,
+`frequency_penalty` and `presence_penalty`. Responses carry `usage`, and a
+llama.cpp-style `timings` object with tokens per second and the decode path.
+Streams send a first chunk with `role`, content deltas, a chunk with
+`finish_reason` (`stop` or `length`), the usage chunk if asked, and
+`data: [DONE]`.
+
+**Decoding.** As in the CLI: temperature 0 is greedy (the hot-vocabulary head
+without a drafter), anything above it samples on the GPU, and with a drafter
+loaded both decode speculatively, with the same text for a given `seed` as
+without it. A request with a repetition penalty samples on the host, without
+the drafter.
+
+**Concurrency.** One generation runs at a time; others wait in order, up to
+`--max-queue`, and further requests get `503` with `Retry-After`. A client that
+disconnects cancels its generation (between tokens, or between prefill chunks)
+or leaves the line. Every request starts from an empty KV cache: no prompt
+prefix is reused between requests, so each turn of a chat prefills the whole
+conversation again.
+
+**Errors** use OpenAI's shape, `{"error": {"message", "type", "param",
+"code"}}`: 400 for invalid requests, 401 for a missing or wrong key, 404, 405,
+413 (`context_length_exceeded`) when the prompt does not fit, 503
+(`server_busy`), 500.
+
+**Limitations.** Text only: image parts are refused with a 400 (the CLI's
+image path needs the vision pack, and is not wired to the API). No tool
+calling, logprobs, `n` > 1, `echo` or JSON mode. `system` messages must come
+before the conversation. A client that half-closes its socket after sending
+a request is taken as gone. The listener speaks plain HTTP/1.1; put a TLS proxy
+in front of it before exposing it beyond the machine.
+
+`Scripts/server/smoke.sh` checks the server against the CLI on the real model:
+greedy chat (whole and streamed), seeded sampling and a raw completion must
+return the CLI's text. Run it under the benchmark lock:
+`Scripts/with_benchmark_lock.sh Scripts/server/smoke.sh`
+(`SMOKE_DRAFTER=<dir>` adds a drafter run).
 
 ## How it works
 
@@ -316,6 +406,7 @@ build. The quick suite takes about 90 s.
 | --- | --- |
 | `Sources/ANEFieldfareHotpath` | The runtime: model loading, expert store, Metal kernels, forward pass, supervisor, speculative decoding, tokenizer. |
 | `Sources/ANEFieldfareHotpathCLI`, `…CLICore` | The command-line program. |
+| `Sources/ANEFieldfareServer`, `…ServerCore` | The OpenAI-compatible HTTP server: HTTP/1.1 on Network.framework, the OpenAI request and response shapes, and the serialized engine. |
 | `Sources/ANEFieldfareANECarrier` | The Objective-C ANE wrapper. |
 | `Sources/ANEFieldfareImportedFormat` | Reader for the `.gturbo` format. |
 | `Sources/ANEFieldfareBench` | The benchmark program used by `Scripts/bench/`. |

@@ -25,6 +25,7 @@ let package = Package(
         .executable(name: "ANEFieldfareHotpathCLI", targets: ["ANEFieldfareHotpathCLI"]),
         .executable(name: "ANEFieldfareDFlashCapture", targets: ["ANEFieldfareDFlashCapture"]),
         .executable(name: "ANEFieldfareBench", targets: ["ANEFieldfareBench"]),
+        .executable(name: "ANEFieldfareServer", targets: ["ANEFieldfareServer"]),
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
@@ -60,6 +61,15 @@ let package = Package(
             name: "ANEFieldfareFormatTests",
             dependencies: ["ANEFieldfareImportedFormat"],
             path: "Tests/ANEFieldfareFormatTests",
+            swiftSettings: strictSwiftSettings
+        ),
+        .testTarget(
+            name: "ANEFieldfareServerTests",
+            dependencies: [
+                "ANEFieldfareServerCore", "ANEFieldfareHotpath", "ANEFieldfareHotpathCLICore",
+                "ANEFieldfareValidationSupport",
+            ],
+            path: "Tests/ANEFieldfareServerTests",
             swiftSettings: strictSwiftSettings
         ),
         .testTarget(
@@ -106,6 +116,19 @@ let package = Package(
             dependencies: ["ANEFieldfareHotpathCLICore"],
             path: "Sources/ANEFieldfareHotpathCLI",
             resources: [.copy("Fixtures")],
+            swiftSettings: strictSwiftSettings
+        ),
+        // OpenAI-compatible HTTP API over the same generation loop as the CLI.
+        .target(
+            name: "ANEFieldfareServerCore",
+            dependencies: ["ANEFieldfareHotpath", "ANEFieldfareHotpathCLICore"],
+            path: "Sources/ANEFieldfareServerCore",
+            swiftSettings: strictSwiftSettings
+        ),
+        .executableTarget(
+            name: "ANEFieldfareServer",
+            dependencies: ["ANEFieldfareServerCore"],
+            path: "Sources/ANEFieldfareServer",
             swiftSettings: strictSwiftSettings
         ),
         .executableTarget(

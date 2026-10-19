@@ -255,13 +255,13 @@ public func run(args: Args,
         let config = makeConfig(maxNewTokens: effectiveMaxNew)
         // Plain greedy text decoding guesses from the hot vocabulary and
         // checks every token against the full head; the output is the same.
-        var producer: any LogitProducer = runner
-        if let speculative {
-            producer = speculative
-        } else if multimodalInput == nil, config.isPureGreedy, runtime.prefillConfig.mode == .chunked,
-                  let hotHead = HotHeadDecoder(runner: runner) {
-            producer = hotHead
-        }
+        // The server decides with the same function.
+        let producer = selectLogitProducer(
+            runner: runner,
+            speculative: speculative,
+            config: config,
+            prefillConfig: runtime.prefillConfig,
+            hasImages: multimodalInput != nil)
 
         var generatedTokenIDs: [Int32] = []
         let stats = try await runRawCompletion(
