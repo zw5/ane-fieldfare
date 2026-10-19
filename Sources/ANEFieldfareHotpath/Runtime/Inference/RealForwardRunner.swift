@@ -57,7 +57,7 @@ internal enum PrefillProjectionDispatchPolicy {
 }
 
 public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRunner, ContextWindowReporting,
-    FusedGreedyProducer {
+    SamplingTokenProducer {
     private struct LayerSharedExpertProjections {
         let gate: SharedExpertInt8Proj
         let up: SharedExpertInt8Proj
@@ -938,7 +938,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                         scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
                                         biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                                         outTokens: greedy, d: UInt32(D), vocab: UInt32(cfg.vocabSize),
-                                        rmsEps: eps)
+                                        rmsEps: eps, softcap: Float(cfg.finalLogitSoftcap),
+                                        // Row r's token sits at startPosition + 1 + r.
+                                        sampling: tokenSampling.map { .init(rule: $0, keyBase: startPosition + 1) })
         headCB.commit()
         if let behind = try behindHead?() {
             try waitForCompletion(behind)
@@ -1071,6 +1073,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var totalHeadFusedNanos: UInt64 = 0
     public private(set) var lastGreedyToken: UInt32 = 0
     public var usesFusedGreedyHead: Bool { useFusedGreedyHead }
+    /// When set, the fused heads (decode, prefill's last row, verify) draw
+    /// under this rule instead of taking the argmax.
+    public var tokenSampling: TokenSampling?
     public private(set) var routedExpertCacheHits: UInt64 = 0
     public private(set) var routedExpertCacheMisses: UInt64 = 0
     public private(set) var routedWeightMassByRank = Array(repeating: 0.0, count: 8)
@@ -1933,7 +1938,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 throw ModelError.residentBufferWrapFailed
             }
             finalCB.label = "prefill start=\(startPosition) count=\(t) phase=final_head"
-            if outputMode == .greedyIfAvailable, useFusedGreedyHead {
+            if outputMode == .greedyIfAvailable, useFusedGreedyHead, let sampling = tokenSampling {
+                // The prompt's next token sits at position startPosition + t.
+                try fusionHead.encodeGreedyRows(
+                    commandBuffer: finalCB, hidden: scratch.hidden,
+                    hiddenOffset: (t - 1) * D * MemoryLayout<Float16>.stride, rowCount: 1,
+                    normWeight: finalNorm.buffer, normOffset: Int(finalNorm.offset),
+                    weights: lm.buffer, weightsOffset: Int(lm.offset),
+                    scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                    biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                    outTokens: greedyTokenBuf, d: UInt32(D), vocab: UInt32(cfg.vocabSize), rmsEps: eps,
+                    softcap: Float(cfg.finalLogitSoftcap),
+                    sampling: .init(rule: sampling, keyBase: startPosition + t))
+            } else if outputMode == .greedyIfAvailable, useFusedGreedyHead {
                 fusionHead.encodeGreedyDecode(
                     commandBuffer: finalCB,
                     hidden: scratch.hidden,
@@ -2496,7 +2513,23 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         GPUTrace.setScope("decode head")
         let tHead = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         let headBefore = totalHeadFusedNanos
-        if useFusedGreedyHead && outputMode == .greedyIfAvailable, let (row, check) = hotHead,
+        if useFusedGreedyHead && outputMode == .greedyIfAvailable, let sampling = tokenSampling {
+            // The full head's logits and a draw for the token at position + 1.
+            let lm = model.lmHead
+            try runSync { cb in
+                try self.fusionHead.encodeGreedyRows(
+                    commandBuffer: cb, hidden: self.hidden, rowCount: 1,
+                    normWeight: fNorm.buffer, normOffset: Int(fNorm.offset),
+                    weights: lm.buffer, weightsOffset: Int(lm.offset),
+                    scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                    biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                    outTokens: self.greedyTokenBuf, d: D, vocab: UInt32(self.cfg.vocabSize), rmsEps: eps,
+                    softcap: Float(self.cfg.finalLogitSoftcap),
+                    sampling: .init(rule: sampling, keyBase: position + 1))
+            }
+            totalHeadFusedNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
+            lastGreedyToken = unsafe greedyTokenBuf.contents().load(as: UInt32.self)
+        } else if useFusedGreedyHead && outputMode == .greedyIfAvailable, let (row, check) = hotHead,
            let hot = hotVocabulary {
             let lm = model.lmHead
             try runSync { cb in
@@ -2622,9 +2655,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         }
     }
 
-    private func runSync(_ body: (any MTLCommandBuffer) -> Void) throws {
+    private func runSync(_ body: (any MTLCommandBuffer) throws -> Void) throws {
         let cb = try ctx.makeCommandBuffer()
-        body(cb)
+        try body(cb)
         cb.commit()
         try waitForCompletion(cb)
     }

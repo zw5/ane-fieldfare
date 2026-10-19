@@ -110,9 +110,10 @@ struct DFlashChainedDraftTests {
         #expect(gpu.confidences.map(\.bitPattern) == drafter.drafts(count: rows).confidences.map(\.bitPattern))
     }
 
-    /// Speculative decoding end to end against plain greedy decoding on a
-    /// chat prompt: accepted drafts handed out one per call, chained drafts,
-    /// truncated verifies and plain steps must reproduce the plain output.
+    /// Speculative decoding end to end against plain decoding on a chat
+    /// prompt, greedy and sampled with the same rule: accepted drafts handed
+    /// out one per call, chained drafts, truncated verifies and plain steps
+    /// must reproduce the plain output.
     /// The two may legitimately part at a near-tie (batched and single-row
     /// arithmetic round differently); this prompt's first one is at token
     /// 102, past the tokens compared.
@@ -142,13 +143,60 @@ struct DFlashChainedDraftTests {
             }
             return tokens
         }
-        let plain = try await generate(runner, count: 64)
-        runner.reset()
-        let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter)
-        let speculative = try await generate(decoder, count: 64)
-        #expect(plain.count == 64)
-        #expect(speculative == plain)
-        #expect(decoder.stats.speculativeSteps > 0 && decoder.stats.acceptedDrafts > 0)
+        for sampling in [nil, TokenSampling(temperature: 0.8, topK: 64, topP: 0.95, seed: 5)] {
+            runner.reset()
+            runner.tokenSampling = sampling
+            let plain = try await generate(runner, count: 64)
+            runner.reset()
+            let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter)
+            decoder.tokenSampling = sampling
+            let speculative = try await generate(decoder, count: 64)
+            decoder.tokenSampling = nil
+            let first = zip(plain, speculative).enumerated().first { $0.element.0 != $0.element.1 }?.offset
+            #expect(plain.count == 64)
+            #expect(speculative == plain,
+                    "sampling \(String(describing: sampling)): first difference at \(String(describing: first))")
+            #expect(decoder.stats.speculativeSteps > 0 && decoder.stats.acceptedDrafts > 0)
+        }
+    }
+
+    /// Sampled verify rows draw with the noise of the positions they fill:
+    /// teacher-forcing a plain sampled decode through 8-row verifies under the
+    /// same rule reproduces its tokens (up to near-ties between batched and
+    /// single-row arithmetic).
+    @Test func sampledVerifyReproducesSampledDecode() async throws {
+        let context = try MetalContext()
+        let model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device)
+        let runner = try RealForwardRunner(model: model, context: context, maxContext: 1024)
+        let prompt: [Int32] = [2, 105, 2364, 107, 6974, 496, 17856, 1292, 600, 130450, 48490, 20312, 528, 496,
+                               1694, 236764, 607, 496, 6484, 2383, 532, 496, 2822, 2591, 236761, 106, 107, 105,
+                               4368, 107, 100, 45518, 107, 101]
+        let logits = try #require(context.device.makeBuffer(length: model.config.vocabSize * 2,
+                                                             options: .storageModeShared))
+        runner.tokenSampling = TokenSampling(temperature: 0.8, topK: 64, topP: 0.95, seed: 5)
+        func prefill() async throws -> Int32 {
+            runner.reset()
+            let result = try await runner.prefillChunked(
+                tokens: prompt[...], startPosition: 0, outputMode: .greedyIfAvailable,
+                config: .production(chunkTokens: 64), into: logits, onProgress: { _ in })
+            guard case .greedyToken(let first) = result.seed else { return -1 }
+            return Int32(bitPattern: first)
+        }
+        var plain = [try await prefill()]
+        while plain.count < 65 {
+            try await runner.produce(token: plain[plain.count - 1], position: prompt.count + plain.count - 1,
+                                     into: logits)
+            plain.append(Int32(bitPattern: runner.lastGreedyToken))
+        }
+        #expect(try await prefill() == plain[0])
+        var mismatches: [Int] = []
+        var i = 0
+        while i + 8 <= 64 {
+            let out = try await runner.verify(tokens: Array(plain[i..<(i + 8)]), startPosition: prompt.count + i)
+            for r in 0..<8 where out[r] != plain[i + r + 1] { mismatches.append(i + r + 1) }
+            i += 8
+        }
+        #expect(mismatches.isEmpty, "verify differs from plain sampled decode at \(mismatches)")
     }
 
     /// The installed INT4 weights hold each source row where the fused

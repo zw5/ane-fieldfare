@@ -90,13 +90,17 @@ import ANEFieldfareHotpath
         }
     }
 
-    @Test func drafterIsGreedyTextOnly() throws {
+    @Test func drafterIsTextOnlyAndTakesNoRepetitionPenalty() throws {
         let parsed = try Args.parse([
             "--model", "m.gturbo", "--chat-prompt", "hi", "--temperature", "0", "--drafter", "d",
         ])
         #expect(parsed.drafter == "d")
+        // Sampled speculative decoding draws with the target's noise.
+        let sampled = try Args.parse(["--model", "m.gturbo", "--chat-prompt", "hi", "--drafter", "d"])
+        #expect(sampled.drafter == "d" && sampled.temperature > 0)
         #expect(throws: ArgsError.self) {
-            _ = try Args.parse(["--model", "m.gturbo", "--chat-prompt", "hi", "--drafter", "d"])
+            _ = try Args.parse(["--model", "m.gturbo", "--chat-prompt", "hi", "--drafter", "d",
+                                "--repetition-penalty", "1.1"])
         }
         #expect(throws: ArgsError.mutuallyExclusive("--drafter", "--image")) {
             _ = try Args.parse([

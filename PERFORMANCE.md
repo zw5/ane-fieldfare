@@ -413,6 +413,57 @@ that wait on SSD reads. Further gains have to come from the GPU work itself
 (the 8-row expert and projection kernels run at ~105 GB/s of ~134) or from
 higher acceptance.
 
+## Speculative sampling with shared noise
+
+Speculative decoding used to be greedy only. Every token producer now draws
+with one rule on the GPU (`sample_rows_f32`): the token at position j is the
+argmax of capped(logit) ÷ T + G(seed, j, token) over the entries top-k and
+top-p keep, with G a standard Gumbel variable from a counter-based hash. That
+is an exact draw from the truncated tempered softmax (the Gumbel-max trick),
+and it depends only on the logits and (seed, j). So:
+
+- The target's draw at a position is the same whether plain decode, a verify
+  row or prefill's last row makes it. Teacher-forcing a plain sampled decode
+  through 1-, 3- and 8-row verifies reproduces every token
+  (`sampledVerifyReproducesSampledDecode`, and `verify-check` with
+  `ANE_FIELDFARE_VERIFY_SAMPLE`).
+- The drafter draws its drafts with the same noise (keyed from the GPU's
+  context length), so acceptance stays an exact token match: the GPU accept,
+  the chained loop and the policy are unchanged. A draft matches when both
+  models' perturbed maxima land on the same token, which shared noise makes
+  likely when the two distributions are close.
+- The output is the target's sampled text for the seed, with or without the
+  drafter, up to near-ties between batched and single-row arithmetic.
+
+Top-k (up to 256) is selected exactly in two passes over each row: a
+2,048-bin histogram of the capped logits locates the bin holding the k-th
+largest, the entries at or above it are gathered into threadgroup memory and
+sorted there, then top-p and the draw run on the survivors.
+
+Measured before building it: sampling was not slow. The GPU sampler took
+~0.1–0.9 ms per token and sampled decode ran within ~10–15% of greedy, the
+gap being the full 262k-row head (greedy uses the hot-vocabulary head). An
+earlier note of 18.6 tok/s sampled was a contended measurement.
+
+Quick suite, 192 tokens, top-k 64, top-p 0.95, seed 5, single runs with
+desktop apps running (plain → `--drafter`, tok/s):
+
+| Temperature | code | math | explanation |
+| --- | --- | --- | --- |
+| 0 (greedy) | 48 → 89 (1.87×) | 45 → 69 (1.54×) | 46 → 66 (1.44×) |
+| 0.6 | 43 → 82 (1.90×) | 40 → 70 (1.75×) | 40 → 58 (1.44×) |
+| 0.8 | 42 → 73 (1.74×) | 41 → 78 (1.89×) | 41 → 62 (1.52×) |
+| 1.0 | 42 → 78 (1.84×) | 41 → 71 (1.73×) | 41 → 64 (1.58×) |
+
+Accepted drafts per step were 1.3–2.5 when sampling, against 1.8–3.3 greedy.
+Eleven of the twelve sampled speculative outputs equalled plain sampled
+output; explanation at 0.8 first differed at token 32, a flipped near-tie in
+the noisy race (a plain decode step reading KV rows a verify had written).
+
+Sampled text now differs from the host sampler's for the same seed (the noise
+is different); a repetition penalty still takes the host path, without the
+drafter.
+
 ## End-to-end results
 
 ### Before the rewrite

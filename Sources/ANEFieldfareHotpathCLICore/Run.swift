@@ -130,7 +130,9 @@ public func run(args: Args,
         }
         let args = effectiveArgs
         let runtime = try args.resolvedRuntimeConfiguration(
-            forceLogitsHead: !makeConfig(maxNewTokens: args.maxNew).isPureGreedy,
+            // The fused heads draw greedy or sampled tokens on the GPU; only a
+            // repetition penalty needs the logits on the host.
+            forceLogitsHead: makeConfig(maxNewTokens: args.maxNew).repetitionPenalty != 1,
             imagePrompt: input.hasImages,
             environment: environment)
 

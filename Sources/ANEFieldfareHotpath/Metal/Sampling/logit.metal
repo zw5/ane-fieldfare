@@ -1024,3 +1024,252 @@ void argmax_rows_f32(
         }
     }
 }
+
+// ============================================================================
+// Sampled token per row of FP32 logits `[rows][count]`, shared-noise
+// (Gumbel-max) form: entry i of row r wins when it maximizes
+// capped(logit_i) / T + G(seed, key_r, token_i) over the entries the
+// truncation keeps, which is an exact draw from the truncated tempered
+// softmax. The noise depends only on (seed, the drawn token's position,
+// token id), so every producer drawing a position (plain decode, a verify
+// row, a drafter row) draws the same noise: a draft matches the target's
+// draw exactly when both pick the same token, and a seed reproduces the
+// same text with or without a drafter.
+//
+// Truncation follows `Sampler`'s order: top-p over the full T = 1
+// distribution, top-k caps the surviving set, temperature applies to the
+// final draw. Top-k (<= 256) is selected exactly in two passes: a histogram
+// of the capped logits finds the bin holding the k-th largest, the entries at
+// or above it are gathered into threadgroup memory and sorted there.
+// ============================================================================
+struct SampleRowsParams {
+    float temperature;   // > 0
+    float top_p;         // (0, 1]; applies only with top_k
+    uint  top_k;         // 0 = no truncation, else 1...256
+    uint  count;         // entries per row
+    uint  key_base;      // position of row 0's token; plus key_offset[0]
+    uint  listed;        // entry i is token ids[i]
+    float softcap;       // > 0: logits are capped to (-softcap, softcap)
+    uint  seed_lo;
+    uint  seed_hi;
+};
+
+constant constexpr uint kSampleBins = 2048;
+constant constexpr uint kSampleCandidates = 1024;
+
+/// Standard Gumbel noise from a counter-based hash of (seed, key, token):
+/// stateless, so any kernel recomputes the same value.
+static inline float sample_gumbel(ulong seed, uint key, uint token) {
+    ulong z = seed ^ (ulong(key) * 0x9E3779B97F4A7C15ul) ^ (ulong(token) * 0xD1B54A32D192ED03ul);
+    z += 0x9E3779B97F4A7C15ul;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ul;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBul;
+    z ^= z >> 31;
+    const float u = (float(uint(z >> 40)) + 0.5f) * (1.0f / 16777216.0f);
+    return -precise::log(-precise::log(u));
+}
+
+static inline float sample_capped(float v, float cap) {
+    return isfinite(v) ? cap * precise::tanh(v / cap) : -INFINITY;
+}
+
+/// (value, index) order: larger value first, then lower index.
+static inline bool sample_before(float va, uint ia, float vb, uint ib) {
+    return va > vb || (va == vb && ia < ib);
+}
+
+[[kernel, max_total_threads_per_threadgroup(1024)]]
+void sample_rows_f32(
+    device const float*            logits     [[buffer(0)]],
+    device       uint*             out_tokens [[buffer(1)]],
+    device       float*            out_prob   [[buffer(2)]],
+    constant     SampleRowsParams& p          [[buffer(3)]],
+    device const uint*             ids        [[buffer(4)]],
+    device const uint*             key_offset [[buffer(5)]],
+    uint  r              [[threadgroup_position_in_grid]],
+    uint  lid            [[thread_position_in_threadgroup]],
+    uint  lsize          [[threads_per_threadgroup]],
+    uint  simd_lane_id   [[thread_index_in_simdgroup]],
+    uint  simd_group_id  [[simdgroup_index_in_threadgroup]],
+    uint  simdgroups     [[simdgroups_per_threadgroup]]
+) {
+    threadgroup atomic_uint hist[kSampleBins];
+    threadgroup float cand_v[kSampleCandidates];
+    threadgroup uint  cand_i[kSampleCandidates];
+    threadgroup atomic_uint cand_n;
+    threadgroup float red_f[32];
+    threadgroup uint  red_u[32];
+    threadgroup float shared_f[2];
+    threadgroup uint  shared_u[2];
+
+    device const float* row = logits + r * p.count;
+    const float cap = p.softcap;
+    const float invT = 1.0f / p.temperature;
+    const uint key = p.key_base + key_offset[0] + r;
+    const ulong seed = (ulong(p.seed_hi) << 32) | ulong(p.seed_lo);
+    const bool truncated = p.top_k > 0u && p.top_k < p.count;
+
+    if (!truncated) {
+        // Gumbel-max over every entry; the max pass gives the draw's
+        // probability a stable reference.
+        float m = -INFINITY;
+        for (uint i = lid; i < p.count; i += lsize) m = max(m, sample_capped(row[i], cap));
+        m = simd_max(m);
+        if (simd_lane_id == 0) red_f[simd_group_id] = m;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group_id == 0) {
+            const float v = simd_max(simd_lane_id < simdgroups ? red_f[simd_lane_id] : -INFINITY);
+            if (simd_lane_id == 0) shared_f[0] = v;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        m = shared_f[0];
+        float best = -INFINITY, sum = 0.0f;
+        uint best_i = 0xFFFFFFFFu;
+        for (uint i = lid; i < p.count; i += lsize) {
+            const float c = sample_capped(row[i], cap);
+            if (c == -INFINITY) continue;
+            sum += exp((c - m) * invT);
+            const float g = c * invT + sample_gumbel(seed, key, p.listed != 0u ? ids[i] : i);
+            if (g > best) { best = g; best_i = i; }
+        }
+        const float bmax = simd_max(best);
+        const uint bi = simd_min(best == bmax ? best_i : 0xFFFFFFFFu);
+        const float ssum = simd_sum(sum);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_lane_id == 0) { red_f[simd_group_id] = bmax; red_u[simd_group_id] = bi; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group_id == 0) {
+            const bool live = simd_lane_id < simdgroups;
+            const float v = live ? red_f[simd_lane_id] : -INFINITY;
+            const float v2 = simd_max(v);
+            const uint j = simd_min(live && v == v2 ? red_u[simd_lane_id] : 0xFFFFFFFFu);
+            if (simd_lane_id == 0) { shared_u[0] = j; }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_lane_id == 0) red_f[simd_group_id] = ssum;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (lid == 0) {
+            float total = 0.0f;
+            for (uint s = 0; s < simdgroups; ++s) total += red_f[s];
+            const uint j = shared_u[0];
+            out_tokens[r] = j;
+            out_prob[r] = (j == 0xFFFFFFFFu || total <= 0.0f)
+                ? 0.0f : exp((sample_capped(row[j], cap) - m) * invT) / total;
+        }
+        return;
+    }
+
+    // Pass 1: histogram of the capped logits over (-cap, cap) and the T = 1
+    // normalizer, offset by the cap so nothing overflows.
+    for (uint b = lid; b < kSampleBins; b += lsize) atomic_store_explicit(&hist[b], 0u, memory_order_relaxed);
+    if (lid == 0) atomic_store_explicit(&cand_n, 0u, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float scale = float(kSampleBins) / (2.0f * cap);
+    float s1 = 0.0f;
+    for (uint i = lid; i < p.count; i += lsize) {
+        const float c = sample_capped(row[i], cap);
+        if (c == -INFINITY) continue;
+        s1 += exp(c - cap);
+        const uint bin = min(uint(max(0.0f, (c + cap) * scale)), kSampleBins - 1u);
+        atomic_fetch_add_explicit(&hist[bin], 1u, memory_order_relaxed);
+    }
+    s1 = simd_sum(s1);
+    if (simd_lane_id == 0) red_f[simd_group_id] = s1;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lid == 0) {
+        float total = 0.0f;
+        for (uint s = 0; s < simdgroups; ++s) total += red_f[s];
+        shared_f[0] = total;
+        // The bin holding the k-th largest: every entry at or above it is a
+        // candidate.
+        uint acc = 0, edge = 0;
+        for (uint b = kSampleBins; b-- > 0;) {
+            acc += atomic_load_explicit(&hist[b], memory_order_relaxed);
+            if (acc >= p.top_k) { edge = b; break; }
+        }
+        shared_u[0] = edge;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float total1 = shared_f[0];
+    const uint edge = shared_u[0];
+
+    // Pass 2: gather the candidates. Past `kSampleCandidates` (only if
+    // over a thousand logits share the edge bin) the extras are dropped.
+    for (uint i = lid; i < p.count; i += lsize) {
+        const float c = sample_capped(row[i], cap);
+        if (c == -INFINITY) continue;
+        const uint bin = min(uint(max(0.0f, (c + cap) * scale)), kSampleBins - 1u);
+        if (bin < edge) continue;
+        const uint slot = atomic_fetch_add_explicit(&cand_n, 1u, memory_order_relaxed);
+        if (slot < kSampleCandidates) { cand_v[slot] = c; cand_i[slot] = i; }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint n = min(atomic_load_explicit(&cand_n, memory_order_relaxed), kSampleCandidates);
+    uint size = 1;
+    while (size < n) size <<= 1;
+    for (uint t = n + lid; t < size; t += lsize) { cand_v[t] = -INFINITY; cand_i[t] = 0xFFFFFFFFu; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Bitonic sort, larger values first.
+    for (uint k = 2; k <= size; k <<= 1) {
+        for (uint j = k >> 1; j > 0; j >>= 1) {
+            for (uint t = lid; t < size; t += lsize) {
+                const uint u = t ^ j;
+                if (u > t) {
+                    const bool first = (t & k) == 0;
+                    const bool out_of_order = first
+                        ? sample_before(cand_v[u], cand_i[u], cand_v[t], cand_i[t])
+                        : sample_before(cand_v[t], cand_i[t], cand_v[u], cand_i[u]);
+                    if (out_of_order) {
+                        const float fv = cand_v[t]; cand_v[t] = cand_v[u]; cand_v[u] = fv;
+                        const uint fi = cand_i[t]; cand_i[t] = cand_i[u]; cand_i[u] = fi;
+                    }
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+    }
+    // Top-p over the T = 1 distribution within the top k.
+    if (lid == 0) {
+        const uint k = min(p.top_k, n);
+        float cum = 0.0f;
+        uint keep = 0;
+        while (keep < k) {
+            cum += exp(cand_v[keep] - cap) / total1;
+            keep += 1;
+            if (cum >= p.top_p) break;
+        }
+        shared_u[1] = max(keep, 1u);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint keep = shared_u[1];
+    // The draw over the survivors (at most 256, one per thread).
+    float g = -INFINITY, e = 0.0f;
+    if (lid < keep) {
+        const uint i = cand_i[lid];
+        g = cand_v[lid] * invT + sample_gumbel(seed, key, p.listed != 0u ? ids[i] : i);
+        e = exp((cand_v[lid] - cand_v[0]) * invT);
+    }
+    const float gmax = simd_max(g);
+    const uint gj = simd_min(g == gmax && lid < keep ? lid : 0xFFFFFFFFu);
+    const float esum = simd_sum(e);
+    if (simd_lane_id == 0) { red_f[simd_group_id] = gmax; red_u[simd_group_id] = gj; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lid == 0) {
+        float bv = -INFINITY;
+        uint bj = 0xFFFFFFFFu;
+        for (uint s = 0; s < simdgroups; ++s) {
+            if (red_f[s] > bv || (red_f[s] == bv && red_u[s] < bj)) { bv = red_f[s]; bj = red_u[s]; }
+        }
+        shared_u[0] = bj;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd_lane_id == 0) red_f[simd_group_id] = esum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lid == 0) {
+        float total = 0.0f;
+        for (uint s = 0; s < simdgroups; ++s) total += red_f[s];
+        const uint bj = shared_u[0];
+        out_tokens[r] = cand_i[bj];
+        out_prob[r] = exp((cand_v[bj] - cand_v[0]) * invT) / total;
+    }
+}

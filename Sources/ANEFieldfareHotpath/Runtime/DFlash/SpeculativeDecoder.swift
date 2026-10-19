@@ -18,13 +18,23 @@ public import Metal
 /// drafts the next block from the target's next token. The host reads the
 /// outcome and the next drafts together once all of it completes.
 public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, ContextWindowReporting,
-    FusedGreedyProducer {
+    SamplingTokenProducer {
     public let runner: RealForwardRunner
     public let drafter: DFlashDrafter
     public private(set) var policy: SpeculationPolicy
     public private(set) var stats = SpeculationStats()
     public private(set) var lastGreedyToken: UInt32 = 0
     public var usesFusedGreedyHead: Bool { true }
+    /// With a rule set, every token is drawn under it with noise keyed by
+    /// its position, by the target and the drafter alike: a draft is kept
+    /// when it equals the target's draw, so the output is the target's own
+    /// sampled text for the seed, as plain decoding would draw it.
+    public var tokenSampling: TokenSampling? {
+        didSet {
+            runner.tokenSampling = tokenSampling
+            chained = nil
+        }
+    }
     public var maxContext: Int { min(runner.maxContext, drafter.maxContext) }
 
     /// Accepted drafts not yet handed out: (position, token, its successor).
@@ -140,7 +150,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
             }
             try catchUp(to: position)
             let draftStart = Date()
-            let tokens = try drafter.propose(anchor: token, count: length)
+            let tokens = try drafter.propose(anchor: token, count: length, sampling: tokenSampling)
             let seconds = Date().timeIntervalSince(draftStart)
             stats.draftSeconds += seconds
             policy.recordDraft(length: length, seconds: seconds)
@@ -193,7 +203,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
             guard nextLength >= 2 else { return cb }
             let draft = try runner.makeCommandBuffer()
             draft.label = "dflash draft rows=\(nextLength)"
-            try drafter.encodeDraft(draft, rows: nextLength)
+            try drafter.encodeDraft(draft, rows: nextLength, sampling: tokenSampling)
             draft.commit()
             draftCB = draft
             return draft

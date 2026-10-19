@@ -208,15 +208,16 @@ public final class DFlashDrafter {
     }
 
     /// Drafts `count - 1` tokens after `anchor`, which sits at position
-    /// `contextLength`, and waits for them. Greedy over the drafter's logits.
-    public func propose(anchor: Int32, count: Int) throws -> [Int32] {
+    /// `contextLength`, and waits for them: greedy over the drafter's logits,
+    /// or drawn under `sampling` with the target's noise.
+    public func propose(anchor: Int32, count: Int, sampling: TokenSampling? = nil) throws -> [Int32] {
         let traceStart = GPUTrace.begin()
         defer { GPUTrace.end("draft_propose", since: traceStart) }
         guard contextLength + count <= maxContext else { throw DFlashError.invalidState("context full") }
         setAnchor(anchor)
         let cb = try ctx.makeCommandBuffer()
         cb.label = "dflash draft ctx=\(contextLength) rows=\(count)"
-        try encodeDraft(cb, rows: count)
+        try encodeDraft(cb, rows: count, sampling: sampling)
         cb.commit()
         cb.waitUntilCompleted()
         if let error = cb.error { throw DFlashError.invalidState("draft failed: \(error)") }
@@ -269,8 +270,11 @@ public final class DFlashDrafter {
 
     /// A draft of `rows` rows from `block` (anchor, then mask tokens) at
     /// position `state.context`, leaving the drafts in `block[1..<rows]` and
-    /// their probabilities in the head's `rowsConfidence`.
-    func encodeDraft(_ cb: any MTLCommandBuffer, rows R: Int) throws {
+    /// their probabilities in the head's `rowsConfidence`. With `sampling`,
+    /// draft r is drawn with the noise of position state.context + 1 + r,
+    /// the noise the target draws that position with, so it matches the
+    /// target's token exactly when both pick the same one.
+    func encodeDraft(_ cb: any MTLCommandBuffer, rows R: Int, sampling: TokenSampling? = nil) throws {
         guard R >= 2, R <= config.blockSize else {
             throw DFlashError.invalidState("block of \(R) outside 2...\(config.blockSize)")
         }
@@ -342,7 +346,8 @@ public final class DFlashDrafter {
                                          scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
                                          biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
                                          outIndices: picks, d: UInt32(D), rmsEps: config.rmsEps,
-                                         softcap: Float(model.config.finalLogitSoftcap))
+                                         softcap: Float(model.config.finalLogitSoftcap),
+                                         sampling: sampling.map { .init(rule: $0, keyBase: 1, keyOffset: state) })
         } else {
             try head.encodeGreedyRows(commandBuffer: cb, hidden: headRows, rowCount: R - 1,
                                       normWeight: weights.buffer, normOffset: weights.norm,
@@ -350,7 +355,8 @@ public final class DFlashDrafter {
                                       scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
                                       biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
                                       outTokens: picks, d: UInt32(D), vocab: UInt32(model.config.vocabSize),
-                                      rmsEps: config.rmsEps, softcap: Float(model.config.finalLogitSoftcap))
+                                      rmsEps: config.rmsEps, softcap: Float(model.config.finalLogitSoftcap),
+                                      sampling: sampling.map { .init(rule: $0, keyBase: 1, keyOffset: state) })
         }
         dispatch(cb, finishPSO, [picks, hotVocabulary?.ids ?? picks, block],
                  [UInt32(R - 1), hotVocabulary == nil ? 0 : 1], grid: MTLSize(width: R - 1, height: 1, depth: 1))
