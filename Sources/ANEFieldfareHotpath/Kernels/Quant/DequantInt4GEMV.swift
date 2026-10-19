@@ -59,14 +59,17 @@ final class DequantInt4GEMV {
 
     /// Weight rows per SIMD group for `rows` input rows. Two amortize the
     /// input traffic at 3–4 rows; past that the extra accumulators cost
-    /// occupancy (measured: twice as slow at 8 rows).
+    /// occupancy (measured: twice as slow at 8 rows). The ALU kernel only:
+    /// 5+ rows normally take the matrix kernel.
     static func weightRowsPerSIMD(rows: Int) -> Int {
         (3...4).contains(rows) ? 2 : 1
     }
 
     /// `rows` input vectors at `xStrideElements` apart, each projected like
-    /// `encode`, with the weights read once. Row r's result is bitwise the
-    /// single-row GEMV's. Pipelines are specialized per row count and width.
+    /// `encode`, with the weights read once. Pipelines are specialized per row
+    /// count and width. Below `matrixMinRows` rows, row r's result is bitwise
+    /// the single-row GEMV's; from there (when `n % 128 == 0`, not BF16) the
+    /// SIMD-group matrix kernel runs and matches it to FP32 rounding only.
     func encodeRows(commandBuffer: MTLCommandBuffer,
                     weights: MTLBuffer, weightsOffset: Int,
                     scales: MTLBuffer, scalesOffset: Int,

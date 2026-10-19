@@ -413,6 +413,11 @@ extension Args {
         if drafter != nil, !images.isEmpty {
             throw ArgsError.mutuallyExclusive("--drafter", "--image")
         }
+        // Without prefill every prompt token goes through the speculative
+        // decoder one at a time, which would draft and verify each of them.
+        if drafter != nil, prefillPolicy == .off {
+            throw ArgsError.mutuallyExclusive("--drafter", "--prefill off")
+        }
         if temperature > 0, topK == nil, let topP, topP < 1 {
             throw ArgsError.invalidValue(
                 flag: "--top-p",

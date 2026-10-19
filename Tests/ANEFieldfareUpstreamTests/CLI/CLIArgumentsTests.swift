@@ -123,6 +123,12 @@ import ANEFieldfareHotpath
                 "--drafter", "d", "--image", "x.png",
             ])
         }
+        #expect(throws: ArgsError.mutuallyExclusive("--drafter", "--prefill off")) {
+            _ = try Args.parse([
+                "--model", "m.gturbo", "--chat-prompt", "hi", "--temperature", "0",
+                "--drafter", "d", "--prefill", "off",
+            ])
+        }
     }
 
     @Test func helpListsExactlyThePublicOptions() {

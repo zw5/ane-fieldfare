@@ -121,14 +121,25 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private let moeActs: MTLBuffer       // [topK * FmoE] FP16
     // GPU-routed decode: the routed slots the GPU fills, each layer's expert
     // address table (0 where unbound), the zero expert an unbound slot reads,
-    // and the layer input kept for a host patch.
+    // the layer input kept for a host patch, and per layer the slots a patch
+    // recomputes (several patches can be in flight).
     private let routedSlots: MTLBuffer          // [maxStreamedExperts] UInt64
     private let routedAddressTable: MTLBuffer   // [numLayers * numExperts] UInt64
     private let routedFallback: MTLBuffer       // one zeroed expert
     private let savedHidden: MTLBuffer          // [D] FP16
     private let patchSlots: MTLBuffer           // [numLayers * topK] UInt32
     private let gpuRoutedDecode: Bool
-    private var routedExpertAddressCache: [Int: [UInt64]] = [:]
+    /// Per layer, the expert GPU addresses and the mapping they belong to: a
+    /// layer can be closed and reopened at new addresses (vision residency).
+    private final class ExpertAddresses {
+        weak var layer: MappedExpertLayer?
+        let addresses: [UInt64]
+        init(layer: MappedExpertLayer, addresses: [UInt64]) {
+            self.layer = layer
+            self.addresses = addresses
+        }
+    }
+    private var routedExpertAddressCache: [Int: ExpertAddresses] = [:]
     private let profileKernels = ProcessInfo.processInfo.environment["ANE_FIELDFARE_KERNEL_PROFILE"] != nil
     private var kernelProfile: [String: Double] = [:]
     private var kernelProfileTokens = 0
@@ -179,7 +190,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var decodeAttentionGPUNanos: UInt64 = 0
     public private(set) var decodeSharedGPUNanos: UInt64 = 0
     public private(set) var decodeRoutedGPUNanos: UInt64 = 0
-    /// Decode layers whose routes the GPU could not serve from bound experts.
+    /// Decode layers that ran the host-routed experts: layer 0 always, a
+    /// GPU-routed layer that routed to an unbound expert, and every layer when
+    /// GPU routing is off (no early reads, `ANE_FIELDFARE_HOST_ROUTED_DECODE`).
     public private(set) var decodeLayerPatches: UInt64 = 0
     /// Signalled by each decode layer's router, ahead of its command buffer's
     /// completion.
@@ -1192,9 +1205,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                            eps: eps)
                     sharedCB.commit()
                     if verifyTokens != nil {
-                        while routerEvent.signaledValue < routerEventValue {
-                            if cb.status == .error { try checkCommandBufferError(cb) }
-                        }
+                        try awaitRouter(routerEventValue, signaledBy: cb)
                     } else {
                         try waitForCompletion(cb)
                     }
@@ -1317,6 +1328,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         // tile waits only for its own experts and storage never
                         // idles between tiles.
                         var reads: [Task<Void, Error>?] = []
+                        // If a tile throws, reads not yet started are dropped
+                        // instead of streaming experts nobody will use.
+                        defer { for read in reads { read?.cancel() } }
                         var previous: Task<Void, Error>?
                         for tileIndex in routes.tiles.indices {
                             let missing = try PrefillStreamedTileBinding.expertIDs(forTile: tileIndex, routes: routes)
@@ -1325,6 +1339,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             let after = previous
                             let read = Task { [self] in
                                 try await after?.value
+                                try Task.checkCancellation()
                                 try await self.model.readRoutedExperts(layer: L, experts: missing)
                             }
                             reads.append(read)
@@ -1415,8 +1430,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         let absentNext = try model.nonResidentRoutedExperts(
                             layer: L + 1, experts: likely.sorted(), probes: Self.bindProbes)
                         // Advisory reads go out off the critical path.
-                        let model = model
-                        Self.readAheadQueue.async { try? model.prefetchRoutedExperts(layer: L + 1, experts: absentNext) }
+                        let nextLayer = try model.expertLayer(L + 1)
+                        Self.readAheadQueue.async { nextLayer.prefetch(absentNext) }
                         prefillEarlyReads &+= UInt64(absentNext.count)
                     }
                     guard let tailCB = ctx.queue.makeCommandBuffer() else {
@@ -1843,7 +1858,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             defer { totalCb1Nanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tEncode }
             let L = work.layer
             let mapped = try model.expertLayer(L)
-            let addresses = try routedExpertAddresses(layer: L)
+            let addresses = try routedExpertAddresses(layer: L, mapped: mapped)
             let table = routedAddressTable.contents().assumingMemoryBound(to: UInt64.self)
                 + L * numExperts
             var bound = [Bool](repeating: false, count: numExperts)
@@ -1983,11 +1998,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         commit(work)
         for L in 0..<cfg.numLayers {
             let next = L + 1 < cfg.numLayers ? try encodeLayer(L + 1) : nil
-            // Spin on the router's signal: a sleeping wait costs a thread
-            // wake per layer.
-            while routerEvent.signaledValue < work.event {
-                if work.attention.status == .error { try checkCommandBufferError(work.attention) }
-            }
+            try awaitRouter(work.event, signaledBy: work.attention)
             // Read everything this layer left for the host before the next
             // layer's buffers can overwrite it.
             let idxPtr = outIndices.contents().assumingMemoryBound(to: UInt32.self)
@@ -2109,14 +2120,33 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         Array(values.indices.sorted { values[$0] > values[$1] }.prefix(count))
     }
 
-    /// Experts' GPU addresses for layer `layer`, cached: each expert's buffer
-    /// lives as long as its layer mapping.
-    private func routedExpertAddresses(layer: Int) throws -> [UInt64] {
-        if let cached = routedExpertAddressCache[layer] { return cached }
+    /// Experts' GPU addresses for layer `layer`, cached while `mapped` is the
+    /// layer's open mapping. A reopened layer maps at new addresses.
+    private func routedExpertAddresses(layer: Int, mapped: MappedExpertLayer) throws -> [UInt64] {
+        if let cached = routedExpertAddressCache[layer], cached.layer === mapped { return cached.addresses }
         let addresses = try model.routedExpertViews(layer: layer, experts: Array(0..<cfg.numExperts))
             .map { $0.buffer.gpuAddress + $0.offset }
-        routedExpertAddressCache[layer] = addresses
+        routedExpertAddressCache[layer] = ExpertAddresses(layer: mapped, addresses: addresses)
         return addresses
+    }
+
+    /// How long `awaitRouter` spins before it blocks.
+    private static let routerSpinNanos: UInt64 = 5_000_000
+
+    /// Waits for `routerEvent` to reach `value`, which `cb` signals. Spins
+    /// first: a sleeping wait costs a ~40 µs thread wake per layer, longer
+    /// than most of the wait. Past `routerSpinNanos` (a layer's attention
+    /// takes well under 1 ms) it blocks on `cb`, so a stalled GPU cannot pin a
+    /// core indefinitely.
+    private func awaitRouter(_ value: UInt64, signaledBy cb: MTLCommandBuffer) throws {
+        let deadline = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + Self.routerSpinNanos
+        while routerEvent.signaledValue < value {
+            if cb.status == .error { try checkCommandBufferError(cb) }
+            if clock_gettime_nsec_np(CLOCK_UPTIME_RAW) > deadline {
+                try waitForCompletion(cb)
+                return
+            }
+        }
     }
 
     private func runSync(_ body: (MTLCommandBuffer) -> Void) throws {

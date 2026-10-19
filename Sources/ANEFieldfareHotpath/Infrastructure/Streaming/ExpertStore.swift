@@ -42,6 +42,24 @@ package enum ExpertStoreError: Error, CustomStringConvertible {
 /// faults in any page that is absent when a command buffer runs; `read` only
 /// makes that happen earlier and in parallel.
 public final class MappedExpertLayer: @unchecked Sendable {
+    /// The file mapping and descriptor. Every expert buffer's deallocator
+    /// holds it, so a buffer that outlives its layer (a caller's view, a
+    /// command buffer in flight) never reads unmapped memory.
+    private final class Mapping: @unchecked Sendable {
+        let fd: Int32
+        let base: UnsafeMutableRawPointer
+        let bytes: Int
+        init(fd: Int32, base: UnsafeMutableRawPointer, bytes: Int) {
+            self.fd = fd
+            self.base = base
+            self.bytes = bytes
+        }
+        deinit {
+            munmap(base, bytes)
+            close(fd)
+        }
+    }
+
     /// Each expert read is split into this many concurrent `pread`s; one
     /// 3.4 MB read at queue depth 1 leaves most SSD bandwidth idle.
     public static let readSplit = 4
@@ -50,9 +68,9 @@ public final class MappedExpertLayer: @unchecked Sendable {
     public let expertBytes: Int
     public let buffers: [MTLBuffer]
 
-    private let fd: Int32
-    private let base: UnsafeMutableRawPointer
-    private let mappedBytes: Int
+    private let mapping: Mapping
+    private var fd: Int32 { mapping.fd }
+    private var base: UnsafeMutableRawPointer { mapping.base }
     private let expertOffsets: [Int]
     private let pageSize = Int(getpagesize())
 
@@ -87,30 +105,25 @@ public final class MappedExpertLayer: @unchecked Sendable {
         guard let raw = mmap(nil, mapped, PROT_READ, MAP_SHARED, fd, 0), raw != MAP_FAILED else {
             throw ExpertStoreError.mapFailed(path: path, errno: errno)
         }
+        // From here the mapping owns the descriptor and unmaps on release.
+        closeOnFailure = false
+        let mapping = Mapping(fd: fd, base: raw, bytes: mapped)
         var buffers: [MTLBuffer] = []
         buffers.reserveCapacity(expertCount)
         for (expert, offset) in offsets.enumerated() {
             guard let buffer = device.makeBuffer(bytesNoCopy: raw + offset, length: expertBytes,
-                                                 options: .storageModeShared, deallocator: nil) else {
-                munmap(raw, mapped)
+                                                 options: .storageModeShared,
+                                                 deallocator: { _, _ in withExtendedLifetime(mapping) {} }) else {
                 throw ExpertStoreError.bufferWrapFailed(expert: expert)
             }
             buffer.label = "\((path as NSString).lastPathComponent).e\(expert)"
             buffers.append(buffer)
         }
-        self.fd = fd
-        self.base = raw
-        self.mappedBytes = mapped
+        self.mapping = mapping
         self.expertCount = expertCount
         self.expertBytes = expertBytes
         self.expertOffsets = offsets
         self.buffers = buffers
-        closeOnFailure = false
-    }
-
-    deinit {
-        munmap(base, mappedBytes)
-        close(fd)
     }
 
     private func checked(_ expert: Int) throws -> Int {
