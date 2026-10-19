@@ -10,7 +10,7 @@ public enum LayerKind: Sendable { case swa, full }
 /// A read view the attention kernels bind. `offset` stays 0; ring-enabled SWA
 /// layers expose the physical start slot for diagnostics while kernels map
 /// logical positions with the supplied ring capacity.
-public struct KVView: @unchecked Sendable {
+public struct KVView {
     public let buffer: MTLBuffer
     /// Byte offset of logical position 0. Always 0 under linear storage.
     public let offset: Int

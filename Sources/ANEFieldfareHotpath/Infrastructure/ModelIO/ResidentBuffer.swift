@@ -49,25 +49,23 @@ final class ResidentBuffer {
         let mappedLen = sliceShift + Int(residentSize)
         let mapped = mmap(nil, mappedLen, PROT_READ, MAP_PRIVATE,
                           fd, off_t(alignedOffset))
-        if mapped == MAP_FAILED {
+        guard let base = mapped, base != MAP_FAILED else {
             throw ModelError.posixFailed(call: "mmap", errno: errno)
         }
-        let base = mapped!
 
         _ = posix_madvise(base, mappedLen, POSIX_MADV_RANDOM)
 
         let sliceStart = base.advanced(by: sliceShift)
 
-        // Capture pointer + length for the deallocator. Do NOT capture self
-        // here — that would create a retain cycle through the MTLBuffer.
-        nonisolated(unsafe) let captureBase = base
-        let captureLen = mappedLen
+        // The deallocator gets the slice start back and recovers the mapping
+        // base from it. Do NOT capture self here — that would create a retain
+        // cycle through the MTLBuffer.
         guard let buf = device.makeBuffer(
             bytesNoCopy: sliceStart,
             length: Int(residentSize),
             options: .storageModeShared,
-            deallocator: { _, _ in
-                munmap(captureBase, captureLen)
+            deallocator: { sliceStart, _ in
+                munmap(sliceStart.advanced(by: -sliceShift), mappedLen)
             }
         ) else {
             munmap(base, mappedLen)

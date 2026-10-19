@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 
 public struct RemoteRangeExpectation: Sendable, Equatable {
     public let filename: String
@@ -56,21 +57,26 @@ public enum RemoteRangeTransfer {
     }
 }
 
-private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegate, Sendable {
+    /// Everything a callback, `start` or `cancel` may change. `start` and
+    /// `cancel` run on the caller's threads while callbacks run on the
+    /// session's delegate queue, so all of it lives behind one lock.
+    private struct State: Sendable {
+        var continuation: CheckedContinuation<RemoteRangeTransferResult, any Error>?
+        var task: URLSessionDataTask?
+        var terminal = false
+        var rejection: (any Error)?
+        var receivedBytes: UInt64 = 0
+        var redirectPolicy: RemoteRedirectPolicy
+        var responseAccepted = false
+        var lastProgressNanoseconds: UInt64?
+    }
+
     private let targetPath: String
     private let expectation: RemoteRangeExpectation
     private let fd: Int32
     private let progress: @Sendable (UInt64) -> Void
-    private let lock = NSLock()
-
-    private var continuation: CheckedContinuation<RemoteRangeTransferResult, Error>?
-    private var task: URLSessionDataTask?
-    private var terminal = false
-    private var rejection: Error?
-    private var receivedBytes: UInt64 = 0
-    private var redirectPolicy: RemoteRedirectPolicy
-    private var responseAccepted = false
-    private var lastProgressNanoseconds: UInt64?
+    private let state: Mutex<State>
 
     init(targetPath: String,
          expectation: RemoteRangeExpectation,
@@ -79,9 +85,9 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
         progress: @escaping @Sendable (UInt64) -> Void) throws {
         self.targetPath = targetPath
         self.expectation = expectation
-        self.redirectPolicy = RemoteRedirectPolicy(
+        self.state = Mutex(State(redirectPolicy: RemoteRedirectPolicy(
             originalRequest: originalRequest,
-            maximumRedirects: maximumRedirects)
+            maximumRedirects: maximumRedirects)))
         self.progress = progress
         let fd = open(targetPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else {
@@ -92,12 +98,12 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
 
     func start(session: URLSession, request: URLRequest) async throws -> RemoteRangeTransferResult {
         try await withCheckedThrowingContinuation { continuation in
-            lock.lock()
-            self.continuation = continuation
             let task = session.dataTask(with: request)
-            self.task = task
-            let shouldCancel = terminal || rejection != nil
-            lock.unlock()
+            let shouldCancel = state.withLock { state in
+                state.continuation = continuation
+                state.task = task
+                return state.terminal || state.rejection != nil
+            }
             if shouldCancel {
                 task.cancel()
             } else {
@@ -107,12 +113,12 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
     }
 
     func cancel() {
-        lock.lock()
-        let task = task
-        if rejection == nil {
-            rejection = CancellationError()
+        let task = state.withLock { state in
+            if state.rejection == nil {
+                state.rejection = CancellationError()
+            }
+            return state.task
         }
-        lock.unlock()
         task?.cancel()
     }
 
@@ -122,9 +128,9 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
                     newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) {
         do {
-            completionHandler(try redirectPolicy.request(
-                response: response,
-                proposedRequest: request))
+            completionHandler(try state.withLock { state in
+                try state.redirectPolicy.request(response: response, proposedRequest: request)
+            })
         } catch {
             reject(error)
             completionHandler(nil)
@@ -144,9 +150,7 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
                     detail: "missing HTTP response for range \(expectation.filename)")
             }
             try validate(http)
-            lock.lock()
-            responseAccepted = true
-            lock.unlock()
+            state.withLock { $0.responseAccepted = true }
             completionHandler(.allow)
         } catch {
             reject(error)
@@ -157,11 +161,11 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
     func urlSession(_ session: URLSession,
                     dataTask: URLSessionDataTask,
                     didReceive data: Data) {
-        lock.lock()
-        let mayReceive = responseAccepted && rejection == nil
-        lock.unlock()
-        guard mayReceive else { return }
-        let attempted = receivedBytes + UInt64(data.count)
+        let offset: UInt64? = state.withLock { state in
+            state.responseAccepted && state.rejection == nil ? state.receivedBytes : nil
+        }
+        guard let offset else { return }
+        let attempted = offset + UInt64(data.count)
         guard attempted <= expectation.length else {
             reject(RepackError.remoteBodyExceeded(
                 path: expectation.filename,
@@ -177,31 +181,35 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
                                     path: targetPath,
                                     buf: base,
                                     count: raw.count,
-                                    offset: receivedBytes)
+                                    offset: offset)
             }
-            receivedBytes = attempted
-            emitProgressIfNeeded(force: receivedBytes == expectation.length)
+            let now = DispatchTime.now().uptimeNanoseconds
+            let report: UInt64? = state.withLock { state in
+                state.receivedBytes = attempted
+                let force = attempted == expectation.length
+                guard force
+                    || state.lastProgressNanoseconds == nil
+                    || now &- (state.lastProgressNanoseconds ?? now) >= 1_000_000_000 else {
+                    return nil
+                }
+                state.lastProgressNanoseconds = now
+                return attempted
+            }
+            if let report { progress(report) }
         } catch {
             reject(error)
             dataTask.cancel()
         }
     }
 
-    private func emitProgressIfNeeded(force: Bool) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        if force
-            || lastProgressNanoseconds == nil
-            || now &- (lastProgressNanoseconds ?? now) >= 1_000_000_000 {
-            lastProgressNanoseconds = now
-            progress(receivedBytes)
-        }
-    }
-
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,
-                    didCompleteWithError error: Error?) {
-        let result: Result<RemoteRangeTransferResult, Error>
-        if let rejection = rejectionSnapshot() {
+                    didCompleteWithError error: (any Error)?) {
+        let (rejection, responseAccepted, receivedBytes) = state.withLock {
+            ($0.rejection, $0.responseAccepted, $0.receivedBytes)
+        }
+        let result: Result<RemoteRangeTransferResult, any Error>
+        if let rejection {
             result = .failure(rejection)
         } else if let error {
             result = .failure(error)
@@ -263,31 +271,29 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
         }
     }
 
-    private func reject(_ error: Error) {
-        lock.lock()
-        if rejection == nil {
-            rejection = error
+    private func reject(_ error: any Error) {
+        state.withLock { state in
+            if state.rejection == nil {
+                state.rejection = error
+            }
         }
-        lock.unlock()
     }
 
-    private func rejectionSnapshot() -> Error? {
-        lock.lock()
-        defer { lock.unlock() }
-        return rejection
+    private func rejectionSnapshot() -> (any Error)? {
+        state.withLock { $0.rejection }
     }
 
-    private func finish(_ result: Result<RemoteRangeTransferResult, Error>) {
-        lock.lock()
-        guard !terminal else {
-            lock.unlock()
-            return
+    private func finish(_ result: Result<RemoteRangeTransferResult, any Error>) {
+        let claimed: CheckedContinuation<RemoteRangeTransferResult, any Error>?? = state.withLock { state in
+            guard !state.terminal else { return nil }
+            state.terminal = true
+            defer {
+                state.continuation = nil
+                state.task = nil
+            }
+            return .some(state.continuation)
         }
-        terminal = true
-        let continuation = continuation
-        self.continuation = nil
-        self.task = nil
-        lock.unlock()
+        guard let continuation = claimed else { return }
 
         close(fd)
         if case .failure = result {
@@ -297,7 +303,7 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
     }
 }
 
-struct RemoteRedirectPolicy {
+struct RemoteRedirectPolicy: Sendable {
     private let originalRange: String?
     private let originalAuthorization: String?
     private let sourceHost: String?

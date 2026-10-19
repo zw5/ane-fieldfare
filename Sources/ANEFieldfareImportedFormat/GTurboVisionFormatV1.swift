@@ -208,13 +208,13 @@ package enum GTurboVisionStructuralValidator {
                                              reason: "expected exactly two payload files")
         }
         var filesystemKeys = Set<String>()
-        for path in manifest.files.keys {
+        for (path, entry) in manifest.files {
             try GTurboPathValidator.validateBasename(path, field: "vision.manifest.files.\(path)")
             guard filesystemKeys.insert(GTurboPathValidator.appleFilesystemKey(path)).inserted else {
                 throw GTurboFormatError.invalid(field: "vision.manifest.files.\(path)",
                                                  reason: "filesystem-equivalent duplicate path")
             }
-            try validateSHA(manifest.files[path]!.sha256,
+            try validateSHA(entry.sha256,
                             field: "vision.manifest.files.\(path).sha256")
         }
 
@@ -224,7 +224,10 @@ package enum GTurboVisionStructuralValidator {
         }
         var names = Set<String>()
         var previousEnd: UInt64 = 0
-        let weightsSize = manifest.files[GTurboVisionFormatV1.weightsFile]!.size
+        guard let weightsSize = manifest.files[GTurboVisionFormatV1.weightsFile]?.size else {
+            throw GTurboFormatError.invalid(field: "vision.manifest.files",
+                                             reason: "missing \(GTurboVisionFormatV1.weightsFile)")
+        }
         for (index, tensor) in manifest.tensors.enumerated() {
             guard !tensor.name.isEmpty, !tensor.name.contains("\0"),
                   names.insert(tensor.name).inserted else {

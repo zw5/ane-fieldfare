@@ -3,7 +3,10 @@ import Metal
 /// Produces next-token logits for the `Generator`. The production
 /// implementation is `RealForwardRunner`; tests use scripted logits so decode
 /// behavior stays independent of the kernel stack.
-public protocol LogitProducer: AnyObject, Sendable {
+///
+/// Not `Sendable`: a producer holds one generation's GPU state and is driven
+/// from the single task running that generation.
+public protocol LogitProducer: AnyObject {
     /// Clear any per-generation state, such as KV cache.
     func reset()
     /// Run one token at `position`, leaving FP16 logits in `logits`.
@@ -18,7 +21,7 @@ public protocol FusedGreedyProducer: LogitProducer {
     var lastGreedyToken: UInt32 { get }
 }
 
-protocol ContextWindowReporting: Sendable {
+protocol ContextWindowReporting {
     var maxContext: Int { get }
 }
 

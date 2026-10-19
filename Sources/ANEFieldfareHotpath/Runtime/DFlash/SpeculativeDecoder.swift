@@ -190,7 +190,7 @@ public struct SpeculationStats: Sendable {
 /// plain greedy decoding up to the numerical difference between a batched
 /// verify chunk and single-row decode.
 public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, ContextWindowReporting,
-    FusedGreedyProducer, @unchecked Sendable {
+    FusedGreedyProducer {
     public let runner: RealForwardRunner
     public let drafter: DFlashDrafter
     public private(set) var policy: SpeculationPolicy

@@ -94,7 +94,7 @@ final class LMHeadChainInt4 {
                           d: UInt32,
                           vocab: UInt32,
                           rmsEps: Float = 1e-6,
-                          softcap: Float = 0) {
+                          softcap: Float = 0) throws {
         precondition(rowCount > 0 && rowCount <= Self.maxGreedyRows,
                      "rowCount=\(rowCount) outside 1...\(Self.maxGreedyRows)")
         precondition(Int(d) <= maxD && Int(vocab) <= maxVocab)
@@ -110,7 +110,7 @@ final class LMHeadChainInt4 {
         // FP32 logits from the multi-row GEMV, which streams the table once
         // and keeps every row's accumulators in registers, then an argmax per
         // row. The fused tiled kernel this replaced cost ~3 ms per row.
-        rowsProjection.encodeRows(commandBuffer: commandBuffer,
+        try rowsProjection.encodeRows(commandBuffer: commandBuffer,
                                   weights: weights, weightsOffset: weightsOffset,
                                   scales: scales, scalesOffset: scalesOffset,
                                   biases: biases, biasesOffset: biasesOffset,

@@ -42,7 +42,7 @@ public enum GFTokenizerError: Error, CustomStringConvertible {
 /// TurboFieldfare owns the minimal chat framing because the upstream
 /// `tokenizer_config.json` has no `chat_template`. Literal control-token text in
 /// user content is accepted as a trusted-input research-runtime limitation.
-public struct GFTokenizer: @unchecked Sendable {
+public struct GFTokenizer: Sendable {
     public static let modelID = "google/gemma-4-26B-A4B-it"
 
     public let bosID: Int32
@@ -339,8 +339,9 @@ private actor GFTokenizerLoadCoordinator {
             return try await task.value
         }
 
-        // Keep the CPU-heavy tokenizer build off the coordinator actor; callers
-        // share the task result instead of owning its cancellation.
+        // SAFETY: detached on purpose. The CPU-heavy tokenizer build must not
+        // inherit the coordinator actor, and callers share one result rather
+        // than owning its cancellation, so no caller's task can own it.
         let task = Task.detached(priority: .userInitiated) { () throws -> GFTokenizer in
             switch source {
             case .pretrained(let modelID):

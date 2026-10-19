@@ -187,7 +187,7 @@ extension Args {
         environment: [String: String] = [:]) throws -> RuntimeConfiguration {
         let activeExperts = expertTopK
         let expertCap = prefillExpertCap ?? (activeExperts < 8 ? activeExperts * 8 : nil)
-        guard (1...8).contains(activeExperts), expertCap == nil || (1...128).contains(expertCap!) else {
+        guard (1...8).contains(activeExperts), expertCap.map({ (1...128).contains($0) }) ?? true else {
             throw ArgsError.invalidValue(flag: "--expert-top-k/--prefill-expert-cap", value: "out of range")
         }
         let attentionName = environment["ANE_FIELDFARE_PREFILL_ATTENTION"] ?? "causal-simd"

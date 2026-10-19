@@ -54,7 +54,7 @@ public struct RemoteInstallPaths: Sendable, Equatable {
     }
 }
 
-public final class InstallLock: @unchecked Sendable {
+public final class InstallLock: Sendable {
     public let paths: RemoteInstallPaths
     private let descriptor: Int32
 

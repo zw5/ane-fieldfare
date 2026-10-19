@@ -29,22 +29,16 @@ public enum Sha256Verifier {
         CC_SHA256_Init(&ctx)
         var buf = [UInt8](repeating: 0, count: chunkBytes)
         while true {
-            let got: Int = buf.withUnsafeMutableBytes { raw -> Int in
-                return read(fd, raw.baseAddress!, chunkBytes)
-            }
+            let got = read(fd, &buf, chunkBytes)
             if got == 0 { break }
             if got < 0, errno == EINTR { continue }
             if got < 0 {
                 throw ModelError.posixFailed(call: "read(\(displayName))", errno: errno)
             }
-            buf.withUnsafeBytes { raw in
-                _ = CC_SHA256_Update(&ctx, raw.baseAddress!, CC_LONG(got))
-            }
+            _ = CC_SHA256_Update(&ctx, buf, CC_LONG(got))
         }
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        digest.withUnsafeMutableBytes { raw in
-            _ = CC_SHA256_Final(raw.baseAddress!.assumingMemoryBound(to: UInt8.self), &ctx)
-        }
+        _ = CC_SHA256_Final(&digest, &ctx)
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
@@ -57,9 +51,7 @@ public enum Sha256Verifier {
             }
         }
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        digest.withUnsafeMutableBytes { raw in
-            _ = CC_SHA256_Final(raw.baseAddress!.assumingMemoryBound(to: UInt8.self), &ctx)
-        }
+        _ = CC_SHA256_Final(&digest, &ctx)
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 

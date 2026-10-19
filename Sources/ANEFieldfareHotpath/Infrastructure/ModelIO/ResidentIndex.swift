@@ -140,7 +140,7 @@ enum ResidentIndexReader {
                                      field: String) throws {
         var total = 0
         while total < buffer.count {
-            let count = pread(fd, buffer.baseAddress!.advanced(by: total),
+            let count = pread(fd, buffer.baseAddress?.advanced(by: total),
                               buffer.count - total, offset + off_t(total))
             if count < 0, errno == EINTR { continue }
             guard count > 0 else {

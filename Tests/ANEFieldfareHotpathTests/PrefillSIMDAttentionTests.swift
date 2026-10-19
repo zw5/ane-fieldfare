@@ -30,14 +30,14 @@ final class PrefillSIMDAttentionTests: XCTestCase {
                 let out = try buffer(Array(repeating: .nan, count: q.count))
                 let reference = try buffer(Array(repeating: .nan, count: q.count))
                 let cb = try XCTUnwrap(context.queue.makeCommandBuffer())
-                kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: out,
+                try kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: out,
                     params: PrefillAttentionParams(startPosition: UInt32(start), queryCount: UInt32(count), headDim: UInt32(d),
                         numQHeads: UInt32(heads), numKVHeads: UInt32(kvHeads), kvValidCount: UInt32(valid), slidingWindow: UInt32(window),
                         kvTokenStrideElements: UInt32(kvHeads*d), qTokenStrideElements: UInt32(heads*d), oTokenStrideElements: UInt32(heads*d), scale: 1,
                         bidirectionalBlockStart: UInt32(imageBlock ? start : 0),
                         bidirectionalBlockEnd: UInt32(imageBlock ? valid : 0)),
                     kvRingCapacity: UInt32(capacity), layerKind: .slidingWindow, path: .causalSIMD)
-                kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: reference,
+                try kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: reference,
                     params: PrefillAttentionParams(startPosition: UInt32(start), queryCount: UInt32(count), headDim: UInt32(d),
                         numQHeads: UInt32(heads), numKVHeads: UInt32(kvHeads), kvValidCount: UInt32(valid), slidingWindow: UInt32(window),
                         kvTokenStrideElements: UInt32(kvHeads*d), qTokenStrideElements: UInt32(heads*d), oTokenStrideElements: UInt32(heads*d), scale: 1,

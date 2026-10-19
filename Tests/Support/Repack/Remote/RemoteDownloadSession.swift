@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public struct RemoteDownloadSessionPolicy: Sendable, Equatable {
     public var requestTimeoutSeconds: TimeInterval
@@ -20,14 +21,21 @@ public struct RemoteDownloadSessionPolicy: Sendable, Equatable {
     }
 }
 
-public final class RemoteDownloadSession: @unchecked Sendable {
+/// Holds only the immutable inputs to a session configuration and builds a
+/// fresh `URLSessionConfiguration` per session, so no mutable configuration
+/// object is ever shared between requests.
+public final class RemoteDownloadSession: Sendable {
     public let policy: RemoteDownloadSessionPolicy
 
-    private let configuration: URLSessionConfiguration
+    private let protocolClasses: [AnyClass]?
 
     public init(policy: RemoteDownloadSessionPolicy = RemoteDownloadSessionPolicy(),
                 protocolClasses: [AnyClass]? = nil) {
         self.policy = policy
+        self.protocolClasses = protocolClasses
+    }
+
+    private func makeConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = policy.requestTimeoutSeconds
         configuration.timeoutIntervalForResource = policy.resourceTimeoutSeconds
@@ -38,18 +46,14 @@ public final class RemoteDownloadSession: @unchecked Sendable {
         if let protocolClasses {
             configuration.protocolClasses = protocolClasses
         }
-        self.configuration = configuration
+        return configuration
     }
 
     public func response(for request: URLRequest) async throws -> (Data, URLResponse) {
-        guard let configuration = configuration.copy() as? URLSessionConfiguration else {
-            throw RepackError.configurationInvalid(detail:
-                "could not copy remote metadata session configuration")
-        }
         let delegate = MetadataRedirectDelegate(
             originalRequest: request,
             maximumRedirects: policy.maximumRedirects)
-        let session = URLSession(configuration: configuration,
+        let session = URLSession(configuration: makeConfiguration(),
                                  delegate: delegate,
                                  delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
@@ -61,12 +65,8 @@ public final class RemoteDownloadSession: @unchecked Sendable {
                          expectation: RemoteRangeExpectation,
                          progress: @escaping @Sendable (UInt64) -> Void = { _ in }) async throws
         -> RemoteRangeTransferResult {
-        guard let configuration = configuration.copy() as? URLSessionConfiguration else {
-            throw RepackError.configurationInvalid(detail:
-                "could not copy remote download session configuration")
-        }
         return try await RemoteRangeTransfer.run(
-            configuration: configuration,
+            configuration: makeConfiguration(),
             request: request,
             targetPath: targetPath,
             expectation: expectation,
@@ -75,7 +75,8 @@ public final class RemoteDownloadSession: @unchecked Sendable {
     }
 
     var configurationSnapshot: RemoteDownloadSessionConfigurationSnapshot {
-        RemoteDownloadSessionConfigurationSnapshot(
+        let configuration = makeConfiguration()
+        return RemoteDownloadSessionConfigurationSnapshot(
             requestTimeoutSeconds: configuration.timeoutIntervalForRequest,
             resourceTimeoutSeconds: configuration.timeoutIntervalForResource,
             waitsForConnectivity: configuration.waitsForConnectivity,
@@ -94,14 +95,13 @@ struct RemoteDownloadSessionConfigurationSnapshot: Equatable {
     let hasURLCache: Bool
 }
 
-private final class MetadataRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private var policy: RemoteMetadataRedirectPolicy
+private final class MetadataRedirectDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    private let policy: Mutex<RemoteMetadataRedirectPolicy>
 
     init(originalRequest: URLRequest, maximumRedirects: Int) {
-        self.policy = RemoteMetadataRedirectPolicy(
+        self.policy = Mutex(RemoteMetadataRedirectPolicy(
             originalRequest: originalRequest,
-            maximumRedirects: maximumRedirects)
+            maximumRedirects: maximumRedirects))
     }
 
     func urlSession(_ session: URLSession,
@@ -109,14 +109,11 @@ private final class MetadataRedirectDelegate: NSObject, URLSessionTaskDelegate, 
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) {
-        lock.lock()
-        let redirected = policy.request(proposedRequest: request)
-        lock.unlock()
-        completionHandler(redirected)
+        completionHandler(policy.withLock { $0.request(proposedRequest: request) })
     }
 }
 
-struct RemoteMetadataRedirectPolicy {
+struct RemoteMetadataRedirectPolicy: Sendable {
     private let sourceHost: String?
     private let originalMethod: String?
     private let originalAuthorization: String?

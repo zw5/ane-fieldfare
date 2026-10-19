@@ -405,7 +405,7 @@ import ANEFieldfareValidationSupport
             bidirectionalBlockEnd: UInt32(fixture.bidirectionalBlock?.upperBound ?? 0))
 
         let cb = ctx.queue.makeCommandBuffer()!
-        prefill.encodeCausal(commandBuffer: cb,
+        try prefill.encodeCausal(commandBuffer: cb,
                              q: qBuf,
                              qOffset: qPrefix * MemoryLayout<Float16>.size,
                              k: kBuf,

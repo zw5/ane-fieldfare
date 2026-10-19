@@ -2,6 +2,7 @@ import ANEFieldfareANECarrier
 import Foundation
 import Metal
 import IOSurface
+import Synchronization
 
 enum ANEExecutionError: Error, CustomStringConvertible {
     case rejected(String)
@@ -12,22 +13,74 @@ enum ANEExecutionError: Error, CustomStringConvertible {
 
 /// Keeps an IOSurface alive while a Metal buffer aliases its memory.
 private final class SharedSurfaceOwner: @unchecked Sendable {
+    // SAFETY: a lifetime token for Metal's `@Sendable` deallocator. Nothing
+    // reads or writes through `surface`; it is only released with the owner.
     let surface: IOSurfaceRef
     init(_ surface: IOSurfaceRef) { self.surface = surface }
 }
 
-/// Expert reads only fill the page cache, so concurrent lookahead reads may
-/// share the model value.
-private struct ConcurrentExpertReader: @unchecked Sendable {
-    let model: Model
+/// The compiled carrier program. Destroyed when the backend and every
+/// in-flight evaluation have let go of it.
+private final class ANECarrierProgram {
+    let handle: OpaquePointer
+    init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { ANEExpertCarrierDestroy(handle) }
 }
 
-private final class SubmittedANEInput: @unchecked Sendable {
-    let command: MTLCommandBuffer
-    init(_ command: MTLCommandBuffer) { self.command = command }
+/// How one bank's evaluation ended, signalled once by the submission queue.
+private final class ANEEvaluationOutcome: Sendable {
+    private let failure = Mutex<String?>(nil)
+    private let settled = DispatchSemaphore(value: 0)
+
+    func settle(failure message: String?) {
+        failure.withLock { $0 = message }
+        settled.signal()
+    }
+
+    /// Blocks until `settle`, then returns its failure message, if any.
+    func wait() -> String? {
+        settled.wait()
+        return failure.withLock { $0 }
+    }
 }
 
-final class ANERoutedPrefillBackend: @unchecked Sendable {
+/// Everything the submission queue needs to evaluate one bank.
+private struct ANEEvaluation: @unchecked Sendable {
+    // SAFETY: `submit` builds one per evaluation and hands it to the
+    // submission queue exactly once. Until `outcome` settles, the bank is
+    // `busy`: `prepareBatch` and `submit` refuse it and `finish` waits on
+    // `outcome` first, so the issuing side never touches `producer`,
+    // `validation` or `event` while the queue does. Carrier evaluations are
+    // serialized by that queue, as `ANEExpertCarrierEvaluate` requires.
+    let program: ANECarrierProgram
+    let bank: Int
+    let producer: any MTLCommandBuffer
+    let validation: any MTLBuffer
+    let event: any MTLSharedEvent
+    let generation: UInt64
+    let outcome: ANEEvaluationOutcome
+
+    /// Waits for the input producer, then evaluates on the ANE. A failed
+    /// evaluation still signals `event`, so the consumer never hangs on it.
+    func run() {
+        producer.waitUntilCompleted()
+        var error: UnsafePointer<CChar>?
+        let valid = producer.error == nil
+            && validation.contents().load(as: UInt32.self) == 0
+            && ANEExpertCarrierEvaluate(program.handle, UInt32(bank), &error)
+        var failure: String?
+        if !valid {
+            failure = producer.error.map(String.init(describing:))
+                ?? error.map { String(cString: $0) }
+                ?? "non-finite ANE input or failed evaluation"
+            event.signaledValue = generation
+        }
+        free(UnsafeMutableRawPointer(mutating: error))
+        outcome.settle(failure: failure)
+    }
+}
+
+final class ANERoutedPrefillBackend {
     let layerCount: Int
     let batchExperts = 4
     /// Activation positions per expert in one request. Each request streams
@@ -43,7 +96,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         let view: TensorView
         let start: Int, count: Int
     }
-    private let handle: OpaquePointer
+    private let program: ANECarrierProgram
     private let context: MetalContext
     /// Carrier expansion and unpack run on their own queue so they overlap
     /// the host queue's shared FFN. The host clears `partials` and completes
@@ -53,6 +106,9 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
     private let weightsPipeline: MTLComputePipelineState
     private let inputsPipeline: MTLComputePipelineState
     private let outputsPipeline: MTLComputePipelineState
+    // SAFETY: a dedicated serial queue, not a task. Each evaluation blocks
+    // for up to the carrier's 5 s timeout and evaluations must not overlap;
+    // a serial queue gives both without parking a cooperative-pool thread.
     private let submission = DispatchQueue(label: "ane-fieldfare.routed-prefill", qos: .userInitiated)
     let banks: [Bank]
     private(set) var evaluatedRows: UInt64 = 0
@@ -61,17 +117,17 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
     private var inputGPUMilliseconds = 0.0, consumerGPUMilliseconds = 0.0
     private var terminalFailure: String?
 
-    final class Bank: @unchecked Sendable {
+    final class Bank {
         let input: MTLBuffer, output: MTLBuffer, event: MTLSharedEvent
         let arguments: MTLBuffer, metadata: MTLBuffer, validation: MTLBuffer
         var producer: MTLCommandBuffer?
         var consumer: MTLCommandBuffer?
         var pairs: MTLBuffer?
         var rows = 0
-        let completed = DispatchSemaphore(value: 0)
         var generation: UInt64 = 0
-        var failure: String?
-        var busy = false
+        /// Set while an evaluation is out on the submission queue.
+        fileprivate var evaluation: ANEEvaluationOutcome?
+        var busy: Bool { evaluation != nil }
         init(input: MTLBuffer, output: MTLBuffer, event: MTLSharedEvent, arguments: MTLBuffer, metadata: MTLBuffer, validation: MTLBuffer) {
             self.input = input; self.output = output; self.event = event
             self.arguments = arguments; self.metadata = metadata
@@ -137,13 +193,11 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         }
         carrierQueue.label = "ane-fieldfare.routed-prefill.carrier"
         self.carrierQueue = carrierQueue
-        self.handle = handle; self.banks = built; self.context = context; self.layerCount = layers
+        self.program = ANECarrierProgram(handle); self.banks = built; self.context = context; self.layerCount = layers
     }
 
-    deinit { ANEExpertCarrierDestroy(handle) }
-
     var profile: [String: Any] {
-        let info = ANEExpertCarrierGetInfo(handle)
+        let info = ANEExpertCarrierGetInfo(program.handle)
         return ["layers": layerCount, "compile_count": 1, "load_count": 1,
             "compile_ms": info.compileMilliseconds, "load_ms": info.loadMilliseconds,
             "evaluations": info.evaluations, "useful_rows": evaluatedRows,
@@ -198,7 +252,7 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         }
         enc.setComputePipelineState(weightsPipeline)
         enc.setBuffer(bank.arguments, offset: 0, index: 0); enc.setBuffer(bank.input, offset: 0, index: 1)
-        offsetsArray.withUnsafeBytes { enc.setBytes($0.baseAddress!, length: $0.count, index: 2) }
+        enc.setBytes(offsetsArray, length: offsetsArray.count * MemoryLayout<UInt32>.stride, index: 2)
         enc.setBuffer(bank.metadata, offset: 0, index: 3)
         for job in jobs { enc.useResource(job.view.buffer, usage: .read) }
         enc.dispatchThreadgroups(MTLSize(width: 88, height: 22, depth: batchExperts),
@@ -239,9 +293,9 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
                 }
             }
         }
-        bank.generation += 1; bank.failure = nil
+        bank.generation += 1
         var error: UnsafePointer<CChar>?
-        guard ANEExpertCarrierSetOutputEvent(handle, UInt32(index), bank.event as CFTypeRef,
+        guard ANEExpertCarrierSetOutputEvent(program.handle, UInt32(index), bank.event as CFTypeRef,
                                                            bank.generation, &error) else {
             let message = error.map { String(cString: $0) } ?? "output signal failed"
             free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
@@ -256,33 +310,26 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         enc.dispatchThreads(MTLSize(width: batchExperts * 2816 * lanes, height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
-        bank.busy = true; bank.consumer = cb
-        let input = SubmittedANEInput(producer)
-        submission.async { [self, bank, input] in
-            input.command.waitUntilCompleted()
-            var error: UnsafePointer<CChar>?
-            let valid = input.command.error == nil
-                && bank.validation.contents().load(as: UInt32.self) == 0
-                && ANEExpertCarrierEvaluate(handle, UInt32(index), &error)
-            if !valid {
-                bank.failure = input.command.error.map(String.init(describing:)) ?? error.map { String(cString: $0) } ?? "non-finite ANE input or failed evaluation"
-                bank.event.signaledValue = bank.generation
-            }
-            free(UnsafeMutableRawPointer(mutating: error)); bank.completed.signal()
-        }
+        let outcome = ANEEvaluationOutcome()
+        bank.evaluation = outcome; bank.consumer = cb
+        let evaluation = ANEEvaluation(
+            program: program, bank: index, producer: producer, validation: bank.validation,
+            event: bank.event, generation: bank.generation, outcome: outcome)
+        submission.async { evaluation.run() }
         return cb // The scheduler commits this AFTER the next input producer.
     }
 
     func finish(bank index: Int, consumer: MTLCommandBuffer) throws {
-        guard banks.indices.contains(index), banks[index].busy, banks[index].consumer === consumer else {
+        guard banks.indices.contains(index), let evaluation = banks[index].evaluation,
+              banks[index].consumer === consumer else {
             throw ANEExecutionError.rejected("routed bank is not pending for this consumer")
         }
         consumer.waitUntilCompleted()
         let bank = banks[index]
-        bank.completed.wait()
-        bank.busy = false
+        let failure = evaluation.wait()
+        bank.evaluation = nil
         defer { bank.producer = nil; bank.consumer = nil; bank.pairs = nil }
-        if let failure = bank.failure { terminalFailure = failure; throw ANEExecutionError.rejected(failure) }
+        if let failure { terminalFailure = failure; throw ANEExecutionError.rejected(failure) }
         if let error = consumer.error { terminalFailure = String(describing: error); throw error }
         guard bank.validation.contents().load(as: UInt32.self) == 0 else {
             terminalFailure = "non-finite ANE routed output"
@@ -327,41 +374,55 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
         }
         // Ordered lookahead: up to `fetchLookahead` upcoming groups read
         // concurrently, consumed in group order so request batches are
-        // identical to a sequential fetch.
-        var inflight: [Task<[TensorView], Error>] = []
-        var nextGroup = 0
-        func launch() throws {
-            while inflight.count < fetchLookahead, nextGroup < routes.groups.count {
-                let expert = Int(routes.groups[nextGroup].expert)
-                let reader = ConcurrentExpertReader(model: model)
-                if try !model.nonResidentRoutedExperts(layer: layer, experts: [expert]).isEmpty {
-                    readBytes += UInt64(model.routedExpertBytes)
+        // identical to a sequential fetch. The reads are child tasks that
+        // capture only the layer mapping, so leaving this scope, by returning
+        // or by throwing, waits for every read still in flight.
+        let mapped = try model.expertLayer(layer)
+        try await withThrowingTaskGroup(of: Int.self) { reads in
+            var inflight: [Int] = []
+            var landed = Set<Int>()
+            var nextGroup = 0
+            func launch() throws {
+                while inflight.count < fetchLookahead, nextGroup < routes.groups.count {
+                    let absent = try model.nonResidentRoutedExperts(
+                        layer: layer, experts: [Int(routes.groups[nextGroup].expert)])
+                    readBytes += UInt64(absent.count * model.routedExpertBytes)
+                    let ordinal = nextGroup
+                    reads.addTask {
+                        try await Model.read(absent, of: mapped)
+                        return ordinal
+                    }
+                    inflight.append(ordinal)
+                    nextGroup += 1
                 }
-                inflight.append(Task { [reader] in
-                    try await reader.model.fetchRoutedExperts(layer: layer, experts: [expert])
-                })
-                nextGroup += 1
             }
-        }
-        defer {
-            for fetch in inflight { fetch.cancel() }
-            while !pending.isEmpty { try? drain() }
-        }
-        for group in routes.groups {
-            try Task.checkCancellation()
-            try launch()
-            let fetch = inflight.removeFirst()
-            let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            let views = try await fetch.value
-            readNanos += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started
-            guard let view = views.first else { throw ModelError.residentBufferWrapFailed }
-            for offset in stride(from: 0, to: Int(group.pairCount), by: lanes) {
-                staging.append(Job(view: view, start: Int(group.pairStart) + offset,
-                                   count: min(lanes, Int(group.pairCount) - offset)))
-                if staging.count == batchExperts { try issue() }
+            defer {
+                while !pending.isEmpty { try? drain() }
             }
+            for group in routes.groups {
+                try Task.checkCancellation()
+                try launch()
+                let ordinal = inflight.removeFirst()
+                let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                while landed.remove(ordinal) == nil {
+                    guard let read = try await reads.next() else {
+                        throw ANEExecutionError.rejected("routed expert read was never started")
+                    }
+                    landed.insert(read)
+                }
+                readNanos += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started
+                guard let view = try model.routedExpertViews(
+                    layer: layer, experts: [Int(group.expert)]).first else {
+                    throw ModelError.residentBufferWrapFailed
+                }
+                for offset in stride(from: 0, to: Int(group.pairCount), by: lanes) {
+                    staging.append(Job(view: view, start: Int(group.pairStart) + offset,
+                                       count: min(lanes, Int(group.pairCount) - offset)))
+                    if staging.count == batchExperts { try issue() }
+                }
+            }
+            try issue(); commitLast()
+            while !pending.isEmpty { try drain() }
         }
-        try issue(); commitLast()
-        while !pending.isEmpty { try drain() }
     }
 }

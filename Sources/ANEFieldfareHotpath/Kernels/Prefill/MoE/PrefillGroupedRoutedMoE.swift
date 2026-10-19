@@ -101,7 +101,7 @@ struct PrefillGroupedRoutedMoEStreamedParams: Equatable, Sendable {
     }
 }
 
-public struct PrefillStreamedTileBinding: Sendable, Equatable {
+public struct PrefillStreamedTileBinding: Equatable {
     public let expertIDs: [Int]
     public let views: [TensorView]
 
@@ -280,7 +280,8 @@ final class PrefillGroupedRoutedMoE {
                 "prefill sorted route pairs exceed reusable capacity")
         }
         routes.sortedPairs.withUnsafeBytes { source in
-            if bytes > 0 { memcpy(reusableSortedPairsBuffer.contents(), source.baseAddress!, bytes) }
+            UnsafeMutableRawBufferPointer(start: reusableSortedPairsBuffer.contents(), count: bytes)
+                .copyMemory(from: source)
         }
         return PrefillGroupedRoutedMoEStreamedMetadataBuffers(
             sortedPairs: reusableSortedPairsBuffer)
@@ -383,14 +384,17 @@ final class PrefillGroupedRoutedMoE {
         precondition(maxRows <= Self.verifyMaxRows, "\(maxRows) pairs for one expert")
         let rows = maxRows <= 1 ? 1 : maxRows <= 2 ? 2 : maxRows <= 4 ? 4 : maxRows <= 8 ? 8 : 16
         let actBytes = totalPairs * Int(params.routedIntermediate) * MemoryLayout<Float16>.stride
-        if verifyActs == nil || verifyActs!.length < actBytes {
+        let acts: MTLBuffer
+        if let existing = verifyActs, existing.length >= actBytes {
+            acts = existing
+        } else {
             guard let buffer = context.device.makeBuffer(
                 length: max(actBytes, PrefillRuntimeConfig.maxChunkTokens * 8 * Int(params.routedIntermediate) * 2),
                 options: .storageModePrivate) else { throw MetalError.noDevice }
             buffer.label = "prefill.groupedMoe.verifyActs"
             verifyActs = buffer
+            acts = buffer
         }
-        let acts = verifyActs!
         let constants = [MetalFunctionConstant(index: 90, value: .uint32(UInt32(rows)))]
         var p = params
         var segs = segments

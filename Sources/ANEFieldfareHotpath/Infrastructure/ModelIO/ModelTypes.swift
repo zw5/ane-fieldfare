@@ -161,7 +161,7 @@ public enum ModelError: Error, CustomStringConvertible, Equatable {
 /// streamed `MTLBuffer`s. No `MTLBuffer` is allocated per tensor — the
 /// `buffer` reference is shared across many `TensorView` instances and
 /// addressed by byte offsets.
-public struct TensorView: @unchecked Sendable {
+public struct TensorView {
     public let buffer: MTLBuffer
     public let offset: UInt64
     public let length: UInt64

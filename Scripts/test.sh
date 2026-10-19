@@ -15,6 +15,7 @@ if [[ -z "${DEVELOPER_DIR:-}" && "$(xcode-select -p)" == */CommandLineTools ]]; 
   done
 fi
 
+python3 "$project_root/Scripts/lint_escape_hatches.py"
 "$project_root/Scripts/build.sh"
 "$project_root/Scripts/with_benchmark_lock.sh" swift test -c release --jobs "${ANE_FIELDFARE_BUILD_JOBS:-2}" \
   --package-path "$project_root" --scratch-path "$project_root/.build/swift-hotpath"

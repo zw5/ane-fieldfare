@@ -25,7 +25,7 @@ import ANEFieldfareValidationSupport
         var tails: [String] = []
     }
 
-    final class CountingProducer: LogitProducer, ContextWindowReporting, @unchecked Sendable {
+    final class CountingProducer: LogitProducer, ContextWindowReporting {
         let vocabSize: Int
         let maxContext: Int
         private let step: @Sendable (Int32, Int) -> ScriptedLogitProducer.Step
@@ -67,7 +67,7 @@ import ANEFieldfareValidationSupport
 
     }
 
-    final class ChunkedTestProducer: LogitProducer, ChunkedPrefillRunner, @unchecked Sendable {
+    final class ChunkedTestProducer: LogitProducer, ChunkedPrefillRunner {
         let vocabSize: Int
         private let firstToken: Int32
         private let seed: PrefillSeed

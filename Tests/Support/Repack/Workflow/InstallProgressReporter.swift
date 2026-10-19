@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Turns install progress into one terse stderr line, rate-limited so a
 /// 14.6 GB transfer reports movement without scrolling.
@@ -12,9 +13,9 @@ public struct InstallProgressReporter: Sendable {
     private let minimumInterval: Double
     private let state = State()
 
-    private final class State: @unchecked Sendable {
-        var lastReport: Double = 0
-        var lastPhase: String = ""
+    /// Shared by copies of the reporter; reports may arrive from any thread.
+    private final class State: Sendable {
+        let last = Mutex((report: 0.0, phase: ""))
     }
 
     public init(minimumInterval: Double = 2,
@@ -30,12 +31,14 @@ public struct InstallProgressReporter: Sendable {
         let phase = Self.phase(of: progress)
         // Rate-limited per phase, so the byte counter throttles while a phase
         // change is always announced.
-        if phase == state.lastPhase, now - state.lastReport < minimumInterval {
-            return
+        let due = state.last.withLock { last in
+            if phase == last.phase, now - last.report < minimumInterval {
+                return false
+            }
+            last = (now, phase)
+            return true
         }
-        state.lastPhase = phase
-        state.lastReport = now
-        write(line + "\n")
+        if due { write(line + "\n") }
     }
 
     public func callAsFunction(_ progress: ModelInstallProgress) {

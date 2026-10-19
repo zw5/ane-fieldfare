@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import ANEFieldfareImportedFormat
 
-package final class GTurboModelDirectory {
+package final class GTurboModelDirectory: Sendable {
     package let rootURL: URL
     private let rootFD: Int32
 
@@ -26,6 +26,9 @@ package final class GTurboModelDirectory {
             throw ModelError.indexCorrupt(detail: "unsafe path \(relativePath): \(error)")
         }
         let components = relativePath.components(separatedBy: "/")
+        guard let leaf = components.last else {
+            throw ModelError.indexCorrupt(detail: "empty path \(relativePath)")
+        }
         var directoryFD = fcntl(rootFD, F_DUPFD_CLOEXEC, 0)
         guard directoryFD >= 0 else {
             throw ModelError.posixFailed(call: "fcntl(F_DUPFD_CLOEXEC, model root)", errno: errno)
@@ -40,7 +43,7 @@ package final class GTurboModelDirectory {
             }
             directoryFD = next
         }
-        let fd = openat(directoryFD, components.last!,
+        let fd = openat(directoryFD, leaf,
                         O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         let savedErrno = errno
         close(directoryFD)
@@ -75,7 +78,7 @@ package final class GTurboModelDirectory {
         while total < data.count {
             let remaining = data.count - total
             let got = data.withUnsafeMutableBytes { raw in
-                pread(fd, raw.baseAddress!.advanced(by: total), remaining, off_t(total))
+                pread(fd, raw.baseAddress?.advanced(by: total), remaining, off_t(total))
             }
             if got < 0, errno == EINTR { continue }
             guard got > 0 else {

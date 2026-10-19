@@ -53,9 +53,9 @@ private struct Generation: Decodable {
                        integrityPolicy: .sizeCheckTrustedReceipt)
     }
 
-    static func write(_ pointer: UnsafeRawPointer, count: Int, to path: String) throws {
+    static func write(_ bytes: UnsafeRawBufferPointer, to path: String) throws {
         guard !FileManager.default.fileExists(atPath: path) else { fail("output exists: \(path)", 3) }
-        try Data(bytes: pointer, count: count).write(to: URL(fileURLWithPath: path))
+        try Data(bytes).write(to: URL(fileURLWithPath: path))
     }
 
     static func dumpEmbedding(modelPath: String, prefix: String) throws {
@@ -63,9 +63,12 @@ private struct Generation: Decodable {
         let model = try loadModel(modelPath, context: context)
         let view = model.embedding
         let base = UnsafeRawPointer(view.buffer.contents())
-        try write(base + Int(view.offset), count: Int(view.length), to: prefix + ".q4")
-        try write(base + Int(view.scaleOffset), count: Int(view.scaleLength), to: prefix + ".scales.bf16")
-        try write(base + Int(view.biasOffset), count: Int(view.biasLength), to: prefix + ".biases.bf16")
+        func bytes(at offset: UInt64, count: UInt64) -> UnsafeRawBufferPointer {
+            UnsafeRawBufferPointer(start: base + Int(offset), count: Int(count))
+        }
+        try write(bytes(at: view.offset, count: view.length), to: prefix + ".q4")
+        try write(bytes(at: view.scaleOffset, count: view.scaleLength), to: prefix + ".scales.bf16")
+        try write(bytes(at: view.biasOffset, count: view.biasLength), to: prefix + ".biases.bf16")
         print("embedding vocab=\(model.config.vocabSize) d=\(model.config.hiddenSize) bytes=\(view.length)")
     }
 
@@ -113,8 +116,8 @@ private struct Generation: Decodable {
                                             config: .production(chunkTokens: chunk), into: logits,
                                             onProgress: { _ in })
         let seconds = Date().timeIntervalSince(started)
-        try hidden.withUnsafeBytes { try write($0.baseAddress!, count: $0.count, to: prefix + ".hidden.f16") }
-        try routes.withUnsafeBytes { try write($0.baseAddress!, count: $0.count, to: prefix + ".routes.u8") }
+        try hidden.withUnsafeBytes { try write($0, to: prefix + ".hidden.f16") }
+        try routes.withUnsafeBytes { try write($0, to: prefix + ".routes.u8") }
         let receipt: [String: Any] = [
             "schema": "ane-fieldfare.dflash-capture.v1", "status": "accepted",
             "command": args(), "host": ProcessInfo.processInfo.hostName,

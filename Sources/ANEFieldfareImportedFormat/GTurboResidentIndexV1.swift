@@ -40,10 +40,9 @@ package struct GTurboResidentIndexEntryV1: Equatable, Sendable {
 
 package enum GTurboResidentIndexCodec {
     package static func decodeHeader(_ bytes: UnsafeRawBufferPointer) throws -> GTurboResidentIndexHeaderV1 {
-        guard bytes.count >= GTurboFormatV1.residentHeaderBytes else {
+        guard bytes.count >= GTurboFormatV1.residentHeaderBytes, let base = bytes.baseAddress else {
             throw GTurboFormatError.truncated(field: "resident.header")
         }
-        let base = bytes.baseAddress!
         return GTurboResidentIndexHeaderV1(
             indexSize: readU64(base, 0),
             residentSize: readU64(base, 8),
@@ -58,7 +57,8 @@ package enum GTurboResidentIndexCodec {
         }
         guard header.indexSize <= UInt64(bytes.count),
               header.indexSize >= UInt64(GTurboFormatV1.residentHeaderBytes),
-              header.indexSize % GTurboFormatV1.alignmentBytes == 0 else {
+              header.indexSize % GTurboFormatV1.alignmentBytes == 0,
+              let base = bytes.baseAddress else {
             throw GTurboFormatError.truncated(field: "resident.index")
         }
         let tableBytes = try gturboCheckedMultiply(header.entryCount,
@@ -71,7 +71,6 @@ package enum GTurboResidentIndexCodec {
         }
         let residentEnd = try gturboCheckedAdd(header.indexSize, header.residentSize,
                                                field: "resident.payload")
-        let base = bytes.baseAddress!
         var result: [GTurboResidentIndexEntryV1] = []
         result.reserveCapacity(Int(header.entryCount))
         var names = Set<String>()
@@ -254,15 +253,12 @@ package enum GTurboResidentIndexCodec {
         p.advanced(by: o).storeBytes(of: v, as: UInt8.self)
     }
     @inline(__always) private static func writeU16(_ p: UnsafeMutableRawPointer, _ o: Int, _ v: UInt16) {
-        var x = v.littleEndian
-        _ = withUnsafeBytes(of: &x) { memcpy(p.advanced(by: o), $0.baseAddress!, 2) }
+        p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt16.self)
     }
     @inline(__always) private static func writeU32(_ p: UnsafeMutableRawPointer, _ o: Int, _ v: UInt32) {
-        var x = v.littleEndian
-        _ = withUnsafeBytes(of: &x) { memcpy(p.advanced(by: o), $0.baseAddress!, 4) }
+        p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt32.self)
     }
     @inline(__always) private static func writeU64(_ p: UnsafeMutableRawPointer, _ o: Int, _ v: UInt64) {
-        var x = v.littleEndian
-        _ = withUnsafeBytes(of: &x) { memcpy(p.advanced(by: o), $0.baseAddress!, 8) }
+        p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt64.self)
     }
 }

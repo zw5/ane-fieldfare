@@ -38,7 +38,7 @@ import ANEFieldfareValidationSupport
               let cmd = ctx.queue.makeCommandBuffer() else {
             Issue.record("allocation failed"); return
         }
-        kernel.encodeRows(commandBuffer: cmd, weights: wBuf, weightsOffset: weightByteOffset,
+        try kernel.encodeRows(commandBuffer: cmd, weights: wBuf, weightsOffset: weightByteOffset,
                           scales: sBuf, scalesOffset: 0, biases: bBuf, biasesOffset: 0,
                           x: xBuf, y: yBuf, m: UInt32(m), n: UInt32(n), rows: rows,
                           xStrideElements: n, yStrideElements: m)

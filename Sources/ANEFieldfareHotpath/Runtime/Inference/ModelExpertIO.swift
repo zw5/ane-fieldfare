@@ -66,17 +66,14 @@ extension Model {
     /// Reads `experts` into memory, concurrently, off the caller's thread.
     public func readRoutedExperts(layer: Int, experts: [Int]) async throws {
         guard !experts.isEmpty else { return }
-        let mapped = try expertLayer(layer)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try mapped.read(experts)
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        try await Self.read(experts, of: expertLayer(layer))
+    }
+
+    /// Reads `experts` of `mapped` into memory on `BlockingIO`. Takes only the
+    /// layer, so concurrent readers need not share the model.
+    static func read(_ experts: [Int], of mapped: MappedExpertLayer) async throws {
+        guard !experts.isEmpty else { return }
+        try await BlockingIO.run { try mapped.read(experts) }
     }
 
     /// Asks storage for `experts` and returns at once.

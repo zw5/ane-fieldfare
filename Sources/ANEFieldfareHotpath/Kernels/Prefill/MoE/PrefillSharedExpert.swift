@@ -63,9 +63,9 @@ final class PrefillSharedExpert {
         guard let batched, let geluMulPSO, useMultiRow || queryCount >= Self.batchedMinimumTokens,
               xStrideElements == d, yStrideElements == d else { return false }
         let buffers = try scratch(tokens: queryCount, intermediate: intermediate)
-        func project(_ p: SharedExpertInt8Proj, x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int) -> Bool {
+        func project(_ p: SharedExpertInt8Proj, x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int) throws -> Bool {
             if useMultiRow, let multiRow {
-                multiRow.encodeRows(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
+                try multiRow.encodeRows(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                                     scales: p.scales, scalesOffset: p.scalesOffset,
                                     biases: p.biases, biasesOffset: p.biasesOffset,
                                     x: x, xOffset: xOffset, y: y, yOffset: yOffset,
@@ -81,8 +81,8 @@ final class PrefillSharedExpert {
         }
         // A fallback on the first projection leaves nothing encoded; any
         // later one is a contract violation for these fixed shapes.
-        guard project(gate, x: x, xOffset: xOffset, y: buffers.gate, yOffset: 0) else { return false }
-        guard project(up, x: x, xOffset: xOffset, y: buffers.up, yOffset: 0),
+        guard try project(gate, x: x, xOffset: xOffset, y: buffers.gate, yOffset: 0) else { return false }
+        guard try project(up, x: x, xOffset: xOffset, y: buffers.up, yOffset: 0),
               let encoder = cb.makeComputeCommandEncoder() else {
             throw SharedExpertError.dimensionMismatch("batched shared expert up projection fell back")
         }
@@ -96,7 +96,7 @@ final class PrefillSharedExpert {
                                 threadsPerThreadgroup: MTLSize(width: min(geluMulPSO.maxTotalThreadsPerThreadgroup, 256),
                                                                height: 1, depth: 1))
         encoder.endEncoding()
-        guard project(down, x: buffers.act, xOffset: 0, y: y, yOffset: yOffset) else {
+        guard try project(down, x: buffers.act, xOffset: 0, y: y, yOffset: yOffset) else {
             throw SharedExpertError.dimensionMismatch("batched shared expert down projection fell back")
         }
         return true

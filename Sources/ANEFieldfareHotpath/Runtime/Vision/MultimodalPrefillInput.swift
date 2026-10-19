@@ -6,7 +6,7 @@ public enum MultimodalPrefillInputError: Error, Equatable {
     case featureShapeMismatch
 }
 
-public struct MultimodalImageSpan: Sendable {
+public struct MultimodalImageSpan {
     public let tokenRange: Range<Int>
     public let features: VisionFeatures
 
@@ -16,7 +16,7 @@ public struct MultimodalImageSpan: Sendable {
     }
 }
 
-public struct MultimodalPrefillInput: Sendable {
+public struct MultimodalPrefillInput {
     public let effectiveTokenIDs: [Int32]
     public let embeddingTokenIDs: [Int32]
     public let imageSpans: [MultimodalImageSpan]

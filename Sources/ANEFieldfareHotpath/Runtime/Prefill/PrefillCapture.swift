@@ -17,7 +17,7 @@ public struct PrefillCaptureChunk {
 public final class PrefillCapture {
     public let hiddenLayers: [Int]
     let onChunk: (PrefillCaptureChunk) throws -> Void
-    var buffer: MTLBuffer?
+    private(set) var buffer: MTLBuffer?
     var routes: [[UInt32]] = []
 
     public init(hiddenLayers: [Int], onChunk: @escaping (PrefillCaptureChunk) throws -> Void) {
@@ -27,7 +27,7 @@ public final class PrefillCapture {
 
     func prepare(device: MTLDevice, chunkTokens: Int, hiddenSize: Int, numLayers: Int) throws {
         let length = max(1, hiddenLayers.count * chunkTokens * hiddenSize * MemoryLayout<Float16>.stride)
-        if buffer == nil || buffer!.length < length {
+        if (buffer?.length ?? 0) < length {
             guard let made = device.makeBuffer(length: length, options: .storageModeShared) else {
                 throw PrefillError.chunkedUnsupported("prefill capture allocation failed")
             }

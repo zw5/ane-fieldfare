@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 import ANEFieldfareHotpathCLICore
 
@@ -16,29 +17,13 @@ do {
     exit(2)
 }
 
-// Keep the cancellable task off the top-level executor so the blocking signal
-// bridge cannot prevent it from starting.
-final class RunBox: @unchecked Sendable {
-    var code: Int32 = 0
-    var task: Task<Void, Never>?
-}
+// The process entry point owns the one unstructured task; SIGINT cancels it
+// and its result is the exit code. Awaiting it leaves the main thread free.
+let generation = Task { await run(args: parsedArgs) }
 
-func drive(_ args: Args) -> Int32 {
-    let box = RunBox()
-    let sem = DispatchSemaphore(value: 0)
-    box.task = Task {
-        let result = await run(args: args)
-        box.code = result.exitCode
-        sem.signal()
-    }
+signal(SIGINT, SIG_IGN)
+let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+sigintSource.setEventHandler { generation.cancel() }
+sigintSource.resume()
 
-    signal(SIGINT, SIG_IGN)
-    let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
-    sigintSource.setEventHandler { box.task?.cancel() }
-    sigintSource.resume()
-
-    sem.wait()
-    return box.code
-}
-
-exit(drive(parsedArgs))
+exit(await generation.value.exitCode)

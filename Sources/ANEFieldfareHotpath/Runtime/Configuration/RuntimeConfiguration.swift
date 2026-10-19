@@ -89,8 +89,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
                      "unsupported prefill chunk size")
         precondition((1...8).contains(activeRoutedExperts),
                      "active routed experts must be in 1...8")
-        precondition(prefillExpertUnionCap == nil ||
-                     (1...128).contains(prefillExpertUnionCap!),
+        precondition(prefillExpertUnionCap.map { (1...128).contains($0) } ?? true,
                      "prefill expert union cap must be in 1...128")
         self.backend = backend
         self.prefillPolicy = prefillEnabled ? .chunked : .off

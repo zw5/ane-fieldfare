@@ -148,10 +148,7 @@ package struct OpenedVisionImage {
         var buffer = [UInt8](repeating: 0, count: Self.scanChunkBytes)
         while position < encodedBytes {
             let count = min(Self.scanChunkBytes, encodedBytes - position)
-            let read = buffer.withUnsafeMutableBytes {
-                fileProvider.read(into: $0.baseAddress!,
-                                  position: off_t(position), count: count)
-            }
+            let read = fileProvider.read(into: &buffer, position: off_t(position), count: count)
             guard read == count else { return false }
             if carry == 0xFF, buffer[0] == 0xD9 { return true }
             var index = 0
@@ -177,11 +174,9 @@ package struct OpenedVisionImage {
         let trailer = 12
         guard encodedBytes >= 8 + trailer else { return false }
         var tail = [UInt8](repeating: 0, count: trailer)
-        let read = tail.withUnsafeMutableBytes {
-            fileProvider.read(into: $0.baseAddress!,
-                              position: off_t(encodedBytes - trailer),
-                              count: trailer)
-        }
+        let read = fileProvider.read(into: &tail,
+                                     position: off_t(encodedBytes - trailer),
+                                     count: trailer)
         guard read == trailer else { return false }
         return tail == [0x00, 0x00, 0x00, 0x00,
                         0x49, 0x45, 0x4E, 0x44,
@@ -194,10 +189,7 @@ package struct OpenedVisionImage {
         var position = 2  // past SOI
         var header = [UInt8](repeating: 0, count: 4)
         while position + 4 <= min(encodedBytes, Self.markerScanLimitBytes) {
-            let read = header.withUnsafeMutableBytes {
-                fileProvider.read(into: $0.baseAddress!,
-                                  position: off_t(position), count: 4)
-            }
+            let read = fileProvider.read(into: &header, position: off_t(position), count: 4)
             guard read == 4, header[0] == 0xFF else { return nil }
             // Fill bytes: any number of 0xFF may precede a marker (ITU T.81
             // B.1.1.2), and scanners and older camera firmware emit them.

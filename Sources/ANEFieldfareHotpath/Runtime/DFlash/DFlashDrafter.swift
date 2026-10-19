@@ -197,10 +197,13 @@ public final class DFlashDrafter {
         }
         var done = 0
         while done < rows {
+            guard let source = captured.baseAddress else {
+                throw DFlashError.invalidState("empty captured context")
+            }
             let n = min(Self.appendRows, rows - done)
             let dst = staging.contents().assumingMemoryBound(to: Float16.self)
             for layer in 0..<layers {
-                (dst + layer * n * D).update(from: captured.baseAddress! + (layer * stride + done) * D,
+                (dst + layer * n * D).update(from: source + (layer * stride + done) * D,
                                              count: n * D)
             }
             try encodeAppend(rows: n)
@@ -312,7 +315,7 @@ public final class DFlashDrafter {
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
-        head.encodeGreedyRows(commandBuffer: cb, hidden: headRows, rowCount: R - 1,
+        try head.encodeGreedyRows(commandBuffer: cb, hidden: headRows, rowCount: R - 1,
                               normWeight: weights, normOffset: try offset("norm.weight"),
                               weights: emb.buffer, weightsOffset: Int(emb.offset),
                               scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
@@ -334,7 +337,7 @@ public final class DFlashDrafter {
     private func project(_ cb: MTLCommandBuffer, input: MTLBuffer, _ name: String, output: MTLBuffer,
                          rows: Int, n: Int, k: Int) throws {
         guard let view = int4Views[name] else { throw DFlashError.invalidCheckpoint("missing tensor \(name)") }
-        int4.encodeRows(commandBuffer: cb,
+        try int4.encodeRows(commandBuffer: cb,
                         weights: int4Weights, weightsOffset: view.weights,
                         scales: int4Weights, scalesOffset: view.scales,
                         biases: int4Weights, biasesOffset: view.biases,
@@ -382,13 +385,21 @@ public final class DFlashDrafter {
         out.label = "dflash.int4"
         let src = source.contents(), dst = out.contents()
         for (name, rows, cols) in shapes {
-            let view = views[name]!
-            let w = src.advanced(by: ranges[name]!.lowerBound).assumingMemoryBound(to: UInt16.self)
+            guard let view = views[name], let range = ranges[name] else {
+                throw DFlashError.invalidCheckpoint("tensor \(name) was not laid out")
+            }
+            let w = src.advanced(by: range.lowerBound).assumingMemoryBound(to: UInt16.self)
             let packed = dst.advanced(by: view.weights).assumingMemoryBound(to: UInt8.self)
             let scales = dst.advanced(by: view.scales).assumingMemoryBound(to: UInt16.self)
             let biases = dst.advanced(by: view.biases).assumingMemoryBound(to: UInt16.self)
-            nonisolated(unsafe) let (wp, pp, sp, bp) = (w, packed, scales, biases)
             let groupsPerRow = cols / Quantization.groupSize
+            // SAFETY: iteration `row` reads only row `row` of the source and
+            // writes only that row's packed weights, scales and biases, so no
+            // two iterations touch the same bytes, and every write lands
+            // before `concurrentPerform` returns.
+            nonisolated(unsafe) let (wp, pp, sp, bp) = (w, packed, scales, biases)
+            // SAFETY: one-time CPU quantization at load, fanned over GCD
+            // workers; it never runs on the Swift concurrency pool.
             DispatchQueue.concurrentPerform(iterations: rows) { row in
                 for g in 0..<groupsPerRow {
                     let base = row * cols + g * Quantization.groupSize
@@ -428,8 +439,8 @@ public final class DFlashDrafter {
             throw DFlashError.invalidState("drafter weight allocation failed")
         }
         out.label = "dflash.weights"
-        for (name, offset) in offsets {
-            let range = ranges[name]!
+        for (name, range) in ranges {
+            guard let offset = offsets[name] else { continue }
             out.contents().advanced(by: offset)
                 .copyMemory(from: source.contents().advanced(by: range.lowerBound), byteCount: range.count)
         }
@@ -516,7 +527,7 @@ public final class DFlashDrafter {
             guard let chunk = try handle.read(upToCount: min(64 << 20, dataLength - read)), !chunk.isEmpty else {
                 throw DFlashError.invalidCheckpoint("truncated safetensors data")
             }
-            chunk.withUnsafeBytes { (base + read).copyMemory(from: $0.baseAddress!, byteCount: chunk.count) }
+            chunk.copyBytes(to: UnsafeMutableRawBufferPointer(start: base + read, count: chunk.count))
             read += chunk.count
         }
         return (buffer, offsets)

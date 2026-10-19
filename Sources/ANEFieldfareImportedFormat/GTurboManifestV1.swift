@@ -227,9 +227,8 @@ package enum GTurboManifestCodec {
             }
         }
         let reservedFiles: Set<String> = ["manifest.json", "verified-install.json"]
-        let filePaths = manifest.files.keys.sorted()
         var canonicalPaths: [String: String] = [:]
-        for path in filePaths {
+        for (path, entry) in manifest.files.sorted(by: { $0.key < $1.key }) {
             try GTurboPathValidator.validateRelativePath(path, field: "manifest.files.\(path)")
             let key = GTurboPathValidator.appleFilesystemKey(path)
             guard canonicalPaths.updateValue(path, forKey: key) == nil else {
@@ -242,7 +241,6 @@ package enum GTurboManifestCodec {
                 throw GTurboFormatError.invalid(
                     field: "manifest.files.\(path)", reason: "reserved artifact filename")
             }
-            let entry = manifest.files[path]!
             guard entry.sha256.count == 64,
                   entry.sha256.unicodeScalars.allSatisfy({ scalar in
                       ("0"..."9").contains(Character(String(scalar)))

@@ -1,5 +1,6 @@
 import Foundation
 import Metal
+import Synchronization
 
 enum MetalError: Error, CustomStringConvertible {
     case noDevice
@@ -8,6 +9,7 @@ enum MetalError: Error, CustomStringConvertible {
     case missingFunction(String)
     case libraryCompileFailed(String)
     case commandBufferFailed(String)
+    case commandBufferUnavailable
 
     public var description: String {
         switch self {
@@ -17,6 +19,7 @@ enum MetalError: Error, CustomStringConvertible {
         case .missingFunction(let n):     return "Metal function missing in library: \(n)"
         case .libraryCompileFailed(let s):return "Metal library compile failed: \(s)"
         case .commandBufferFailed(let s): return "Metal command buffer failed: \(s)"
+        case .commandBufferUnavailable:   return "Metal command queue returned no command buffer"
         }
     }
 }
@@ -86,22 +89,20 @@ public struct MetalFunctionConstant: Hashable, Sendable {
 /// On Mac and iOS we ship `.metal` source files as bundle resources and compile
 /// them into one combined `MTLLibrary` at startup. This keeps the dev loop
 /// fast — edit a shader, rebuild the Swift target, no Xcode metallib step.
-/// `@unchecked Sendable`: device/queue/library are immutable and Metal objects
-/// are thread-safe for encoding; the pipeline cache is the only mutable state
-/// and is lock-guarded.
-public final class MetalContext: @unchecked Sendable {
+/// Device, queue, library and pipeline states are `Sendable` Metal objects;
+/// the pipeline cache is the only mutable state and its `Mutex` owns it.
+public final class MetalContext: Sendable {
     public let device:  MTLDevice
     public let queue:   MTLCommandQueue
     public let library: MTLLibrary
 
-    private struct PipelineCacheKey: Hashable {
+    private struct PipelineCacheKey: Hashable, Sendable {
         var name: String
         var constants: [MetalFunctionConstant]
         var maxTotalThreadsPerThreadgroup: Int?
     }
 
-    private var pipelineCache: [PipelineCacheKey: MTLComputePipelineState] = [:]
-    private let pipelineCacheLock = NSLock()
+    private let pipelineCache = Mutex<[PipelineCacheKey: any MTLComputePipelineState]>([:])
 
     private static func relaxInteractivityWatchdog() {
         #if os(macOS)
@@ -199,33 +200,43 @@ public final class MetalContext: @unchecked Sendable {
                                       includeVisionTensorOps: Bool = false) throws
         -> MTLLibrary {
         let key = "\(ObjectIdentifier(device).hashValue)#\(module)#\(includeVisionTensorOps)"
-        privateLibraryLock.lock()
-        defer { privateLibraryLock.unlock() }
-        if let cached = privateLibraryCache[key] {
-            return cached
-        }
-        guard let url = shaderURL(module: module) else {
-            throw MetalError.missingShaderResource(module)
-        }
-        let src = try String(contentsOf: url, encoding: .utf8)
-        let opts = MTLCompileOptions()
-        opts.languageVersion = .version4_0
-        if includeVisionTensorOps {
-            opts.preprocessorMacros = [
-                "TURBO_FIELDFARE_VISION_TENSOROPS": NSNumber(value: true)
-            ]
-        }
-        do {
-            let library = try device.makeLibrary(source: src, options: opts)
-            privateLibraryCache[key] = library
-            return library
-        } catch {
-            throw MetalError.libraryCompileFailed("\(error)")
+        // Compiling inside the lock keeps concurrent first loads from
+        // compiling the same source twice.
+        return try privateLibraryCache.withLock { cache in
+            if let cached = cache[key] {
+                return cached
+            }
+            guard let url = shaderURL(module: module) else {
+                throw MetalError.missingShaderResource(module)
+            }
+            let src = try String(contentsOf: url, encoding: .utf8)
+            let opts = MTLCompileOptions()
+            opts.languageVersion = .version4_0
+            if includeVisionTensorOps {
+                opts.preprocessorMacros = [
+                    "TURBO_FIELDFARE_VISION_TENSOROPS": NSNumber(value: true)
+                ]
+            }
+            do {
+                let library = try device.makeLibrary(source: src, options: opts)
+                cache[key] = library
+                return library
+            } catch {
+                throw MetalError.libraryCompileFailed("\(error)")
+            }
         }
     }
 
-    private static let privateLibraryLock = NSLock()
-    private static nonisolated(unsafe) var privateLibraryCache: [String: MTLLibrary] = [:]
+    private static let privateLibraryCache = Mutex<[String: any MTLLibrary]>([:])
+
+    /// A command buffer on `queue`. Metal returns none only when the device
+    /// is lost or out of resources, which the caller must see as an error.
+    public func makeCommandBuffer() throws -> any MTLCommandBuffer {
+        guard let commandBuffer = queue.makeCommandBuffer() else {
+            throw MetalError.commandBufferUnavailable
+        }
+        return commandBuffer
+    }
 
     public func pipeline(_ name: String) throws -> MTLComputePipelineState {
         try pipeline(name, constants: [])
@@ -249,10 +260,7 @@ public final class MetalContext: @unchecked Sendable {
         let key = PipelineCacheKey(name: name,
                                    constants: sortedConstants,
                                    maxTotalThreadsPerThreadgroup: hint)
-        pipelineCacheLock.lock()
-        let cached = pipelineCache[key]
-        pipelineCacheLock.unlock()
-        if let cached { return cached }
+        if let cached = pipelineCache.withLock({ $0[key] }) { return cached }
 
         guard library.functionNames.contains(name) else {
             throw MetalError.missingFunction(name)
@@ -286,9 +294,7 @@ public final class MetalContext: @unchecked Sendable {
         } else {
             p = try device.makeComputePipelineState(function: fn)
         }
-        pipelineCacheLock.lock()
-        pipelineCache[key] = p
-        pipelineCacheLock.unlock()
+        pipelineCache.withLock { $0[key] = p }
         return p
     }
 

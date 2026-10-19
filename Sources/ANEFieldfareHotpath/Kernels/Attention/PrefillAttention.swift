@@ -94,7 +94,7 @@ final class PrefillAttention {
                              params: PrefillAttentionParams,
                              kvRingCapacity: UInt32 = 0,
                              layerKind: PrefillAttentionLayerKind = .full,
-                             path: RuntimePrefillAttentionPath = .causalTiled) {
+                             path: RuntimePrefillAttentionPath = .causalTiled) throws {
         var effectiveParams = params
         // Only sliding-window layers make an image block bidirectional;
         // full-attention layers stay causal. Zeroed here as well as at the
@@ -125,7 +125,7 @@ final class PrefillAttention {
         let pipeline: MTLComputePipelineState
         let useSIMD = path == .causalSIMD && tensorOpsPipeline == nil && [256, 512].contains(params.headDim)
         if useSIMD {
-            pipeline = try! context.pipeline("attention_prefill_causal_simd",
+            pipeline = try context.pipeline("attention_prefill_causal_simd",
                 constants: [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity)),
                             MetalFunctionConstant(index: 77, value: .uint32(params.headDim))])
         } else if let tensorOpsPipeline {
@@ -136,7 +136,7 @@ final class PrefillAttention {
         } else {
             // Explicit mode also falls back for incompatible shapes. Benchmark
             // fixtures must use 512/16/2 to prove that TensorOps ran.
-            pipeline = causalTiledPipeline(kvRingCapacity: kvRingCapacity)
+            pipeline = try causalTiledPipeline(kvRingCapacity: kvRingCapacity)
         }
         let headDim = Int(effectiveParams.headDim)
         let threadWidth = max(1, pipeline.threadExecutionWidth)
@@ -211,14 +211,10 @@ final class PrefillAttention {
         enc.endEncoding()
     }
 
-    private func causalTiledPipeline(kvRingCapacity: UInt32) -> MTLComputePipelineState {
+    private func causalTiledPipeline(kvRingCapacity: UInt32) throws -> MTLComputePipelineState {
         guard kvRingCapacity > 0 else { return psoCausalTiled }
-        do {
-            return try context.pipeline(
-                "attention_prefill_causal_tiled",
-                constants: [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))])
-        } catch {
-            preconditionFailure("failed to build FP16 KV ring prefill attention pipeline: \(error)")
-        }
+        return try context.pipeline(
+            "attention_prefill_causal_tiled",
+            constants: [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))])
     }
 }

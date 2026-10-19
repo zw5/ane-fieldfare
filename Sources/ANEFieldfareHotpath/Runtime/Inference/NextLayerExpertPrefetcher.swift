@@ -36,7 +36,7 @@ public struct EarlyExpertReadStats: Sendable, Equatable {
 /// depend on this; a wrong guess only spends bandwidth.
 ///
 /// `ANE_FIELDFARE_EARLY_EXPERT_READS` (1–8) sets the reads per layer.
-final class NextLayerExpertPrefetcher: @unchecked Sendable {
+final class NextLayerExpertPrefetcher {
     static let readsEnvironmentKey = "ANE_FIELDFARE_EARLY_EXPERT_READS"
     static let defaultReadsPerLayer = 2
     static let maxReadsPerLayer = 8
@@ -65,9 +65,9 @@ final class NextLayerExpertPrefetcher: @unchecked Sendable {
 
     /// Up to `limit` highest-scoring experts for which `isAbsent` holds, among
     /// the `topK` highest-scoring overall, best first; ties go to the lower ID.
-    static func choose(scores: UnsafePointer<Float>, count: Int,
+    static func choose(scores: [Float],
                        limit: Int, topK: Int = 8, isAbsent: (Int) -> Bool) -> [Int] {
-        let ranked = (0..<count).sorted {
+        let ranked = scores.indices.sorted {
             scores[$0] != scores[$1] ? scores[$0] > scores[$1] : $0 < $1
         }
         return Array(ranked.prefix(topK).filter(isAbsent).prefix(limit))

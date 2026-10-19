@@ -35,19 +35,8 @@ public struct Model {
     let directoryURL: URL
     let modelDirectory: GTurboModelDirectory
 
-    /// Lazy state. Held inside a reference box so `Model` can stay a struct
-    /// while still letting accessors mutate layer state via a serial queue.
-    let expertLayersBox: ExpertLayersBox
-    let expertLayersQueue: DispatchQueue
-
-    final class ExpertLayersBox: @unchecked Sendable {
-        var layers: [MappedExpertLayer?]
-        var layerVerified: [Bool]
-        init(numLayers: Int) {
-            self.layers = Array(repeating: nil, count: numLayers)
-            self.layerVerified = Array(repeating: false, count: numLayers)
-        }
-    }
+    /// Routed-expert layer mappings, shared by every copy of this value.
+    let routedLayers: RoutedExpertLayers
 
     init(device: MTLDevice,
          config: ArchConfig,
@@ -57,7 +46,13 @@ public struct Model {
          packedExpertsLayout: PackedExpertsLayout,
          manifest: Manifest,
          directoryURL: URL,
-         modelDirectory: GTurboModelDirectory) {
+         modelDirectory: GTurboModelDirectory) throws {
+        self.embedding = try Self.resident(
+            name: "language_model.model.embed_tokens.weight",
+            index: residentIndex, buffer: residentBuffer)
+        self.finalNorm = try Self.resident(
+            name: "language_model.model.norm.weight",
+            index: residentIndex, buffer: residentBuffer)
         self.device = device
         self.config = config
         self.integrityPolicy = integrityPolicy
@@ -67,15 +62,19 @@ public struct Model {
         self.manifest = manifest
         self.directoryURL = directoryURL
         self.modelDirectory = modelDirectory
-        self.expertLayersBox = ExpertLayersBox(numLayers: packedExpertsLayout.numLayers)
-        self.expertLayersQueue = DispatchQueue(label: "ane-fieldfare.expert-layers")
+        self.routedLayers = RoutedExpertLayers(
+            device: device,
+            layout: packedExpertsLayout,
+            manifest: manifest,
+            directoryURL: directoryURL,
+            modelDirectory: modelDirectory,
+            integrityPolicy: integrityPolicy)
     }
 
     // MARK: - Resident accessors
 
-    public var embedding: TensorView {
-        try! resident(name: "language_model.model.embed_tokens.weight")
-    }
+    /// Resolved at load, so a loaded model always has one.
+    public let embedding: TensorView
 
     /// Gemma 4 ties lm_head to the embedding. The transpose for the lm_head
     /// GEMV path is the kernel's job, not the loader's.
@@ -114,9 +113,7 @@ public struct Model {
     public func postAttnNorm(layer L: Int) throws -> TensorView {
         try resident(name: "language_model.model.layers.\(L).post_attention_layernorm.weight")
     }
-    public var finalNorm: TensorView {
-        try! resident(name: "language_model.model.norm.weight")
-    }
+    public let finalNorm: TensorView
 
     // MARK: - Per-head attention norms (Q/K only)
     //
@@ -181,6 +178,12 @@ public struct Model {
     /// subtracting the resident region's file offset (which equals
     /// `header.indexSize`).
     func resident(name: String) throws -> TensorView {
+        try Self.resident(name: name, index: residentIndex, buffer: residentBuffer)
+    }
+
+    private static func resident(name: String,
+                                 index residentIndex: ResidentIndex,
+                                 buffer residentBuffer: ResidentBuffer) throws -> TensorView {
         guard let entry = residentIndex.entries[name] else {
             throw ModelError.tensorNotFound(name: name)
         }
@@ -225,15 +228,14 @@ public struct Model {
     /// One expert's weights, bound zero-copy from the page cache. Absent
     /// pages fault in when the GPU first touches them.
     public func routedExpert(layer L: Int, expert E: Int) throws -> TensorView {
-        try routedExpertViews(layer: L, experts: [E])[0]
+        let views = try routedExpertViews(layer: L, experts: [E])
+        guard let view = views.first else { throw ExpertStoreError.expertOutOfRange(E) }
+        return view
     }
 
     /// Layer L's mapping, opening and verifying its file on first touch.
     func expertLayer(_ L: Int) throws -> MappedExpertLayer {
-        try expertLayersQueue.sync {
-            try openLayerLocked(L)
-            return expertLayersBox.layers[L]!
-        }
+        try routedLayers.layer(L)
     }
 
     /// Open layer L's file + verify SHA, idempotent.
@@ -241,58 +243,18 @@ public struct Model {
         _ = try expertLayer(L)
     }
 
-    /// Best-effort overlap hook for prefill: starts the same lazy layer open on
-    /// the model's queue without waiting for the first expert fetch.
+    /// Best-effort overlap hook for prefill: starts the same lazy layer open in
+    /// the background without waiting for the first expert fetch. A failure is
+    /// dropped here and resurfaces from the first real fetch of the layer.
     public func beginOpeningRoutedExpertLayer(layer L: Int) {
-        nonisolated(unsafe) let model = self
-        expertLayersQueue.async {
-            try? model.openLayerLocked(L)
+        BlockingIO.detach { [routedLayers] in
+            _ = try? routedLayers.layer(L)
         }
-    }
-
-    private func openLayerLocked(_ L: Int) throws {
-        if expertLayersBox.layers[L] != nil {
-            return
-        }
-        let basename = packedExpertsLayout.layers[L].file
-        let url = directoryURL
-            .appendingPathComponent("packed_experts")
-            .appendingPathComponent(basename)
-        let manifestRel = "packed_experts/\(basename)"
-        let layerFD = try modelDirectory.openFile(manifestRel)
-        defer { close(layerFD) }
-        if !expertLayersBox.layerVerified[L] {
-            guard let entry = manifest.files[manifestRel] else {
-                throw ModelError.missingFile(name: manifestRel)
-            }
-            let actualSize = try modelDirectory.fileSize(
-                fileDescriptor: layerFD, relativePath: manifestRel)
-            guard actualSize == entry.size else {
-                throw ModelError.tensorSizeMismatch(
-                    name: manifestRel, expected: entry.size, actual: actualSize)
-            }
-            switch integrityPolicy {
-            case .fullSha256:
-                try Sha256Verifier.verifyFile(fileDescriptor: layerFD,
-                                              named: manifestRel,
-                                              expectedHex: entry.sha256)
-            case .sizeCheckTrustedReceipt:
-                break
-            }
-        }
-        expertLayersBox.layers[L] = try MappedExpertLayer(
-            fileDescriptor: layerFD,
-            path: url.path,
-            device: device,
-            expertCount: packedExpertsLayout.expertsPerLayer,
-            expertBytes: Int(packedExpertsLayout.expertStride),
-            expertOffsets: packedExpertsLayout.layers[L].experts.map(\.offset))
-        expertLayersBox.layerVerified[L] = true
     }
 
     /// Test hook: how many layer files have been opened so far.
     public func openLayerFileCount() -> Int {
-        expertLayersQueue.sync { expertLayersBox.layers.compactMap { $0 }.count }
+        routedLayers.openLayerCount
     }
 
 }
@@ -437,7 +399,7 @@ extension Model {
             device: device,
             fileDescriptor: weightsFD)
 
-        return Model(
+        return try Model(
             device: device,
             config: expecting,
             integrityPolicy: resolvedIntegrityPolicy,
@@ -700,19 +662,15 @@ extension Model {
         gpuDrainNanoseconds: UInt64 = 0
     ) -> VisionExpertResidencyTransition {
         let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-        return expertLayersQueue.sync {
-            let openCount = expertLayersBox.layers.compactMap { $0 }.count
-            if policy == .onDemand {
-                // `layerVerified` survives, so reopening never re-hashes 13 GB.
-                expertLayersBox.layers = Array(repeating: nil, count: packedExpertsLayout.numLayers)
-            }
-            return VisionExpertResidencyTransition(
-                policy: policy,
-                gpuDrainNanoseconds: gpuDrainNanoseconds,
-                releasedLayerCount: policy == .onDemand ? openCount : 0,
-                remainingOpenLayerCount: expertLayersBox.layers.compactMap { $0 }.count,
-                wallNanoseconds: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
-        }
+        // `RoutedExpertLayers` keeps each layer's verification across a
+        // release, so reopening never re-hashes 13 GB.
+        let released = policy == .onDemand ? routedLayers.release() : 0
+        return VisionExpertResidencyTransition(
+            policy: policy,
+            gpuDrainNanoseconds: gpuDrainNanoseconds,
+            releasedLayerCount: released,
+            remainingOpenLayerCount: routedLayers.openLayerCount,
+            wallNanoseconds: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
     }
 
 }

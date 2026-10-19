@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import Metal
+import Synchronization
 
 package enum ExpertStoreError: Error, CustomStringConvertible {
     case mapFailed(path: String, errno: Int32)
@@ -42,10 +43,17 @@ package enum ExpertStoreError: Error, CustomStringConvertible {
 /// faults in any page that is absent when a command buffer runs; `read` only
 /// makes that happen earlier and in parallel.
 public final class MappedExpertLayer: @unchecked Sendable {
+    // SAFETY: every stored property is a `let`. The buffers alias a
+    // `PROT_READ` mapping, so neither the CPU nor the GPU can write through
+    // them, and `mapping` keeps that memory alive for as long as any buffer
+    // does. Concurrent readers only bind buffers and issue reads.
+
     /// The file mapping and descriptor. Every expert buffer's deallocator
     /// holds it, so a buffer that outlives its layer (a caller's view, a
     /// command buffer in flight) never reads unmapped memory.
     private final class Mapping: @unchecked Sendable {
+        // SAFETY: immutable after init. `base` is unmapped only in `deinit`,
+        // which runs after the last expert buffer's deallocator releases it.
         let fd: Int32
         let base: UnsafeMutableRawPointer
         let bytes: Int
@@ -169,8 +177,10 @@ public final class MappedExpertLayer: @unchecked Sendable {
         let offsets = try experts.map(checked)
         let part = (expertBytes / Self.readSplit + pageSize - 1) / pageSize * pageSize
         let parts = (expertBytes + part - 1) / part
-        let errorLock = NSLock()
-        nonisolated(unsafe) var firstError: Error?
+        let firstError = Mutex<(any Error)?>(nil)
+        // SAFETY: `concurrentPerform` fans blocking `pread`s out over GCD
+        // workers and returns when all finish; it never runs on the Swift
+        // concurrency pool.
         DispatchQueue.concurrentPerform(iterations: offsets.count * parts) { index in
             let start = (index % parts) * part
             let count = min(part, expertBytes - start)
@@ -179,12 +189,10 @@ public final class MappedExpertLayer: @unchecked Sendable {
                     try Self.readFull(fd: fd, into: sink, offset: offsets[index / parts] + start, count: count)
                 }
             } catch {
-                errorLock.lock()
-                if firstError == nil { firstError = error }
-                errorLock.unlock()
+                firstError.withLock { if $0 == nil { $0 = error } }
             }
         }
-        if let firstError { throw firstError }
+        if let error = firstError.withLock({ $0 }) { throw error }
     }
 
     private static func readFull(fd: Int32, into sink: UnsafeMutableRawPointer, offset: Int, count: Int) throws {
@@ -204,20 +212,18 @@ public final class MappedExpertLayer: @unchecked Sendable {
 /// Reusable destinations for page-cache fills. The copy out of the page cache
 /// is discarded; only the read's side effect, a resident page, matters.
 private enum ReadSink {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var free: [(bytes: Int, pointer: UnsafeMutableRawPointer)] = []
+    /// Each sink is held by one read at a time: it leaves the pool for the
+    /// read and returns when the read is done.
+    private static let free = Mutex<[[UInt8]]>([])
 
-    static func with<T>(bytes: Int, _ body: (UnsafeMutableRawPointer) throws -> T) rethrows -> T {
-        lock.lock()
-        let index = free.firstIndex { $0.bytes >= bytes }
-        let sink = index.map { free.remove(at: $0) }
-        lock.unlock()
-        let entry = sink ?? (bytes, UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: 16_384))
-        defer {
-            lock.lock()
-            free.append(entry)
-            lock.unlock()
+    static func with<T>(bytes: Int, _ body: (UnsafeMutableRawPointer) throws -> T) throws -> T {
+        var sink = free.withLock { free in
+            free.firstIndex { $0.count >= bytes }.map { free.remove(at: $0) }
+        } ?? [UInt8](repeating: 0, count: bytes)
+        defer { free.withLock { [sink] in $0.append(sink) } }
+        return try sink.withUnsafeMutableBytes { buffer in
+            guard let base = buffer.baseAddress else { throw ExpertStoreError.shortRead(expected: bytes, actual: 0) }
+            return try body(base)
         }
-        return try body(entry.pointer)
     }
 }

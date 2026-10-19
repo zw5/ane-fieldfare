@@ -17,7 +17,7 @@ public enum KernelBench {
         let gemv = try DequantInt4GEMV(context: context)
         var best = Double.infinity
         for _ in 0..<3 {
-            let cb = context.queue.makeCommandBuffer()!
+            let cb = try context.makeCommandBuffer()
             for i in 0..<dispatches {
                 let c = i % copies
                 gemv.encode(commandBuffer: cb, weights: w, weightsOffset: c * wBytes, scales: sc, scalesOffset: c * sBytes,

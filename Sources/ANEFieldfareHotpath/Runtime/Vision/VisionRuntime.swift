@@ -19,7 +19,7 @@ public enum VisionRuntimeError: Error, CustomStringConvertible {
     }
 }
 
-public struct VisionFeatures: @unchecked Sendable {
+public struct VisionFeatures {
     public let buffer: MTLBuffer
     public let tokenCount: Int
     public let hiddenSize: Int
@@ -116,7 +116,7 @@ public final class VisionRuntime {
     }
 
     init(context: MetalContext, store: VisionWeightStore,
-         useLease: VisionPackUseLease) throws {
+         useLease: consuming VisionPackUseLease) throws {
         self.context = context
         self.store = store
         self.useLease = useLease

@@ -6,7 +6,7 @@ import ANEFieldfareHotpath
 /// stack. The `step` closure maps `(inputToken, callIndex)` to a logit spec, so
 /// token-keyed automata can script deterministic greedy sequences regardless of
 /// how many tokens the prompt prefilled.
-public final class ScriptedLogitProducer: LogitProducer, @unchecked Sendable {
+public final class ScriptedLogitProducer: LogitProducer {
     public enum Step: Sendable {
         case argmax(Int32)
         case vector([Float])

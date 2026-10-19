@@ -21,7 +21,7 @@ struct RawPrefillOutcome {
 
 /// The prefill half of `runRawCompletion`.
 func runRawPrefill(
-    producer: any LogitProducer,
+    producer: some LogitProducer,
     promptIds: [Int32],
     multimodalInput: MultimodalPrefillInput?,
     prefillConfig requestedPrefillConfig: PrefillRuntimeConfig,
@@ -67,8 +67,14 @@ func runRawPrefill(
     var prefillSeed: PrefillSeed?
     let prefillTokens = promptIds[...]
     switch (multimodalInput, prefillConfig.mode) {
-    case (.some(let input), .chunked) where producer is any MultimodalPrefillRunner:
-        let multimodal = producer as! any MultimodalPrefillRunner
+    case (.some(let input), .chunked):
+        // The coercion above leaves an image prompt in chunked mode, so a
+        // producer that cannot run image spans is the only way to fail here —
+        // and no config change can fix that.
+        guard let multimodal = producer as? any MultimodalPrefillRunner else {
+            throw PrefillError.chunkedUnsupported(
+                "multimodal prefill requires a MultimodalPrefillRunner-backed runtime")
+        }
         let result = try await multimodal.prefillMultimodal(
             input: input,
             startPosition: position,
@@ -83,13 +89,13 @@ func runRawPrefill(
         prefillSeed = result.seed
         history.append(contentsOf: prefillTokens)
     case (.some, _):
-        // The coercion above leaves an image prompt in chunked mode, so the
-        // only way here is a producer that cannot run image spans at all —
-        // which no config change can fix.
         throw PrefillError.chunkedUnsupported(
             "multimodal prefill requires a MultimodalPrefillRunner-backed runtime")
-    case (.none, .chunked) where producer is any ChunkedPrefillRunner:
-        let chunked = producer as! any ChunkedPrefillRunner
+    case (.none, .chunked):
+        guard let chunked = producer as? any ChunkedPrefillRunner else {
+            throw PrefillError.chunkedUnsupported(
+                PrefillError.chunkedRequiresChunkedRunnerReason)
+        }
         let result = try await chunked.prefillChunked(tokens: prefillTokens,
                                                       startPosition: position,
                                                       outputMode: outputMode,
@@ -101,9 +107,6 @@ func runRawPrefill(
         position = result.newPosition
         prefillSeed = result.seed
         history.append(contentsOf: prefillTokens)
-    case (.none, .chunked):
-        throw PrefillError.chunkedUnsupported(
-            PrefillError.chunkedRequiresChunkedRunnerReason)
     case (.none, _):
         for t in prefillTokens {
             try Task.checkCancellation()
@@ -155,11 +158,9 @@ public struct RawDecodeResult: Sendable {
 
 /// Preallocated per-generation buffers (two 512 KiB vocab buffers plus a token
 /// slot) and sampler. A warm session reuses them for every token, avoiding
-/// per-token Metal buffer allocation.
-///
-/// `@unchecked Sendable`: the buffers and sampler are exclusively owned by one
-/// generation at a time — the single-in-flight guard upstream is the contract.
-public struct RawCompletionScratch: @unchecked Sendable {
+/// per-token Metal buffer allocation. Not `Sendable`: one generation owns it
+/// at a time, inside that generation's task.
+public struct RawCompletionScratch {
     let logits: MTLBuffer
     let probs: MTLBuffer
     let outToken: MTLBuffer
@@ -201,7 +202,7 @@ extension GenerationConfig {
 /// logits buffer is never written; the loop then requires a pure-greedy config
 /// and reads `lastGreedyToken`. Callers with sampling configs must construct
 /// the runner with `forceLogitsHead: true`.
-public func runRawCompletion(producer: any LogitProducer,
+public func runRawCompletion(producer: some LogitProducer,
                              tokenizer: GFTokenizer,
                              promptIds: [Int32],
                              multimodalInput: MultimodalPrefillInput? = nil,
@@ -215,8 +216,12 @@ public func runRawCompletion(producer: any LogitProducer,
     guard !promptIds.isEmpty else {
         throw GeneratorError.emptyPrompt
     }
-    let fusedRunner = producer as? any FusedGreedyProducer
-    let fusedGreedy = fusedRunner?.usesFusedGreedyHead == true
+    // Present exactly when the producer's fused head leaves a GPU argmax
+    // instead of logits.
+    let fusedGreedyRunner = (producer as? any FusedGreedyProducer).flatMap {
+        $0.usesFusedGreedyHead ? $0 : nil
+    }
+    let fusedGreedy = fusedGreedyRunner != nil
     guard !fusedGreedy || config.isPureGreedy else {
         throw PrefillError.unsupportedPrefillSeed(
             "the fused-head producer cannot serve this sampling configuration; use a logits head")
@@ -266,8 +271,8 @@ public func runRawCompletion(producer: any LogitProducer,
                 tokenID = try sampleOnce(scratch: scratch, context: context,
                                          history: history, config: config, position: generated)
             }
-        } else if fusedGreedy {
-            tokenID = Int32(bitPattern: fusedRunner!.lastGreedyToken)
+        } else if let fusedGreedyRunner {
+            tokenID = Int32(bitPattern: fusedGreedyRunner.lastGreedyToken)
         } else {
             tokenID = try sampleOnce(scratch: scratch, context: context,
                                      history: history, config: config, position: generated)
@@ -328,7 +333,7 @@ public func runRawCompletion(producer: any LogitProducer,
 
 private func sampleOnce(scratch: RawCompletionScratch, context: MetalContext,
                         history: [Int32], config: GenerationConfig, position: Int) throws -> Int32 {
-    let cb = context.queue.makeCommandBuffer()!
+    let cb = try context.makeCommandBuffer()
     scratch.sampler.sample(commandBuffer: cb, logits: scratch.logits, probs: scratch.probs,
                            history: history, config: config, position: position,
                            outToken: scratch.outToken)

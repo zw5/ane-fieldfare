@@ -111,19 +111,22 @@ import Metal
                 // Alternate mode order per rep so drift does not favour one mode.
                 for mode in rep % 2 == 0 ? modes : modes.reversed() {
                     let before = Counters(runner)
-                    let decoder = try mode == "spec" ? SpeculativeDecoder(runner: runner, drafter: drafter!) : nil
+                    let decoder = try drafter.flatMap { drafter in
+                        try mode == "spec" ? SpeculativeDecoder(runner: runner, drafter: drafter) : nil
+                    }
                     let result = try await generate(prompt: text, tokens: options.tokens,
                                                     producer: decoder ?? runner, tokenizer: tokenizer,
                                                     context: context, scratch: scratch)
                     let delta = Counters(runner).minus(before)
+                    let decodeTPS = result.result.decodeSeconds > 0
+                        ? Double(result.result.newTokens) / result.result.decodeSeconds : 0
                     var record: [String: Any] = [
                         "prompt": name, "mode": mode, "rep": rep,
                         "prefill_tokens": result.result.prefillTokens,
                         "prefill_seconds": result.result.prefillSeconds,
                         "new_tokens": result.result.newTokens,
                         "decode_seconds": result.result.decodeSeconds,
-                        "decode_tps": result.result.decodeSeconds > 0
-                            ? Double(result.result.newTokens) / result.result.decodeSeconds : 0,
+                        "decode_tps": decodeTPS,
                         "generated_ids": result.ids.map(Int.init),
                         "counters": delta.json,
                     ]
@@ -140,7 +143,7 @@ import Metal
                     }
                     cases.append(record)
                     log(String(format: "  %-8@ %-5@ rep %d  %6.2f tok/s  %d tokens", name as NSString,
-                               mode as NSString, rep, record["decode_tps"] as! Double, result.result.newTokens))
+                               mode as NSString, rep, decodeTPS, result.result.newTokens))
                 }
             }
         }
@@ -226,8 +229,8 @@ import Metal
     static func stepSamples(runner: RealForwardRunner, prompt: [Int32], generated: [Int32]) async throws
         -> [[String: Any]] {
         guard generated.count >= 96 else { return [] }
-        let device = MTLCreateSystemDefaultDevice()!
-        guard let logits = device.makeBuffer(length: 262_144 * 2, options: .storageModeShared) else { return [] }
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let logits = device.makeBuffer(length: 262_144 * 2, options: .storageModeShared) else { return [] }
         let warm = 48
         let prefix = prompt + generated[0..<warm]
         runner.reset()

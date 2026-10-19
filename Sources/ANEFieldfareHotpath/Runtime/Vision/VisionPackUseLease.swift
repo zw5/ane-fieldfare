@@ -2,7 +2,10 @@ import Darwin
 import Foundation
 import ANEFieldfareImportedFormat
 
-public final class VisionPackUseLease: @unchecked Sendable {
+/// A shared `flock` on the vision pack's use lock, held for as long as this
+/// value lives. Noncopyable: exactly one owner holds the lock, and dropping
+/// that owner releases it.
+public struct VisionPackUseLease: ~Copyable, Sendable {
     /// How long `acquireShared` waits for a mutation to finish before giving
     /// up. A blocking `flock` would wait forever, so a stuck installer would
     /// hang model load with nothing to report.

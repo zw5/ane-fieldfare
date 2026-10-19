@@ -78,11 +78,11 @@ final class DequantInt4GEMV {
                     y: MTLBuffer, yOffset: Int = 0,
                     m: UInt32, n: UInt32, rows: Int,
                     xStrideElements: Int, yStrideElements: Int,
-                    types: RowsTypes = .f16) {
+                    types: RowsTypes = .f16) throws {
         precondition(rows > 0 && rows <= Self.maxBatchRows, "rows=\(rows) outside 1...\(Self.maxBatchRows)")
         precondition(n % UInt32(Quantization.groupSize) == 0 && weightsOffset % 2 == 0)
         if rows >= Self.matrixMinRows, n % 128 == 0, types != .bf16 {
-            encodeRowsMatrix(commandBuffer: commandBuffer,
+            try encodeRowsMatrix(commandBuffer: commandBuffer,
                              weights: weights, weightsOffset: weightsOffset,
                              scales: scales, scalesOffset: scalesOffset,
                              biases: biases, biasesOffset: biasesOffset,
@@ -93,7 +93,7 @@ final class DequantInt4GEMV {
             return
         }
         let weightRows = Self.weightRowsPerSIMD(rows: rows)
-        let pipeline = try! context.pipeline(
+        let pipeline = try context.pipeline(
             types.rawValue,
             constants: [
                 MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
@@ -128,8 +128,8 @@ final class DequantInt4GEMV {
                                   biases: MTLBuffer, biasesOffset: Int,
                                   x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int,
                                   m: UInt32, n: UInt32, rows: Int,
-                                  xStrideElements: Int, yStrideElements: Int, f32: Bool) {
-        let pipeline = try! context.pipeline(
+                                  xStrideElements: Int, yStrideElements: Int, f32: Bool) throws {
+        let pipeline = try context.pipeline(
             f32 ? "dequant_int4_gemv_rows_mma_f32" : "dequant_int4_gemv_rows_mma",
             constants: [
                 MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
