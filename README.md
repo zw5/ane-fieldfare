@@ -96,7 +96,8 @@ Scripts/build.sh     # builds the CLI into .build/
 
 Add `--backend hybrid-ane` to use the Neural Engine for the prompt, or
 `--drafter checkpoints/dflash/gemma-4-26B-A4B-it-DFlash` for speculative
-decoding (requires `--temperature 0` and a text prompt). `--help` lists every
+decoding (greedy or sampled; requires a text prompt and no repetition
+penalty). `--help` lists every
 option, including `--image` for image input.
 
 ### Options that choose where work runs
@@ -221,10 +222,22 @@ The pipeline is built so the GPU never waits for the CPU:
 - **Weights from the file cache.** The drafter's 4-bit weights are installed
   once into a file and read in place, like the experts.
 
-Speculative output is the same as plain greedy output except where two tokens
-score almost equally: verifying several tokens at once does the arithmetic in a
-different order, which can flip a near-tie. In testing the first such
-difference came after 90 to 356 tokens.
+- **Sampling keeps the speedup.** With a temperature above 0, every token is
+  drawn the same way everywhere: the largest of (logit ÷ T + noise), over the
+  tokens top-k and top-p allow, where the noise depends only on the seed, the
+  token's position and the token (the Gumbel-max trick, an exact sample from
+  the tempered distribution). The drafter draws its guesses with the same
+  noise, so a draft is kept exactly when it equals the main model's own draw.
+  The output is therefore the main model's sampled text for that seed, the
+  same text plain decoding draws, and on the quick suite sampling at
+  temperature 0.6–1.0 ran 1.4–1.9× faster with the drafter, as greedy does.
+
+Speculative output is the same as plain output for the same settings except
+where two tokens score almost equally: verifying several tokens at once does
+the arithmetic in a different order, which can flip a near-tie. In greedy
+testing the first such difference came after 90 to 356 tokens; with sampling
+it is a near-tie in the noisy race, as rare (one of twelve 192-token sampled
+runs differed, from token 32).
 
 ### Hot-vocabulary shortcut
 

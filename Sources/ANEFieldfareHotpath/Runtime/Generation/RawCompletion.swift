@@ -26,7 +26,7 @@ func runRawPrefill(
     multimodalInput: MultimodalPrefillInput?,
     prefillConfig requestedPrefillConfig: PrefillRuntimeConfig,
     outputMode: PrefillOutputMode,
-    isPureGreedy: Bool,
+    producerPicksTokens: Bool,
     historyReserve: Int,
     scratch: RawCompletionScratch,
     onProgress: (RawDecodeProgress) -> Void
@@ -52,7 +52,7 @@ func runRawPrefill(
             throw PrefillError.unsupportedPrefillSeed(
                 "RawCompletion \(path) prefill requested logits but producer returned \(seed)")
         }
-        if case .greedyToken = seed, !isPureGreedy {
+        if case .greedyToken = seed, !producerPicksTokens {
             throw PrefillError.unsupportedPrefillSeed(
                 "RawCompletion \(path) prefill returned a greedy token for a sampling config")
         }
@@ -222,10 +222,17 @@ public func runRawCompletion(producer: some LogitProducer,
         $0.usesFusedGreedyHead ? $0 : nil
     }
     let fusedGreedy = fusedGreedyRunner != nil
-    guard !fusedGreedy || config.isPureGreedy else {
+    // A sampling producer draws on the GPU itself, for any config that does
+    // not need the logits on the host (a repetition penalty does).
+    let gpuSampling = TokenSampling(config: config)
+    let samplingProducer = fusedGreedy ? producer as? any SamplingTokenProducer : nil
+    let sampledOnGPU = gpuSampling != nil && samplingProducer != nil
+    guard !fusedGreedy || config.isPureGreedy || sampledOnGPU else {
         throw PrefillError.unsupportedPrefillSeed(
             "the fused-head producer cannot serve this sampling configuration; use a logits head")
     }
+    if sampledOnGPU { samplingProducer?.tokenSampling = gpuSampling }
+    defer { if sampledOnGPU { samplingProducer?.tokenSampling = nil } }
 
     var detok = GFDetokenizer(tokenizer: tokenizer,
                               barrierTokenIDs: tokenizer.structuralMarkerIDs)
@@ -243,7 +250,7 @@ public func runRawCompletion(producer: some LogitProducer,
         multimodalInput: multimodalInput,
         prefillConfig: prefillConfig,
         outputMode: fusedGreedy ? .greedyIfAvailable : .logits,
-        isPureGreedy: config.isPureGreedy,
+        producerPicksTokens: config.isPureGreedy || sampledOnGPU,
         historyReserve: promptIds.count + config.maxNewTokens,
         scratch: scratch,
         onProgress: onProgress)

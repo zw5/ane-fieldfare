@@ -69,6 +69,37 @@ public struct GenerationConfig: Sendable {
 
 }
 
+/// A sampling rule a producer applies on the GPU (`sample_rows_f32`): each
+/// token is the Gumbel-max over its truncated tempered logits, with noise
+/// keyed by (seed, the token's position, token id). Every producer drawing
+/// a position draws the same noise, so a drafter's draft matches the
+/// target's draw exactly when both pick the same token, and a seed gives the
+/// same text with or without a drafter. Truncation follows `Sampler`'s order;
+/// the noise differs from `Sampler`'s, so a seed gives different text than
+/// the host-sampled path.
+public struct TokenSampling: Sendable, Equatable {
+    public var temperature: Float
+    public var topK: Int?
+    public var topP: Float
+    public var seed: UInt64
+
+    public init(temperature: Float, topK: Int?, topP: Float, seed: UInt64) {
+        self.temperature = temperature
+        self.topK = topK
+        self.topP = topP
+        self.seed = seed
+    }
+
+    /// The rule for a sampling `config`, or nil when the config is greedy or
+    /// needs the host (a repetition penalty reads the history).
+    public init?(config: GenerationConfig) {
+        guard config.temperature > 0, config.repetitionPenalty == 1 else { return nil }
+        var generator = SystemRandomNumberGenerator()
+        self.init(temperature: config.temperature, topK: config.topK, topP: config.topP ?? 1,
+                  seed: config.seed ?? generator.next())
+    }
+}
+
 /// Which path a `sample(...)` call took.
 enum SamplePath: Sendable, Equatable {
     case greedyGPU

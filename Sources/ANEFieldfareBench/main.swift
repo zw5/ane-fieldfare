@@ -23,6 +23,8 @@ import Metal
         var suite = "quick"
         var label = "run"
         var out: String?
+        /// 0 is greedy; above it, top-k 64, top-p 0.95 and a fixed seed.
+        var temperature: Float = 0
     }
 
     static let prompts: [(String, String)] = [
@@ -60,6 +62,7 @@ import Metal
             case "--suite": options.suite = try value()
             case "--label": options.label = try value()
             case "--out": options.out = try value()
+            case "--temperature": options.temperature = Float(try value()) ?? 0
             default: throw BenchError("unknown flag \(argv[i])")
             }
         }
@@ -96,14 +99,15 @@ import Metal
         // Plain decode guesses its head from the hot vocabulary unless
         // ANE_FIELDFARE_HOT_HEAD=0; output is the same either way.
         let useHotHead = ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOT_HEAD"] != "0"
+            && options.temperature == 0
         // Warm-up: compiles pipelines and fills the page cache the same way for
         // both builds before anything is measured.
-        _ = try await generate(prompt: promptSet[0].1, tokens: 48,
+        _ = try await generate(prompt: promptSet[0].1, tokens: 48, temperature: options.temperature,
                                producer: (useHotHead ? HotHeadDecoder(runner: runner) : nil) ?? runner,
                                tokenizer: tokenizer,
                                context: context, scratch: scratch)
         if let drafter {
-            _ = try await generate(prompt: promptSet[0].1, tokens: 48,
+            _ = try await generate(prompt: promptSet[0].1, tokens: 48, temperature: options.temperature,
                                    producer: try SpeculativeDecoder(runner: runner, drafter: drafter),
                                    tokenizer: tokenizer, context: context, scratch: scratch)
         }
@@ -122,7 +126,7 @@ import Metal
                     }
                     let hot = useHotHead ? HotHeadDecoder(runner: runner) : nil
                     let plain: any LogitProducer = hot ?? runner
-                    let result = try await generate(prompt: text, tokens: options.tokens,
+                    let result = try await generate(prompt: text, tokens: options.tokens, temperature: options.temperature,
                                                     producer: decoder ?? plain, tokenizer: tokenizer,
                                                     context: context, scratch: scratch)
                     GPUTrace.end("case \(name) \(mode) rep \(rep)", since: traceCase)
@@ -166,6 +170,7 @@ import Metal
             "label": options.label,
             "environment": environment(),
             "options": ["tokens": options.tokens, "reps": options.reps, "suite": options.suite,
+                        "temperature": options.temperature,
                         "drafter": options.drafter as Any? ?? NSNull(), "max_context": maxContext],
             "cases": cases,
             "steps": steps,
@@ -187,14 +192,17 @@ import Metal
         let prompt: [Int32]
     }
 
-    static func generate(prompt: String, tokens: Int, producer: any LogitProducer, tokenizer: GFTokenizer,
+    static func generate(prompt: String, tokens: Int, temperature: Float = 0, producer: any LogitProducer,
+                         tokenizer: GFTokenizer,
                          context: MetalContext, scratch: RawCompletionScratch) async throws -> Generation {
         let ids = tokenizer.encode(try tokenizer.applyChatTemplate([.init(role: .user, content: prompt)]),
                                    addBOS: false)
         var generated: [Int32] = []
         let result = try await runRawCompletion(
             producer: producer, tokenizer: tokenizer, promptIds: ids,
-            config: GenerationConfig(maxNewTokens: tokens, temperature: 0, topK: nil, topP: nil),
+            config: temperature == 0
+                ? GenerationConfig(maxNewTokens: tokens, temperature: 0, topK: nil, topP: nil)
+                : GenerationConfig(maxNewTokens: tokens, temperature: temperature, topK: 64, topP: 0.95, seed: 5),
             context: context, scratch: scratch,
             prefillConfig: .production(chunkTokens: PrefillRuntimeConfig.autoChunkTokens(promptTokens: ids.count))
         ) { progress in

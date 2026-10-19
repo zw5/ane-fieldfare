@@ -34,6 +34,9 @@ final class LMHeadChainInt4 {
     private let rowReducer: any MTLComputePipelineState
     private let rowsProjection: DequantInt4GEMV
     private let rowsArgmax: any MTLComputePipelineState
+    private let rowsSample: any MTLComputePipelineState
+    /// A zero `UInt32`, the key offset of a draw whose positions are known.
+    private let zeroKeyOffset: any MTLBuffer
     private let xNormedRowsBuffer: any MTLBuffer
     private let rowsLogitsBuffer: any MTLBuffer
     /// Per-row greedy-token probability from the last `encodeGreedyRows`.
@@ -67,6 +70,12 @@ final class LMHeadChainInt4 {
         }
         self.rowsProjection = try DequantInt4GEMV(context: context)
         self.rowsArgmax = try context.pipeline("argmax_rows_f32")
+        self.rowsSample = try context.pipeline("sample_rows_f32")
+        guard let zero = context.device.makeBuffer(length: 16, options: .storageModeShared) else {
+            throw MetalError.noDevice
+        }
+        unsafe memset(zero.contents(), 0, 16)
+        self.zeroKeyOffset = zero
         self.maxD = maxD
         self.maxVocab = maxVocab
 
@@ -124,7 +133,8 @@ final class LMHeadChainInt4 {
                           d: UInt32,
                           vocab: UInt32,
                           rmsEps: Float = 1e-6,
-                          softcap: Float = 0) throws {
+                          softcap: Float = 0,
+                          sampling: RowSampling? = nil) throws {
         precondition(rowCount > 0 && rowCount <= Self.maxGreedyRows,
                      "rowCount=\(rowCount) outside 1...\(Self.maxGreedyRows)")
         precondition(Int(d) <= maxD && Int(vocab) <= maxVocab)
@@ -148,20 +158,9 @@ final class LMHeadChainInt4 {
                                   m: vocab, n: d, rows: rowCount,
                                   xStrideElements: Int(d), yStrideElements: Int(vocab),
                                   types: .f16ToF32)
-        if let encoder = commandBuffer.makeTracedComputeEncoder() {
-            let vocabValue = vocab
-            encoder.setComputePipelineState(rowsArgmax)
-            encoder.setBuffer(rowsLogitsBuffer, offset: 0, index: 0)
-            encoder.setBuffer(outTokens, offset: outTokensOffset, index: 1)
-            encoder.setValue(vocabValue, index: 2)
-            encoder.setBuffer(rowsConfidence, offset: 0, index: 3)
-            let cap = softcap
-            encoder.setValue(cap, index: 4)
-            encoder.dispatchThreadgroups(
-                MTLSize(width: rowCount, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
-            encoder.endEncoding()
-        }
+        encodeChoice(commandBuffer: commandBuffer, rowCount: rowCount, count: vocab, ids: nil,
+                     outTokens: outTokens, outTokensOffset: outTokensOffset, softcap: softcap,
+                     sampling: sampling)
     }
 
     /// `encodeGreedyRows` over `table`'s rows only: each row's greedy token
@@ -182,7 +181,8 @@ final class LMHeadChainInt4 {
                              outIndices: any MTLBuffer,
                              d: UInt32,
                              rmsEps: Float = 1e-6,
-                             softcap: Float = 0) throws {
+                             softcap: Float = 0,
+                             sampling: RowSampling? = nil) throws {
         precondition(rowCount > 0 && rowCount <= Self.maxGreedyRows && table.count > 0)
         precondition(Int(d) <= maxD && Int(d) % 256 == 0)
         let rowBytes = Int(d) * MemoryLayout<Float16>.stride
@@ -200,20 +200,51 @@ final class LMHeadChainInt4 {
                                             ids: table.ids, x: xNormedRowsBuffer, y: rowsLogitsBuffer,
                                             m: UInt32(table.count), n: d, rows: rowCount,
                                             xStrideElements: Int(d), yStrideElements: table.count)
-        if let encoder = commandBuffer.makeTracedComputeEncoder() {
-            let count = UInt32(table.count)
+        encodeChoice(commandBuffer: commandBuffer, rowCount: rowCount, count: UInt32(table.count),
+                     ids: table.ids, outTokens: outIndices, outTokensOffset: 0, softcap: softcap,
+                     sampling: sampling)
+    }
+
+    /// How a row of the FP32 logits picks its token: the argmax, or a draw
+    /// under `rule` (`sample_rows_f32`) for the token at position `keyBase`
+    /// + row, plus the `UInt32` at `keyOffset` when the base lives on the GPU.
+    struct RowSampling {
+        let rule: TokenSampling
+        let keyBase: Int
+        var keyOffset: (any MTLBuffer)?
+    }
+
+    private func encodeChoice(commandBuffer: any MTLCommandBuffer, rowCount: Int, count: UInt32,
+                              ids: (any MTLBuffer)?, outTokens: any MTLBuffer, outTokensOffset: Int,
+                              softcap: Float, sampling: RowSampling?) {
+        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        encoder.setBuffer(rowsLogitsBuffer, offset: 0, index: 0)
+        encoder.setBuffer(outTokens, offset: outTokensOffset, index: 1)
+        if let sampling, sampling.rule.temperature > 0 {
+            struct Params {
+                var temperature: Float, topP: Float, topK: UInt32, count: UInt32, keyBase: UInt32
+                var listed: UInt32, softcap: Float, seedLo: UInt32, seedHi: UInt32
+            }
+            let rule = sampling.rule
+            let params = Params(temperature: rule.temperature, topP: rule.topP, topK: UInt32(rule.topK ?? 0),
+                                count: count, keyBase: UInt32(sampling.keyBase), listed: ids == nil ? 0 : 1,
+                                softcap: softcap, seedLo: UInt32(truncatingIfNeeded: rule.seed),
+                                seedHi: UInt32(truncatingIfNeeded: rule.seed >> 32))
+            encoder.setComputePipelineState(rowsSample)
+            encoder.setBuffer(rowsConfidence, offset: 0, index: 2)
+            encoder.setValue(params, index: 3)
+            encoder.setBuffer(ids ?? zeroKeyOffset, offset: 0, index: 4)
+            encoder.setBuffer(sampling.keyOffset ?? zeroKeyOffset, offset: 0, index: 5)
+        } else {
             encoder.setComputePipelineState(rowsArgmax)
-            encoder.setBuffer(rowsLogitsBuffer, offset: 0, index: 0)
-            encoder.setBuffer(outIndices, offset: 0, index: 1)
             encoder.setValue(count, index: 2)
             encoder.setBuffer(rowsConfidence, offset: 0, index: 3)
-            let cap = softcap
-            encoder.setValue(cap, index: 4)
-            encoder.dispatchThreadgroups(
-                MTLSize(width: rowCount, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
-            encoder.endEncoding()
+            encoder.setValue(softcap, index: 4)
         }
+        encoder.dispatchThreadgroups(
+            MTLSize(width: rowCount, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
+        encoder.endEncoding()
     }
 
     func encodeGreedyDecode(commandBuffer: any MTLCommandBuffer,

@@ -21,6 +21,12 @@ public protocol FusedGreedyProducer: LogitProducer {
     var lastGreedyToken: UInt32 { get }
 }
 
+/// A fused-head producer that also samples on the GPU: with `tokenSampling`
+/// set, `lastGreedyToken` is its sampled token instead of the argmax.
+public protocol SamplingTokenProducer: FusedGreedyProducer {
+    var tokenSampling: TokenSampling? { get set }
+}
+
 protocol ContextWindowReporting {
     var maxContext: Int { get }
 }

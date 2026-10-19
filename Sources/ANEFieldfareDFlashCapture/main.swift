@@ -158,6 +158,13 @@ private struct Generation: Decodable {
             let runner = try RealForwardRunner(
                 model: model, context: context, maxContext: 4096,
                 runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
+            // `ANE_FIELDFARE_VERIFY_SAMPLE=temperature,topK,topP,seed` checks a
+            // sampled generation drawn under that rule.
+            if let rule = ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_SAMPLE"]?
+                .split(separator: ",").compactMap({ Double($0) }), rule.count == 4 {
+                runner.tokenSampling = TokenSampling(temperature: Float(rule[0]), topK: Int(rule[1]),
+                                                     topP: Float(rule[2]), seed: UInt64(rule[3]))
+            }
             guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
                                                          options: .storageModeShared) else { fail("alloc", 1) }
             let prompt = generation.prompt_token_ids
@@ -216,6 +223,11 @@ private struct Generation: Decodable {
         let drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
         let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter, maxBlock: block)
+        if let rule = ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_SAMPLE"]?
+            .split(separator: ",").compactMap({ Double($0) }), rule.count == 4 {
+            decoder.tokenSampling = TokenSampling(temperature: Float(rule[0]), topK: Int(rule[1]),
+                                                  topP: Float(rule[2]), seed: UInt64(rule[3]))
+        }
         guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
                                                      options: .storageModeShared) else { fail("alloc", 1) }
         let prompt = generation.prompt_token_ids, reference = generation.generated_token_ids

@@ -162,10 +162,11 @@ extension Args {
       --early-expert-read <s>    Decode early read of the next layer's likeliest
                                  experts in idle storage time: off, router or
                                  fitted (default fitted).
-      --drafter <dir>            DFlash drafter checkpoint: speculative greedy
-                                 decoding, with each step's verify length chosen
-                                 from measured cost and acceptance. Requires
-                                 --temperature 0 and a text prompt.
+      --drafter <dir>            DFlash drafter checkpoint: speculative decoding,
+                                 greedy or sampled (the same text as without it
+                                 for a given --seed), with each step's verify
+                                 length chosen from measured cost and acceptance.
+                                 Requires a text prompt and no repetition penalty.
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
       --prefill-chunk-tokens <n|auto>
                                  Prefill chunk size: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedPrefillChunkTokens, alsoAccepting: ["auto"]))
@@ -396,9 +397,9 @@ extension Args {
                 throw ArgsError.mutuallyExclusive("--prompt-file", flag)
             }
         }
-        if drafter != nil, temperature != 0 || repetitionPenalty != 1 {
+        if drafter != nil, repetitionPenalty != 1 {
             throw ArgsError.invalidValue(
-                flag: "--drafter", value: "speculative decoding is greedy: use --temperature 0")
+                flag: "--drafter", value: "speculative decoding cannot apply a repetition penalty")
         }
         if drafter != nil, !images.isEmpty {
             throw ArgsError.mutuallyExclusive("--drafter", "--image")
