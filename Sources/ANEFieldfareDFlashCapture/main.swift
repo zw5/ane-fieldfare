@@ -213,7 +213,7 @@ private struct Generation: Decodable {
         let runner = try RealForwardRunner(
             model: model, context: context, maxContext: 4096,
             runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
-        let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
+        let drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
         let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter, maxBlock: block)
         guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
@@ -259,7 +259,7 @@ private struct Generation: Decodable {
         let runner = try RealForwardRunner(
             model: model, context: context, maxContext: 4096,
             runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
-        let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
+        let drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
         let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter)
         guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2, options: .storageModeShared) else {

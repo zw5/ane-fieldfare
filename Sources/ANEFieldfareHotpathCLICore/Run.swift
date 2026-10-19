@@ -245,7 +245,7 @@ public func run(args: Args,
             guard multimodalInput == nil else {
                 return errored(stderr, "--drafter requires a text prompt", 2)
             }
-            let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
+            let drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                             context: context, maxContext: args.maxContext)
             speculative = try SpeculativeDecoder(runner: runner, drafter: drafter)
         }

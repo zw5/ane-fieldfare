@@ -60,7 +60,7 @@ struct DFlashChainedDraftTests {
         let context = try MetalContext()
         let model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device)
         let runner = try RealForwardRunner(model: model, context: context, maxContext: 1024)
-        let drafter = try DFlashDrafter(directory: try #require(installedDrafterURL), model: model,
+        let drafter = try await DFlashDrafter(directory: try #require(installedDrafterURL), model: model,
                                         context: context, maxContext: 1024)
         let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter)
         let prompt = syntheticTokens(48, seed: "draft-prompt")
@@ -84,6 +84,7 @@ struct DFlashChainedDraftTests {
             try drafter.encodeDraft(cb, rows: rows)
             cb.commit()
             chained = cb
+            return cb
         }
         let cb = try #require(chained)
         await cb.completed()
@@ -109,13 +110,56 @@ struct DFlashChainedDraftTests {
         #expect(gpu.confidences.map(\.bitPattern) == drafter.drafts(count: rows).confidences.map(\.bitPattern))
     }
 
+    /// Speculative decoding end to end against plain greedy decoding on a
+    /// chat prompt: accepted drafts handed out one per call, chained drafts,
+    /// truncated verifies and plain steps must reproduce the plain output.
+    /// The two may legitimately part at a near-tie (batched and single-row
+    /// arithmetic round differently); this prompt's first one is at token
+    /// 102, past the tokens compared.
+    @Test func speculativeOutputIsPlainGreedyOutput() async throws {
+        let context = try MetalContext()
+        let model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device)
+        let runner = try RealForwardRunner(model: model, context: context, maxContext: 1024)
+        let drafter = try await DFlashDrafter(directory: try #require(installedDrafterURL), model: model,
+                                              context: context, maxContext: 1024)
+        // "Write a Python function that merges overlapping intervals in a
+        // list, with a docstring and a short example." in the chat template.
+        let prompt: [Int32] = [2, 105, 2364, 107, 6974, 496, 17856, 1292, 600, 130450, 48490, 20312, 528, 496,
+                               1694, 236764, 607, 496, 6484, 2383, 532, 496, 2822, 2591, 236761, 106, 107, 105,
+                               4368, 107, 100, 45518, 107, 101]
+        let logits = try #require(context.device.makeBuffer(length: model.config.vocabSize * 2,
+                                                             options: .storageModeShared))
+        func generate(_ producer: any FusedGreedyProducer & ChunkedPrefillRunner, count: Int) async throws -> [Int32] {
+            let prefill = try await producer.prefillChunked(
+                tokens: prompt[...], startPosition: 0, outputMode: .greedyIfAvailable,
+                config: .production(chunkTokens: 64), into: logits, onProgress: { _ in })
+            guard case .greedyToken(let first) = prefill.seed else { return [] }
+            var tokens = [Int32(bitPattern: first)]
+            while tokens.count < count {
+                try await producer.produce(token: tokens[tokens.count - 1],
+                                           position: prompt.count + tokens.count - 1, into: logits)
+                tokens.append(Int32(bitPattern: producer.lastGreedyToken))
+            }
+            return tokens
+        }
+        let plain = try await generate(runner, count: 64)
+        runner.reset()
+        let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter)
+        let speculative = try await generate(decoder, count: 64)
+        #expect(plain.count == 64)
+        #expect(speculative == plain)
+        #expect(decoder.stats.speculativeSteps > 0 && decoder.stats.acceptedDrafts > 0)
+    }
+
     /// The installed INT4 weights hold each source row where the fused
     /// layout puts it, within the INT4 rounding bound of the BF16 source.
     @Test func installedWeightsMatchTheCheckpoint() throws {
         let directory = try #require(installedDrafterURL)
         let context = try MetalContext()
         let config = try DFlashDrafterConfig.load(directory.appendingPathComponent("config.json"))
-        let weights = try DFlashWeights.open(directory: directory, config: config, device: context.device)
+        let layout = try DFlashWeights.install(directory: directory, config: config)
+        let weights = try DFlashWeights.open(directory: directory, layout: layout, config: config,
+                                             device: context.device)
         let source = try Data(contentsOf: directory.appendingPathComponent("model.safetensors"),
                               options: .alwaysMapped)
         let headerLength = source.prefix(8).enumerated().reduce(0) { $0 | Int($1.element) << (8 * $1.offset) }

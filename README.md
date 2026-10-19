@@ -22,7 +22,7 @@ GPU when it doesn't have to.
 | Prefill, 3,015-token prompt, GPU only | 15.3 s (started at 24.0 s) |
 
 Measured with the A/B harness in `Scripts/bench/` (except prefill, which is
-single runs). Every step is in [docs/PERFORMANCE_LOG.md](docs/PERFORMANCE_LOG.md).
+single runs). Every step is in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## What's in here
 
@@ -252,7 +252,7 @@ Prefill of a 3,015-token prompt: 8.8 s with `hybrid-ane`, 15.3 s with `metal`
 (single runs).
 
 How these numbers were reached, step by step, including what was tried and
-rejected: [docs/PERFORMANCE_LOG.md](docs/PERFORMANCE_LOG.md).
+rejected: [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Testing
 
@@ -309,7 +309,7 @@ build. The quick suite takes about 90 s.
 | `Sources/ANEFieldfareDFlashCapture` | Records hidden states and routes for drafter work (`Scripts/dflash/`). |
 | `Tests/` | Test suites, CPU reference implementations and fixture generators. |
 | `Scripts/` | Build, test, lint and benchmark scripts. |
-| `docs/` | Performance log, ANE reverse-engineering notes and research notes. |
+| `PERFORMANCE.md` | The optimization history: every change, its measurements, and what was tried and rejected. |
 
 ## License and credits
 

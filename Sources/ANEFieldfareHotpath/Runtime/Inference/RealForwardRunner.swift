@@ -226,8 +226,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// `ANE_FIELDFARE_HOST_ROUTED_VERIFY` plans every layer on the host.
     var gpuRoutedVerify = ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOST_ROUTED_VERIFY"] == nil
     /// Guessed experts per verify row a GPU-routed layer binds.
-    private let verifyBindTop = ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_BIND_TOP"]
-        .flatMap(Int.init) ?? 48
+    private lazy var verifyBindTop = max(1, min(cfg.numExperts,
+        ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_BIND_TOP"].flatMap(Int.init) ?? 48))
     /// Per layer, the GPU-routed verify pass's bound experts.
     private let verifyBoundList: any MTLBuffer
     /// Verify routes the GPU-routed pass ran, and layers that needed a host
@@ -500,14 +500,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// IDs from `tokens` on the GPU (so a drafter's output feeds it without a
     /// host copy), and leaves each row's greedy next token in `greedy` as
     /// `UInt32`. `behindHead`, when given, runs once the final head is
-    /// committed and before it is waited on, to queue dependent GPU work.
+    /// committed, to queue dependent GPU work; the command buffer it returns,
+    /// if any, is the one waited on instead of the head, so the caller's
+    /// work and the verify complete under one host wait.
     ///
     /// The layers are pipelined: while the GPU runs a layer's attention, the
     /// host encodes that layer's tail and the next layer's attention and
     /// shared FFN, so once the routes are back the only work between the
     /// router and the next layer is planning and committing the routed tiles.
     func verifyBlock(rows t: Int, startPosition: Int, tokens: any MTLBuffer, greedy: any MTLBuffer,
-                     behindHead: (() throws -> Void)? = nil) async throws {
+                     behindHead: (() throws -> (any MTLCommandBuffer)?)? = nil) async throws {
         try prefillChunkState.requireClean(operation: "verify")
         guard t > 0, t <= Self.maxVerifyTokens else {
             throw PrefillError.chunkedUnsupported("verify takes 1...\(Self.maxVerifyTokens) rows, got \(t)")
@@ -522,6 +524,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 "FP16 KV ring capacity \(kv.ringCapacity(layer: ringLayer)) cannot hold a \(t)-row verify")
         }
         let scratch = try prefillScratch ?? ensurePrefillScratch(config: .production(chunkTokens: 32))
+        guard t <= scratch.layout.chunkTokens else {
+            throw PrefillError.chunkedUnsupported(
+                "verify of \(t) rows exceeds the \(scratch.layout.chunkTokens)-row scratch")
+        }
         let layers = try verifyLayers()
         let D = cfg.hiddenSize, topK = cfg.topKExperts, numExperts = cfg.numExperts
         let eps: Float = 1e-6
@@ -934,7 +940,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                         outTokens: greedy, d: UInt32(D), vocab: UInt32(cfg.vocabSize),
                                         rmsEps: eps)
         headCB.commit()
-        try behindHead?()
+        if let behind = try behindHead?() {
+            try waitForCompletion(behind)
+            submitted.append((behind, nil))
+        }
         try waitForCompletion(headCB)
         for (cb, counter) in submitted {
             try checkCommandBufferError(cb)
@@ -1533,26 +1542,24 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let rotatedPairs = isFull
                 ? UInt32(Double(cfg.fullHeadDim) * cfg.partialRotaryFactor / 2.0)
                 : UInt32(headDim / 2)
-            do {
-                prefillQKVEpilogue.encode(commandBuffer: cb,
-                                           q: scratch.q,
-                                           k: scratch.kStage,
-                                           v: scratch.vStage,
-                                           qWeight: views.qNorm.buffer,
-                                           qWeightOffset: Int(views.qNorm.offset),
-                                           kWeight: views.kNorm.buffer,
-                                           kWeightOffset: Int(views.kNorm.offset),
-                                           startPosition: UInt32(startPosition),
-                                           queryCount: UInt32(t),
-                                           headDim: UInt32(headDim),
-                                           numQHeads: UInt32(cfg.numHeads),
-                                           numKVHeads: UInt32(numKVHeads),
-                                           qTokenStrideElements: UInt32(qDim),
-                                           kvTokenStrideElements: UInt32(kvDim),
-                                           theta: isFull ? Float(cfg.fullRopeTheta) : Float(cfg.ropeTheta),
-                                           rotatedPairs: rotatedPairs,
-                                           eps: eps)
-            }
+            prefillQKVEpilogue.encode(commandBuffer: cb,
+                                       q: scratch.q,
+                                       k: scratch.kStage,
+                                       v: scratch.vStage,
+                                       qWeight: views.qNorm.buffer,
+                                       qWeightOffset: Int(views.qNorm.offset),
+                                       kWeight: views.kNorm.buffer,
+                                       kWeightOffset: Int(views.kNorm.offset),
+                                       startPosition: UInt32(startPosition),
+                                       queryCount: UInt32(t),
+                                       headDim: UInt32(headDim),
+                                       numQHeads: UInt32(cfg.numHeads),
+                                       numKVHeads: UInt32(numKVHeads),
+                                       qTokenStrideElements: UInt32(qDim),
+                                       kvTokenStrideElements: UInt32(kvDim),
+                                       theta: isFull ? Float(cfg.fullRopeTheta) : Float(cfg.ropeTheta),
+                                       rotatedPairs: rotatedPairs,
+                                       eps: eps)
 
             let bytes = t * kvDim * MemoryLayout<Float16>.stride
             try encodeKVCacheWrite(commandBuffer: cb,

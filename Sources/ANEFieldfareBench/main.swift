@@ -82,9 +82,10 @@ import Metal
         let maxContext = 4096
         let runner = try RealForwardRunner(model: model, context: context, maxContext: maxContext,
                                            runtimeConfiguration: RuntimeConfiguration())
-        let drafter = try options.drafter.map {
-            try DFlashDrafter(directory: URL(fileURLWithPath: $0), model: model, context: context,
-                              maxContext: maxContext)
+        var drafter: DFlashDrafter?
+        if let path = options.drafter {
+            drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: path), model: model, context: context,
+                                              maxContext: maxContext)
         }
         let scratch = try RawCompletionScratch(context: context, vocab: model.config.vocabSize)
         let promptSet = options.suite == "full" ? prompts : Array(prompts.prefix(3))

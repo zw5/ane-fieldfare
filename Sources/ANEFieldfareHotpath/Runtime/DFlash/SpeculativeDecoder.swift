@@ -63,12 +63,6 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         if runner.draftFeatureTap?.buffer === drafter.featureTap.buffer { runner.draftFeatureTap = nil }
     }
 
-    private nonisolated static func wait(_ cb: any MTLCommandBuffer) {
-        let traceStart = GPUTrace.begin()
-        defer { GPUTrace.end("gpu_wait", since: traceStart) }
-        cb.waitUntilCompleted()
-    }
-
     public func reset() {
         runner.reset()
         drafter.reset()
@@ -80,7 +74,12 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
     public func prefillChunked(tokens: ArraySlice<Int32>, startPosition: Int, outputMode: PrefillOutputMode,
                         config: PrefillRuntimeConfig, into logits: any MTLBuffer,
                         onProgress: (Int) -> Void) async throws -> PrefillResult {
+        // Whatever was queued or accepted past `startPosition` belongs to an
+        // abandoned continuation.
         chained = nil
+        plannedPlain = nil
+        accepted.removeAll()
+        if drafter.contextLength > startPosition { try drafter.truncateContext(to: startPosition) }
         try catchUp(to: startPosition)
         // A chunk's rows all land in the ring before the drafter reads them.
         try setRing(rows: min(config.chunkTokens, PrefillRuntimeConfig.maxChunkTokens))
@@ -176,27 +175,39 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
                             rows: Int, started: Date) async throws {
         let position = draft.position
         var nextLength = 1
-        var chainedCB: (any MTLCommandBuffer)?
+        var update: (any MTLCommandBuffer)?, draftCB: (any MTLCommandBuffer)?
         let verifyStart = Date()
+        // Behind the head: this block's rows into the drafter's context, the
+        // acceptance, and the next block's draft from the target's next
+        // token, which the next step verifies if it is anchored there. The
+        // verify waits for the last of them, so the step has one host wait.
         try await runner.verifyBlock(rows: rows, startPosition: position, tokens: drafter.block, greedy: verified) {
             [self] in
-            // Behind the head: this block's rows into the drafter's context,
-            // the acceptance, and the next block's draft from the target's
-            // next token, which the next step verifies if it is anchored there.
             nextLength = policy.next(limit: maxContext - position - rows)
             let cb = try runner.makeCommandBuffer()
-            cb.label = "dflash chained ctx=\(position) rows=\(rows) next=\(nextLength)"
+            cb.label = "dflash context+accept ctx=\(position) rows=\(rows)"
             try drafter.encodeContextUpdate(cb, position: position, rows: rows)
             drafter.encodeAccept(cb, verified: verified, rows: rows)
-            if nextLength >= 2 { try drafter.encodeDraft(cb, rows: nextLength) }
             cb.commit()
-            chainedCB = cb
+            update = cb
+            guard nextLength >= 2 else { return cb }
+            let draft = try runner.makeCommandBuffer()
+            draft.label = "dflash draft rows=\(nextLength)"
+            try drafter.encodeDraft(draft, rows: nextLength)
+            draft.commit()
+            draftCB = draft
+            return draft
         }
-        let verifySeconds = Date().timeIntervalSince(verifyStart)
+        let stepSeconds = Date().timeIntervalSince(verifyStart)
+        guard let update else { throw DFlashError.invalidState("verify ran no chained work") }
+        for cb in [update, draftCB].compactMap({ $0 }) {
+            if let error = cb.error { throw DFlashError.invalidState("chained drafter work failed: \(error)") }
+        }
+        // The verify's own time, without the drafter work queued behind it.
+        let draftGPU = draftCB.map { max(0, $0.gpuEndTime - $0.gpuStartTime) } ?? 0
+        let verifySeconds = max(0, stepSeconds - draftGPU - max(0, update.gpuEndTime - update.gpuStartTime))
         stats.verifySeconds += verifySeconds
-        guard let chainedCB else { throw DFlashError.invalidState("verify ran no chained work") }
-        Self.wait(chainedCB)
-        if let error = chainedCB.error { throw DFlashError.invalidState("chained draft failed: \(error)") }
+        stats.contextSeconds += max(0, update.gpuEndTime - update.gpuStartTime)
 
         let out = unsafe verified.contents().bindMemory(to: UInt32.self, capacity: rows)
         let greedy = (0..<rows).map { unsafe Int32(bitPattern: out[$0]) }
@@ -216,10 +227,9 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         }
         stats.speculativeSteps += 1
         stats.acceptedDrafts += count
-        let gpuSeconds = max(0, chainedCB.gpuEndTime - chainedCB.gpuStartTime)
-        stats.draftSeconds += gpuSeconds
+        stats.draftSeconds += draftGPU
         if nextLength >= 2 {
-            policy.recordDraft(length: nextLength, seconds: gpuSeconds)
+            policy.recordDraft(length: nextLength, seconds: draftGPU)
             let next = drafter.drafts(count: nextLength)
             chained = (position + count + 1, nextLength, next.tokens, next.confidences)
         } else {

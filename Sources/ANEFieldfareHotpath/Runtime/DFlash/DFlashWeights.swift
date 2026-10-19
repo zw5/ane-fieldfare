@@ -114,6 +114,12 @@ struct DFlashWeights {
     let norm: Int
     let layers: [Layer]
 
+    /// The installed file's tensor table, as `install` leaves it.
+    struct Layout: Sendable, Codable {
+        var tensors: [String: Int]
+        var dataBytes: Int
+    }
+
     private struct Header: Codable {
         var sourceBytes: Int
         var sourceModified: Double
@@ -122,9 +128,11 @@ struct DFlashWeights {
         var dataBytes: Int
     }
 
-    /// Opens the installed weights in `directory`, building them first if
-    /// they are missing or older than the checkpoint.
-    static func open(directory: URL, config: DFlashDrafterConfig, device: any MTLDevice) throws -> DFlashWeights {
+    /// Makes sure `directory` holds installed weights for its checkpoint,
+    /// building them if they are missing or older than `model.safetensors`,
+    /// and returns their layout. Blocking file I/O: callers on the Swift
+    /// concurrency pool run it through `BlockingIO`.
+    static func install(directory: URL, config: DFlashDrafterConfig) throws -> Layout {
         let source = directory.appendingPathComponent("model.safetensors")
         let installed = directory.appendingPathComponent(fileName)
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
@@ -132,15 +140,39 @@ struct DFlashWeights {
         let sourceModified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         if let header = try? readHeader(installed), header.sourceBytes == sourceBytes,
            header.sourceModified == sourceModified, header.config == config {
-            return try map(installed, header: header, config: config, device: device)
+            return Layout(tensors: header.tensors, dataBytes: header.dataBytes)
         }
         FileHandle.standardError.write(Data("[dflash] installing INT4 drafter weights to \(installed.path)\n".utf8))
+        removeStalePartials(in: directory)
         try build(source: source, into: installed, config: config,
                   fingerprint: (sourceBytes, sourceModified))
         guard let header = try? readHeader(installed) else {
             throw DFlashError.invalidCheckpoint("installed drafter weights are unreadable")
         }
-        return try map(installed, header: header, config: config, device: device)
+        return Layout(tensors: header.tensors, dataBytes: header.dataBytes)
+    }
+
+    /// Maps installed weights with `layout` (from `install`) as a no-copy
+    /// buffer over the page cache.
+    static func open(directory: URL, layout: Layout, config: DFlashDrafterConfig,
+                     device: any MTLDevice) throws -> DFlashWeights {
+        let mapped = try ResidentBuffer(fileURL: directory.appendingPathComponent(fileName),
+                                        fileOffset: UInt64(dataAlignment),
+                                        residentSize: UInt64(layout.dataBytes), device: device)
+        mapped.buffer.label = "dflash.weights"
+        return try DFlashWeights(buffer: mapped.buffer, tensors: layout.tensors, config: config)
+    }
+
+    /// Deletes partial installs left by processes that no longer run; a
+    /// live install's partial file belongs to it.
+    private static func removeStalePartials(in directory: URL) {
+        let prefix = ".\(fileName)."
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in names where name.hasPrefix(prefix) && name.hasSuffix(".partial") {
+            let pid = Int32(name.dropFirst(prefix.count).dropLast(".partial".count)) ?? 0
+            guard pid <= 0 || kill(pid, 0) != 0 else { continue }
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
     }
 
     private static func readHeader(_ url: URL) throws -> Header {
@@ -157,31 +189,32 @@ struct DFlashWeights {
         return try JSONDecoder().decode(Header.self, from: json)
     }
 
-    private static func map(_ url: URL, header: Header, config: DFlashDrafterConfig,
-                            device: any MTLDevice) throws -> DFlashWeights {
-        let mapped = try ResidentBuffer(fileURL: url, fileOffset: UInt64(dataAlignment),
-                                        residentSize: UInt64(header.dataBytes), device: device)
-        mapped.buffer.label = "dflash.weights"
-        return try DFlashWeights(buffer: mapped.buffer, tensors: header.tensors, config: config)
-    }
-
     private init(buffer: any MTLBuffer, tensors: [String: Int], config: DFlashDrafterConfig) throws {
-        func offset(_ name: String) throws -> Int {
-            guard let value = tensors[name] else { throw DFlashError.invalidCheckpoint("installed weights lack \(name)") }
+        // Every tensor must lie inside the mapping: a corrupt table would
+        // otherwise send the GPU past the end of the buffer.
+        func offset(_ name: String, bytes: Int) throws -> Int {
+            guard let value = tensors[name], value >= 0, value + bytes <= buffer.length else {
+                throw DFlashError.invalidCheckpoint("installed weights lack \(name) or it overruns the file")
+            }
             return value
         }
+        func vector(_ name: String, length: Int) throws -> Int { try offset(name, bytes: length * 2) }
         func matrix(_ name: String, rows: Int, columns: Int) throws -> DFlashMatrix {
-            DFlashMatrix(weights: try offset(name + ".q4"), scales: try offset(name + ".scales"),
-                         biases: try offset(name + ".biases"), rows: rows, columns: columns)
+            let groups = rows * columns / Quantization.groupSize
+            return DFlashMatrix(weights: try offset(name + ".q4", bytes: rows * columns / 2),
+                                scales: try offset(name + ".scales", bytes: groups * 2),
+                                biases: try offset(name + ".biases", bytes: groups * 2), rows: rows, columns: columns)
         }
         let D = config.hiddenSize, F = config.intermediateSize
         self.buffer = buffer
         fc = try matrix("fc", rows: D, columns: config.contextLayers.count * D)
-        hiddenNorm = try offset("hidden_norm")
-        norm = try offset("norm")
+        hiddenNorm = try vector("hidden_norm", length: D)
+        norm = try vector("norm", length: D)
         layers = try (0..<config.layers).map { l in
-            Layer(inputNorm: try offset("L\(l).input_norm"), postAttentionNorm: try offset("L\(l).post_attention_norm"),
-                  qNorm: try offset("L\(l).q_norm"), kNorm: try offset("L\(l).k_norm"),
+            Layer(inputNorm: try vector("L\(l).input_norm", length: D),
+                  postAttentionNorm: try vector("L\(l).post_attention_norm", length: D),
+                  qNorm: try vector("L\(l).q_norm", length: config.headDim),
+                  kNorm: try vector("L\(l).k_norm", length: config.headDim),
                   qkv: try matrix("L\(l).qkv", rows: config.qkvWidth, columns: D),
                   o: try matrix("L\(l).o", rows: D, columns: config.qWidth),
                   gateUp: try matrix("L\(l).gate_up", rows: 2 * F, columns: D),
@@ -312,6 +345,14 @@ struct DFlashWeights {
             close(fd)
             if !renamed { unsafe unlink(temporary.path) }
         }
+        // Allocate every block before writing through the mapping: a write
+        // to a sparse page the disk cannot back raises SIGBUS instead of an
+        // error.
+        var store = fstore_t(fst_flags: UInt32(F_ALLOCATEALL), fst_posmode: F_PEOFPOSMODE, fst_offset: 0,
+                             fst_length: off_t(fileBytes), fst_bytesalloc: 0)
+        guard unsafe fcntl(fd, F_PREALLOCATE, &store) != -1 else {
+            throw ModelError.posixFailed(call: "F_PREALLOCATE(\(temporary.path), \(fileBytes) bytes)", errno: errno)
+        }
         guard ftruncate(fd, off_t(fileBytes)) == 0 else {
             throw ModelError.posixFailed(call: "ftruncate(\(temporary.path))", errno: errno)
         }
@@ -369,7 +410,8 @@ struct DFlashWeights {
         // `concurrentPerform` returns.
         nonisolated(unsafe) let (wp, pp, sp, bp) = unsafe (source, packed, scales, biases)
         // SAFETY: one-time CPU quantization at install, fanned over GCD
-        // workers; it never runs on the Swift concurrency pool.
+        // workers. `install` runs on `BlockingIO`'s queue, so neither the
+        // caller nor the workers are Swift concurrency pool threads.
         DispatchQueue.concurrentPerform(iterations: rows) { row in
             for g in 0..<groupsPerRow {
                 let base = row * columns + g * Quantization.groupSize

@@ -59,8 +59,13 @@ public final class DFlashDrafter {
     // Context-update scratch.
     private let feature, contextHidden, contextKV: any MTLBuffer
 
-    public init(directory: URL, model: Model, context: MetalContext, maxContext: Int) throws {
-        let config = try DFlashDrafterConfig.load(directory.appendingPathComponent("config.json"))
+    /// Installs the drafter's INT4 weights next to its checkpoint on first
+    /// use (a few seconds, off the concurrency pool), then maps them.
+    public init(directory: URL, model: Model, context: MetalContext, maxContext: Int) async throws {
+        let (config, layout) = try await BlockingIO.run {
+            let config = try DFlashDrafterConfig.load(directory.appendingPathComponent("config.json"))
+            return (config, try DFlashWeights.install(directory: directory, config: config))
+        }
         guard config.hiddenSize == model.config.hiddenSize,
               config.contextLayers.allSatisfy({ $0 >= 0 && $0 < model.config.numLayers }),
               config.blockSize <= min(LMHeadChainInt4.maxGreedyRows, Self.maxRows) else {
@@ -70,7 +75,8 @@ public final class DFlashDrafter {
         self.ctx = context
         self.model = model
         self.maxContext = maxContext
-        self.weights = try DFlashWeights.open(directory: directory, config: config, device: context.device)
+        self.weights = try DFlashWeights.open(directory: directory, layout: layout, config: config,
+                                              device: context.device)
         self.int4 = try DequantInt4GEMV(context: context)
         self.head = try LMHeadChainInt4(context: context, maxD: config.hiddenSize, maxVocab: model.config.vocabSize)
         self.hotVocabulary = try ProcessInfo.processInfo.environment["ANE_FIELDFARE_DRAFT_HOT_HEAD"] == "0"

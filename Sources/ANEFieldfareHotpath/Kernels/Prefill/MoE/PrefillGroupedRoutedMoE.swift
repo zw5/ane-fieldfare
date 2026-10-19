@@ -472,6 +472,11 @@ final class PrefillGroupedRoutedMoE {
                            params: PrefillGroupedRoutedMoEStreamedParams) throws {
         guard boundCount > 0 else { return }
         precondition(rows > 0 && rows <= Self.verifyMaxRows)
+        // `verify_bound_plan` lists at most this many experts per row class.
+        guard boundCount <= Self.boundPlanClassEntries else {
+            throw PrefillGroupedRoutedMoEError.allocationFailed(
+                "\(boundCount) bound experts exceed the plan's \(Self.boundPlanClassEntries)")
+        }
         let routeCount = rows * Int(params.topK)
         let actBytes = routeCount * Int(params.routedIntermediate) * MemoryLayout<Float16>.stride
         let acts: any MTLBuffer
