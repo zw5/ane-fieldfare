@@ -184,28 +184,7 @@ public func run(args: Args,
         }
 
         let context = try MetalContext()
-        func loadModel(_ integrityPolicy: ModelIntegrityPolicy) throws -> Model {
-            try Model.load(
-                directoryURL: modelURL,
-                device: context.device,
-                integrityPolicy: integrityPolicy)
-        }
-        // The installer hashes every file once and records the result. Trust
-        // that receipt when it matches the install, so a run does not re-hash
-        // 13 GB of experts; hash everything when it is absent or invalid.
-        let model: Model
-        if args.verifyWeights {
-            model = try loadModel(.fullSha256)
-        } else {
-            do {
-                model = try loadModel(.sizeCheckTrustedReceipt)
-            } catch ModelError.trustedReceiptInvalid(let detail) {
-                if !args.quiet {
-                    stderr.write(Data("[install receipt not usable (\(detail)); verifying weights]\n".utf8))
-                }
-                model = try loadModel(.fullSha256)
-            }
-        }
+        let model = try Model.load(directoryURL: modelURL, device: context.device)
         let runner = try RealForwardRunner(
             model: model,
             context: context,
@@ -312,7 +291,6 @@ public func run(args: Args,
         }
         if ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOTPATH_PROFILE"] == "1" {
             let nanosPerSecond = 1_000_000_000.0
-            let routeDigest = unsafe String(format: "%016llx", runner.exactRouteDigest)
             let profile: [String: Any] = [
                 "schema": "ane-fieldfare.hotpath-profile.v1",
                 "requested_backend": args.backend.rawValue,
@@ -353,12 +331,6 @@ public func run(args: Args,
                     ? Double(stats.newTokens) / stats.decodeSeconds : 0,
                 "prompt_token_ids": promptIds,
                 "stop_reason": String(describing: stats.reason),
-                "exact_route_oracle": [
-                    "passed": runner.exactRouteSamples > 0 && runner.allRouteValuesFinite,
-                    "samples": runner.exactRouteSamples,
-                    "digest": routeDigest,
-                ],
-                "all_values_finite": runner.allRouteValuesFinite,
                 "fused_head": runner.usesFusedGreedyHead,
                 "new_tokens": stats.newTokens,
                 "generated_token_ids": generatedTokenIDs,

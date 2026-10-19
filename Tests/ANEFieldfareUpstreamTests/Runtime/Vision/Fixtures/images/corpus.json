@@ -14,7 +14,6 @@
       "processed_height": 768,
       "processed_width": 768,
       "quality_endpoint": true,
-      "sha256": "509868e60adbf510f3f8ca0707cf800923046763e267dd780fcb21d04ed377d5",
       "tokens": 256
     },
     {
@@ -31,7 +30,6 @@
       "processed_height": 672,
       "processed_width": 912,
       "quality_endpoint": true,
-      "sha256": "74de788bb77c1909b1d23fcda393e3dec0758cd4b5d1f04aff69045f1a323532",
       "tokens": 266
     },
     {
@@ -48,7 +46,6 @@
       "processed_height": 1056,
       "processed_width": 576,
       "quality_endpoint": true,
-      "sha256": "a0a90043b8888e8b33f3120b69627c6417e260ba60dc6df9ce1b3aebda4d5ef7",
       "tokens": 264
     },
     {
@@ -65,7 +62,6 @@
       "processed_height": 288,
       "processed_width": 1920,
       "quality_endpoint": true,
-      "sha256": "a2af57b570d402b5c0f956fa3b7401aa060c4d2b882f02d27c716982e8356fae",
       "tokens": 240
     },
     {
@@ -82,7 +78,6 @@
       "processed_height": 768,
       "processed_width": 768,
       "quality_endpoint": true,
-      "sha256": "ef4a3a43e6b7537e8961f5ece897e3cfce628fb0982de80a2a7d7fa555791095",
       "tokens": 256
     },
     {
@@ -99,7 +94,6 @@
       "processed_height": 768,
       "processed_width": 768,
       "quality_endpoint": true,
-      "sha256": "e752e557d3d9e6aabce96d069230258d3b4d2088ba928e5c21ff266b039f6f79",
       "tokens": 256
     },
     {
@@ -116,7 +110,6 @@
       "processed_height": 768,
       "processed_width": 768,
       "quality_endpoint": true,
-      "sha256": "a97a6049d3261096072fa948c58cc96e85684b408f4dbc81f496642717dae99b",
       "tokens": 256
     },
     {
@@ -133,7 +126,6 @@
       "processed_height": 576,
       "processed_width": 1008,
       "quality_endpoint": false,
-      "sha256": "50544c966213a137ac1de2c4faebc2a2dd3b6431fb6d1c6162724ac9718fb989",
       "tokens": 252
     },
     {
@@ -150,7 +142,6 @@
       "processed_height": 576,
       "processed_width": 1008,
       "quality_endpoint": false,
-      "sha256": "ab67e43b8b5b6ecf530475d883353eef41d07173d72650a1511914de7701e7a1",
       "tokens": 252
     },
     {
@@ -167,7 +158,6 @@
       "processed_height": 576,
       "processed_width": 1008,
       "quality_endpoint": false,
-      "sha256": "3bac20e081ee62456c9970f8c82b6bae653febdba9955df3ab0756ea12c2403d",
       "tokens": 252
     },
     {
@@ -184,7 +174,6 @@
       "processed_height": 576,
       "processed_width": 1008,
       "quality_endpoint": false,
-      "sha256": "2881d3e7077c9435d54a1c0e792d5f57adc7e3526dfbd6f59dd1ca5a34a70611",
       "tokens": 252
     },
     {
@@ -201,7 +190,6 @@
       "processed_height": 576,
       "processed_width": 1008,
       "quality_endpoint": false,
-      "sha256": "50186ad8cf2a2ceb4c22576e2ca395dbfc97c574e950e763083a5d3d891a1a69",
       "tokens": 252
     },
     {
@@ -218,7 +206,6 @@
       "processed_height": 576,
       "processed_width": 1008,
       "quality_endpoint": false,
-      "sha256": "25233efe3547a9ae99b96ce210c6dde16223dde47adfa2ca6dd211da9f6cd143",
       "tokens": 252
     },
     {
@@ -235,7 +222,6 @@
       "processed_height": 576,
       "processed_width": 1008,
       "quality_endpoint": false,
-      "sha256": "4284eb6e38704148dfd230d6f65ddeb323e1b5b66faf51a65aaee27dbd3ce480",
       "tokens": 252
     },
     {
@@ -252,7 +238,6 @@
       "processed_height": 576,
       "processed_width": 1008,
       "quality_endpoint": false,
-      "sha256": "a856424b997b0ba0163b94e1381a9739263221b2ad83e517f6d6c50ed6128703",
       "tokens": 252
     }
   ],
@@ -264,7 +249,6 @@
     "file": "nasa-pia21216.jpg",
     "license_note": "NASA imagery; see NASA Media Usage Guidelines",
     "license_url": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
-    "sha256": "02cb3b3c6abb95fe379d474dfba3b4c577e2ed5c871b3f16003b2a7c9d019e29",
     "url": "https://images-assets.nasa.gov/image/PIA21216/PIA21216~medium.jpg"
   },
   "transformers_revision": "d09f53a801f45ad73ec3510e17972024234bc0fd"

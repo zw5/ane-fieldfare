@@ -3,8 +3,6 @@ import Testing
 @testable import ANEFieldfareImportedFormat
 
 private enum VisionFormatFixture {
-    static let zeroSHA = String(repeating: "0", count: 64)
-
     static func manifest(tensors: [GTurboVisionTensorRegionV1]? = nil)
         -> GTurboVisionManifestV1 {
         let defaultTensors = [
@@ -22,46 +20,21 @@ private enum VisionFormatFixture {
         ]
         return GTurboVisionManifestV1(
             modelID: "fixture/model", sourceRevision: "fixture-revision",
-            sourceIndexSha256: zeroSHA, processorConfigSha256: zeroSHA,
             compatibleTextSourceSnapshotHash: "fixture-text-snapshot",
-            compatibleTextManifestSha256: zeroSHA,
             files: [
                 GTurboVisionFormatV1.weightsFile: GTurboManifestFileV1(
-                    size: 2 * GTurboVisionFormatV1.alignmentBytes, sha256: zeroSHA),
-                GTurboVisionFormatV1.processorFile: GTurboManifestFileV1(
-                    size: 2, sha256: zeroSHA),
+                    size: 2 * GTurboVisionFormatV1.alignmentBytes),
+                GTurboVisionFormatV1.processorFile: GTurboManifestFileV1(size: 2),
             ],
             tensors: tensors ?? defaultTensors)
-    }
-
-    static func receipt() -> GTurboVisionReceiptV1 {
-        GTurboVisionReceiptV1(
-            manifestSha256: zeroSHA,
-            companionDirectoryPath: "/fixture/model.vision.gturbo",
-            compatibleTextManifestSha256: zeroSHA,
-            sourceRepoID: "fixture/model", sourceRevision: "fixture-revision",
-            verificationTimestamp: "2026-08-05T00:00:00Z",
-            toolVersion: "fixture",
-            files: [
-                GTurboVisionFormatV1.manifestFile: .init(size: 1, sha256: zeroSHA),
-                GTurboVisionFormatV1.weightsFile: .init(
-                    size: 2 * GTurboVisionFormatV1.alignmentBytes, sha256: zeroSHA),
-                GTurboVisionFormatV1.processorFile: .init(size: 2, sha256: zeroSHA),
-            ])
     }
 }
 
 @Suite struct GTurboVisionFormatCompatibilityTests {
-    @Test func manifestAndReceiptRoundTripDeterministically() throws {
+    @Test func manifestRoundTrips() throws {
         let manifest = VisionFormatFixture.manifest()
         let manifestData = try GTurboVisionManifestCodec.encode(manifest)
         #expect(try GTurboVisionManifestCodec.decode(manifestData) == manifest)
-        #expect(try GTurboVisionManifestCodec.encode(manifest) == manifestData)
-
-        let receipt = VisionFormatFixture.receipt()
-        let receiptData = try GTurboVisionReceiptCodec.encode(receipt)
-        #expect(try GTurboVisionReceiptCodec.decode(receiptData) == receipt)
-        #expect(try GTurboVisionReceiptCodec.encode(receipt) == receiptData)
     }
 
     @Test func rejectsUnknownVersion() {
@@ -69,10 +42,7 @@ private enum VisionFormatFixture {
         let changed = GTurboVisionManifestV1(
             versionMajor: 2, modelID: original.modelID,
             sourceRevision: original.sourceRevision,
-            sourceIndexSha256: original.sourceIndexSha256,
-            processorConfigSha256: original.processorConfigSha256,
             compatibleTextSourceSnapshotHash: original.compatibleTextSourceSnapshotHash,
-            compatibleTextManifestSha256: original.compatibleTextManifestSha256,
             files: original.files, tensors: original.tensors)
         #expect(throws: GTurboFormatError.self) {
             try GTurboVisionManifestCodec.encode(changed)
@@ -126,34 +96,16 @@ private enum VisionFormatFixture {
         }
     }
 
-    @Test func rejectsUnexpectedPayloadOrReceiptFile() {
+    @Test func rejectsUnexpectedPayloadFile() {
         let original = VisionFormatFixture.manifest()
         var files = original.files
-        files["extra.bin"] = .init(size: 1, sha256: VisionFormatFixture.zeroSHA)
+        files["extra.bin"] = .init(size: 1)
         let changed = GTurboVisionManifestV1(
             modelID: original.modelID, sourceRevision: original.sourceRevision,
-            sourceIndexSha256: original.sourceIndexSha256,
-            processorConfigSha256: original.processorConfigSha256,
             compatibleTextSourceSnapshotHash: original.compatibleTextSourceSnapshotHash,
-            compatibleTextManifestSha256: original.compatibleTextManifestSha256,
             files: files, tensors: original.tensors)
         #expect(throws: GTurboFormatError.self) {
             try GTurboVisionManifestCodec.encode(changed)
-        }
-
-        let receipt = VisionFormatFixture.receipt()
-        let missing = GTurboVisionReceiptV1(
-            manifestSha256: receipt.manifestSha256,
-            companionDirectoryPath: receipt.companionDirectoryPath,
-            compatibleTextManifestSha256: receipt.compatibleTextManifestSha256,
-            sourceRepoID: receipt.sourceRepoID,
-            sourceRevision: receipt.sourceRevision,
-            verificationTimestamp: receipt.verificationTimestamp,
-            toolVersion: receipt.toolVersion,
-            files: [GTurboVisionFormatV1.manifestFile:
-                    receipt.files[GTurboVisionFormatV1.manifestFile]!])
-        #expect(throws: GTurboFormatError.self) {
-            try GTurboVisionReceiptCodec.encode(missing)
         }
     }
 }

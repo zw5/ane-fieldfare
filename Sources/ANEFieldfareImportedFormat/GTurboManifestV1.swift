@@ -2,11 +2,9 @@ package import Foundation
 
 package struct GTurboManifestFileV1: Codable, Equatable, Sendable {
     package let size: UInt64
-    package let sha256: String
 
-    package init(size: UInt64, sha256: String) {
+    package init(size: UInt64) {
         self.size = size
-        self.sha256 = sha256
     }
 }
 
@@ -226,9 +224,9 @@ package enum GTurboManifestCodec {
                 }
             }
         }
-        let reservedFiles: Set<String> = ["manifest.json", "verified-install.json"]
+        let reservedFiles: Set<String> = ["manifest.json"]
         var canonicalPaths: [String: String] = [:]
-        for (path, entry) in manifest.files.sorted(by: { $0.key < $1.key }) {
+        for path in manifest.files.keys.sorted() {
             try GTurboPathValidator.validateRelativePath(path, field: "manifest.files.\(path)")
             let key = GTurboPathValidator.appleFilesystemKey(path)
             guard canonicalPaths.updateValue(path, forKey: key) == nil else {
@@ -240,15 +238,6 @@ package enum GTurboManifestCodec {
                   !reservedFiles.contains(where: { key.hasPrefix("\($0)/") }) else {
                 throw GTurboFormatError.invalid(
                     field: "manifest.files.\(path)", reason: "reserved artifact filename")
-            }
-            guard entry.sha256.count == 64,
-                  entry.sha256.unicodeScalars.allSatisfy({ scalar in
-                      ("0"..."9").contains(Character(String(scalar)))
-                          || ("a"..."f").contains(Character(String(scalar)))
-                          || ("A"..."F").contains(Character(String(scalar)))
-                  }) else {
-                throw GTurboFormatError.invalid(
-                    field: "manifest.files.\(path).sha256", reason: "expected 64 hexadecimal characters")
             }
         }
         for (key, path) in canonicalPaths {

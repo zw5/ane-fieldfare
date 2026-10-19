@@ -51,8 +51,6 @@ extension ModelLoaderTests {
       withJSONObject: layout, options: [.sortedKeys, .withoutEscapingSlashes])
     try layoutData.write(to: layoutURL)
     files["packed_experts/layout.json"]?["size"] = layoutData.count
-    files["packed_experts/layout.json"]?["sha256"] =
-      try Sha256Verifier.hashFile(at: layoutURL)
     manifest["files"] = files
     try JSONSerialization.data(
       withJSONObject: manifest, options: [.sortedKeys, .withoutEscapingSlashes])
@@ -99,27 +97,6 @@ extension ModelLoaderTests {
     }
   }
 
-  @Test func mismatchedShaFailsChecksumMismatch() throws {
-    let dir = try Self.writeToySynthetic()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    // Flip one byte at the very end of the resident region (not inside
-    // the index, which the loader reads earlier and would error
-    // differently). Manifest sha was computed before this corruption.
-    let url = dir.appendingPathComponent("model_weights.bin")
-    var data = try Data(contentsOf: url)
-    data[data.count - 1] ^= 0xFF
-    try data.write(to: url)
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    #expect {
-      _ = try Model.load(
-        directoryURL: dir, device: device,
-        expecting: .gemma4Toy())
-    } throws: { error in
-      if case ModelError.checksumMismatch = error { return true }
-      return false
-    }
-  }
-
   @Test func malformedZeroPayloadResidentEntryThrowsWithoutTrap() throws {
     let dir = try Self.writeToySynthetic()
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -130,15 +107,6 @@ extension ModelLoaderTests {
                             with: repeatElement(UInt8(0), count: 16))
     try weights.write(to: weightsURL)
 
-    let manifestURL = dir.appendingPathComponent("manifest.json")
-    var manifest = try JSONSerialization.jsonObject(
-      with: Data(contentsOf: manifestURL)) as! [String: Any]
-    var files = manifest["files"] as! [String: [String: Any]]
-    files["model_weights.bin"]?["sha256"] = try Sha256Verifier.hashFile(at: weightsURL)
-    manifest["files"] = files
-    try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
-      .write(to: manifestURL)
-
     let device = try #require(MTLCreateSystemDefaultDevice())
     #expect {
       _ = try Model.load(directoryURL: dir, device: device, expecting: .gemma4Toy())
@@ -148,36 +116,6 @@ extension ModelLoaderTests {
       }
       return false
     }
-  }
-
-  @Test func integrityPoliciesExposeIdenticalResidentAndRoutedBytes() throws {
-    let dir = try Self.writeToySynthetic()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    try Self.writeVerifiedInstallReceipt(directoryURL: dir)
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    let full = try Model.load(
-      directoryURL: dir,
-      device: device,
-      expecting: .gemma4Toy(),
-      integrityPolicy: .fullSha256)
-    let trusted = try Model.load(
-      directoryURL: dir,
-      device: device,
-      expecting: .gemma4Toy(),
-      integrityPolicy: .sizeCheckTrustedReceipt)
-
-    #expect(full.embedding.length == trusted.embedding.length)
-    let fullEmbedding = unsafe full.embedding.buffer.contents().advanced(by: Int(full.embedding.offset))
-    let trustedEmbedding = unsafe trusted.embedding.buffer.contents().advanced(
-      by: Int(trusted.embedding.offset))
-    unsafe #expect(memcmp(fullEmbedding, trustedEmbedding, Int(full.embedding.length)) == 0)
-
-    let fullExpert = try full.routedExpert(layer: 0, expert: 0)
-    let trustedExpert = try trusted.routedExpert(layer: 0, expert: 0)
-    #expect(fullExpert.length == trustedExpert.length)
-    let fullExpertBytes = unsafe fullExpert.buffer.contents().advanced(by: Int(fullExpert.offset))
-    let trustedExpertBytes = unsafe trustedExpert.buffer.contents().advanced(by: Int(trustedExpert.offset))
-    unsafe #expect(memcmp(fullExpertBytes, trustedExpertBytes, Int(fullExpert.length)) == 0)
   }
 
   @Test func nonPageAlignedExpertStrideFailsAtManifest() throws {

@@ -115,13 +115,11 @@ public enum ModelError: Error, CustomStringConvertible, Equatable {
     case archMismatch(field: String, expected: String, actual: String)
     case expertStrideNotPageAligned(stride: UInt64, pageSize: Int)
     case missingFile(name: String)
-    case checksumMismatch(file: String)
     case tensorNotFound(name: String)
     case tensorSizeMismatch(name: String, expected: UInt64, actual: UInt64)
     case residentBufferWrapFailed
     case indexCorrupt(detail: String)
     case posixFailed(call: String, errno: Int32)
-    case trustedReceiptInvalid(detail: String)
 
     public var description: String {
         switch self {
@@ -139,8 +137,6 @@ public enum ModelError: Error, CustomStringConvertible, Equatable {
             return "expertStride \(s) is not a multiple of page size \(p)"
         case .missingFile(let n):
             return "model.gturbo is missing required file \(n)"
-        case .checksumMismatch(let f):
-            return "SHA-256 of \(f) does not match manifest.files[\(f)].sha256"
         case .tensorNotFound(let n):
             return "no IndexEntry named \(n) in model_weights.bin"
         case .tensorSizeMismatch(let n, let e, let a):
@@ -151,8 +147,6 @@ public enum ModelError: Error, CustomStringConvertible, Equatable {
             return "resident index is corrupt: \(d)"
         case .posixFailed(let c, let e):
             return "\(c) failed with errno \(e)"
-        case .trustedReceiptInvalid(let detail):
-            return "trusted install receipt invalid: \(detail)"
         }
     }
 }

@@ -482,18 +482,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var prefillTileDrainNanos: UInt64 = 0
     public private(set) var prefillTileHits: UInt64 = 0
     public private(set) var prefillTileMisses: UInt64 = 0
-    public private(set) var exactRouteDigest: UInt64 = 1_469_598_103_934_665_603
-    public private(set) var exactRouteSamples: UInt64 = 0
-    public private(set) var allRouteValuesFinite: Bool = true
-
-    @inline(__always)
-    private func recordExactRoute(expert: UInt32, weight: Float16) {
-        exactRouteDigest = (exactRouteDigest ^ UInt64(expert)) &* 1_099_511_628_211
-        exactRouteDigest = (exactRouteDigest ^ UInt64(weight.bitPattern)) &* 1_099_511_628_211
-        exactRouteSamples &+= 1
-        if !weight.isFinite { allRouteValuesFinite = false }
-    }
-
     private func snapshotFP16(_ buffer: any MTLBuffer, count: Int) -> [Float16] {
         let pointer = unsafe buffer.contents().bindMemory(to: Float16.self, capacity: count)
         return unsafe Array(UnsafeBufferPointer(start: pointer, count: count))
@@ -1255,7 +1243,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     for i in 0..<routeCount {
                         unsafe routeIDs.append(min(idPtr[i], UInt32(cfg.numExperts - 1)))
                         unsafe routeWeights.append(weightPtr[i])
-                        recordExactRoute(expert: routeIDs[i], weight: routeWeights[i])
                     }
                     capture?.routes[L] = routeIDs
                     let uncappedUnion = Set(routeIDs)

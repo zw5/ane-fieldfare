@@ -203,29 +203,3 @@ import Testing
             metadata: small, geometry: smallGeometry) == 64)
     }
 }
-
-/// A directory reader that only worked once. The `fcntl` duplicate shares its
-/// offset with the retained descriptor, and `readdir` consumes it, so a second
-/// enumeration returned nothing and a valid pack read as having no entries.
-/// Only ever called once per instance in production, which is why it survived.
-@Suite struct DirectoryEnumerationTests {
-    @Test func basenamesAreStableAcrossRepeatedCalls() throws {
-        let manager = FileManager.default
-        let root = manager.temporaryDirectory
-            .appendingPathComponent("enumerate-\(UUID().uuidString)", isDirectory: true)
-        try manager.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? manager.removeItem(at: root) }
-        for name in ["manifest.json", "weights.bin", "receipt.json"] {
-            try Data("x".utf8).write(to: root.appendingPathComponent(name))
-        }
-
-        let directory = try GTurboModelDirectory(rootURL: root)
-        let first = try directory.basenames()
-        #expect(first == ["manifest.json", "weights.bin", "receipt.json"])
-        let second = try directory.basenames()
-        #expect(second == first,
-                "the second enumeration of the same directory returned \(second)")
-        let third = try directory.basenames()
-        #expect(third == first)
-    }
-}

@@ -1,5 +1,4 @@
 // Adapted from Turbo Fieldfare PR #188 by maxslamdunk (Apache-2.0).
-import CryptoKit
 import Darwin
 import Foundation
 import Metal
@@ -17,8 +16,7 @@ import Metal
 /// scales [E][D/64] and BF16 biases [E][D/64].
 ///
 /// The runtime ships fitted files in its `NextLayerGuess/` resources, listed
-/// in `index.json` by the model's manifest `sourceSnapshotHash` with the
-/// file's SHA-256. A model with no entry gets no fitted guess; the early read
+/// in `index.json` by the model's manifest `sourceSnapshotHash`. A model with no entry gets no fitted guess; the early read
 /// then scores with the next layer's own router.
 final class NextLayerGuessWeights {
     static let magic: [UInt8] = Array("TFNLG1".utf8) + [0, 0]
@@ -34,9 +32,8 @@ final class NextLayerGuessWeights {
     let buffer: any MTLBuffer
     /// `hiddenSize` BF16 ones, the effective scale the guess runs with.
     let unitScale: any MTLBuffer
-    /// File name and SHA-256 of the mapped bytes, for logs.
+    /// File name, for logs.
     let name: String
-    let sha256: String
     private let numLayers: Int
     private let weightBytes: Int
     private let groupBytes: Int
@@ -74,9 +71,6 @@ final class NextLayerGuessWeights {
         }
         self.numLayers = numLayers
         name = fileURL.lastPathComponent
-        sha256 = unsafe SHA256.hash(data: UnsafeRawBufferPointer(start: buffer.contents(),
-                                                          count: expectedSize))
-            .map { unsafe String(format: "%02x", $0) }.joined()
 
         guard let ones = device.makeBuffer(length: hiddenSize * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared) else {
@@ -90,12 +84,11 @@ final class NextLayerGuessWeights {
     private struct IndexEntry: Decodable {
         let sourceSnapshotHash: String
         let file: String
-        let sha256: String
     }
 
     /// The fitted guess the runtime ships for the model whose manifest has
     /// `sourceSnapshotHash`, or nil when it ships none. Throws when the
-    /// shipped file is damaged: its hash must match the index.
+    /// shipped file's header does not match the model.
     static func bundled(sourceSnapshotHash: String?, numLayers: Int, numExperts: Int,
                         hiddenSize: Int, device: any MTLDevice,
                         bundle: Bundle = .module) throws -> NextLayerGuessWeights? {
@@ -107,14 +100,9 @@ final class NextLayerGuessWeights {
         guard let entry = entries.first(where: { $0.sourceSnapshotHash == sourceSnapshotHash })
         else { return nil }
         let url = indexURL.deletingLastPathComponent().appendingPathComponent(entry.file)
-        let weights = try NextLayerGuessWeights(fileURL: url, numLayers: numLayers,
-                                                numExperts: numExperts,
-                                                hiddenSize: hiddenSize, device: device)
-        guard weights.sha256 == entry.sha256 else {
-            throw ModelError.indexCorrupt(detail: "shipped next-layer guess \(entry.file) has "
-                + "SHA-256 \(weights.sha256), expected \(entry.sha256)")
-        }
-        return weights
+        return try NextLayerGuessWeights(fileURL: url, numLayers: numLayers,
+                                         numExperts: numExperts,
+                                         hiddenSize: hiddenSize, device: device)
     }
 
     /// The guess matrix that scores `targetLayer`'s experts, 1..numLayers-1.

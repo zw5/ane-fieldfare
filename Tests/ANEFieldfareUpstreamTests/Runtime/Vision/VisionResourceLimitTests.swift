@@ -180,63 +180,6 @@ import Testing
         MTLCreateSystemDefaultDevice()?.supportsFamily(.apple8) == true
     }
 
-    @Test func osSidecarsDoNotInvalidateAPack() {
-        for name in [".DS_Store", "._manifest.json", "._vision_weights.bin",
-                     ".Spotlight-V100", ".fseventsd", "manifest.json.icloud"] {
-            #expect(GTurboVisionFormatV1.isSidecarEntry(name),
-                    "\(name) would still be treated as part of the pack")
-        }
-        // The other direction is the one that matters more: `VisionWeightStore`
-        // and the pack verifier both drop every entry this matches before
-        // comparing the directory against the pack, so a rule broad enough to
-        // swallow a required file reports the same "image support is
-        // unavailable" as the sidecar it was widened for — for a pack that is
-        // complete on disk. The names are spelled out as well as read off the
-        // constants, so renaming a constant cannot quietly empty this check.
-        let packEntries = ["manifest.json", "vision_weights.bin",
-                           "processor_config.json", "verified-install.json"]
-        #expect(packEntries == [GTurboVisionFormatV1.manifestFile,
-                                GTurboVisionFormatV1.weightsFile,
-                                GTurboVisionFormatV1.processorFile,
-                                GTurboVisionFormatV1.receiptFile],
-                "the pack's entry names changed; this list has to change with them")
-        // `_manifest.json` is the near miss for the AppleDouble prefix: a real
-        // file, one character from the rule that ignores one.
-        for name in packEntries + ["vision_weights.bin.tmp", "_manifest.json"] {
-            #expect(!GTurboVisionFormatV1.isSidecarEntry(name),
-                    "\(name) would be ignored, which is how a real file goes missing")
-        }
-    }
-
-    /// A deleted pack file used to be reported as the surviving files being
-    /// "unexpected", so the message pointed at three files that belong there
-    /// and never named the one that had gone. Both the runtime store and the
-    /// installer's verifier phrase it through this helper, so both are covered.
-    @Test func aMissingPackFileIsReportedAsMissingRatherThanAsSurplus() {
-        let expected: Set<String> = [
-            GTurboVisionFormatV1.manifestFile,
-            GTurboVisionFormatV1.weightsFile,
-            GTurboVisionFormatV1.processorFile,
-            GTurboVisionFormatV1.receiptFile,
-        ]
-
-        let withoutProcessor = expected.subtracting([GTurboVisionFormatV1.processorFile])
-        let missing = GTurboVisionFormatV1.entryDifference(
-            expected: expected, actual: withoutProcessor)
-        #expect(missing == "missing [\"processor_config.json\"]")
-        #expect(!missing.contains("unexpected"),
-                "a deleted file must not be described as surplus entries")
-
-        let withStray = expected.union(["stray.bin"])
-        #expect(GTurboVisionFormatV1.entryDifference(
-            expected: expected, actual: withStray) == "unexpected [\"stray.bin\"]")
-
-        // Both at once, which is what a half-written pack looks like.
-        let both = withoutProcessor.union(["stray.bin"])
-        #expect(GTurboVisionFormatV1.entryDifference(expected: expected, actual: both)
-                == "missing [\"processor_config.json\"], unexpected [\"stray.bin\"]")
-    }
-
     /// The decoded-byte ceiling is inclusive. This catches a `<=` quietly
     /// changing to `<`, which would reject an image exactly at the contract.
     @Test func theDecodedCeilingAdmitsExactlyItselfAndRefusesOneByteMore() throws {

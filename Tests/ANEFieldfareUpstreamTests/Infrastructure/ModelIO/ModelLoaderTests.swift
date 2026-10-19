@@ -349,7 +349,6 @@ import Metal
         }
         let weightsURL = dir.appendingPathComponent("model_weights.bin")
         try Data(fileBuf).write(to: weightsURL)
-        let weightsSha = try Sha256Verifier.hashFile(at: weightsURL)
 
         // 2. packed_experts: 2 layer files, each `expertsPerLayer * expertStride`
         // bytes. expertStride must be a multiple of getpagesize() (16 KB).
@@ -374,12 +373,6 @@ import Metal
             }
             let url = unsafe exp.appendingPathComponent(String(format: "layer_%02d.bin", L))
             try payload.write(to: url)
-        }
-        var layerShaByName: [String: String] = [:]
-        for L in 0..<toy.numLayers {
-            let basename = unsafe String(format: "layer_%02d.bin", L)
-            let url = exp.appendingPathComponent(basename)
-            layerShaByName["packed_experts/\(basename)"] = try Sha256Verifier.hashFile(at: url)
         }
 
         // 3. layout.json
@@ -411,15 +404,14 @@ import Metal
             withJSONObject: layoutRoot, options: [.sortedKeys])
         let layoutURL = exp.appendingPathComponent("layout.json")
         try layoutData.write(to: layoutURL)
-        let layoutSha = try Sha256Verifier.hashFile(at: layoutURL)
 
         // 4. manifest.json
         var files: [String: [String: Any]] = [
-            "model_weights.bin": ["size": Int(totalBytes), "sha256": weightsSha],
-            "packed_experts/layout.json": ["size": layoutData.count, "sha256": layoutSha],
+            "model_weights.bin": ["size": Int(totalBytes)],
+            "packed_experts/layout.json": ["size": layoutData.count],
         ]
-        for (rel, sha) in layerShaByName {
-            files[rel] = ["size": layerBytes, "sha256": sha]
+        for L in 0..<toy.numLayers {
+            files[unsafe String(format: "packed_experts/layer_%02d.bin", L)] = ["size": layerBytes]
         }
 
         let archDict: [String: Any] = [
@@ -474,57 +466,4 @@ import Metal
         try manifestData.write(to: dir.appendingPathComponent("manifest.json"))
         return dir
     }
-
-    static func writeVerifiedInstallReceipt(directoryURL dir: URL) throws {
-        let manifest = try ManifestReader.load(directoryURL: dir, expecting: .gemma4Toy())
-        let manifestURL = dir.appendingPathComponent("manifest.json")
-        let manifestSha = try Sha256Verifier.hashFile(at: manifestURL)
-        let manifestSize = try FileManager.default
-            .attributesOfItem(atPath: manifestURL.path)[.size] as! NSNumber
-        var receiptFiles = manifest.files.mapValues {
-            VerifiedInstallReceipt.FileEntry(size: $0.size, sha256: $0.sha256)
-        }
-        receiptFiles["manifest.json"] = VerifiedInstallReceipt.FileEntry(
-            size: manifestSize.uint64Value,
-            sha256: manifestSha)
-        let receipt = VerifiedInstallReceipt(
-            manifestSha256: manifestSha,
-            modelDirectoryPath: dir.standardizedFileURL.path,
-            sourceRepoID: "toy",
-            sourceRevision: "test",
-            verificationTimestamp: "2026-07-01T00:00:00Z",
-            toolVersion: "test",
-            files: receiptFiles)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let data = try encoder.encode(receipt)
-        try data.write(to: dir.appendingPathComponent(VerifiedInstallReceiptReader.fileName))
-    }
-
-    static func mutateReceipt(directoryURL dir: URL,
-                                      transform: (inout [String: Any]) throws -> Void) throws {
-        let receiptURL = dir.appendingPathComponent(VerifiedInstallReceiptReader.fileName)
-        var root = try JSONSerialization.jsonObject(
-            with: Data(contentsOf: receiptURL)) as! [String: Any]
-        try transform(&root)
-        let data = try JSONSerialization.data(withJSONObject: root,
-                                              options: [.sortedKeys, .withoutEscapingSlashes])
-        try data.write(to: receiptURL)
-    }
-
-    static func flipByte(in url: URL, at offset: UInt64) throws {
-        let handle = try FileHandle(forUpdating: url)
-        try handle.seek(toOffset: offset)
-        let byte = try #require(try handle.read(upToCount: 1)?.first)
-        try handle.seek(toOffset: offset)
-        try handle.write(contentsOf: [byte ^ 0xFF])
-        try handle.close()
-    }
-
-    // MARK: - Positive
-
-    // MARK: - Negative
-
-    // MARK: - Lazy fd / SHA
-
 }

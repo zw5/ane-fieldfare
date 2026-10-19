@@ -66,8 +66,6 @@ public final class VisionRuntime {
         guard let source = manifest.sourceSnapshotHash else {
             throw VisionRuntimeError.invalidInput("text model has no source identity")
         }
-        let textManifestSHA = try Sha256Verifier.hashFile(
-            at: textModelURL.appendingPathComponent("manifest.json"))
         let companion = try visionPackURL
             ?? VisionPackLocation.companionURL(forTextModel: textModelURL)
         // The pack has to exist before anything is created beside it. The lease
@@ -95,8 +93,7 @@ public final class VisionRuntime {
         let useLease = try VisionPackUseLease.acquireShared(companionURL: companion)
         let store = try VisionWeightStore.open(
             directoryURL: companion,
-            compatibleTextSourceSnapshotHash: source,
-            compatibleTextManifestSha256: textManifestSHA)
+            compatibleTextSourceSnapshotHash: source)
         return try VisionRuntime(context: context, store: store, useLease: useLease)
     }
 

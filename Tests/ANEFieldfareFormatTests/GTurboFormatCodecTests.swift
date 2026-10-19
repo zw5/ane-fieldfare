@@ -3,8 +3,6 @@ import Testing
 @testable import ANEFieldfareImportedFormat
 
 private enum FormatFixture {
-    static let zeroSHA = String(repeating: "0", count: 64)
-
     static func manifest(sourceSnapshotHash: String? = "snapshot",
                          quant: GTurboManifestQuantV1? = FormatFixture.quant,
                          bitWidthOverridesHonored: Int? = 120,
@@ -29,10 +27,10 @@ private enum FormatFixture {
                 hiddenActivation: "gelu_pytorch_tanh", fullAttentionLayerMask: [0]),
             quant: quant,
             files: [
-                "model_weights.bin": GTurboManifestFileV1(size: 16_448, sha256: zeroSHA),
-                "packed_experts/layout.json": GTurboManifestFileV1(size: 1, sha256: zeroSHA),
+                "model_weights.bin": GTurboManifestFileV1(size: 16_448),
+                "packed_experts/layout.json": GTurboManifestFileV1(size: 1),
                 "packed_experts/layer_00.bin": GTurboManifestFileV1(
-                    size: 2 * GTurboFormatV1.alignmentBytes, sha256: zeroSHA),
+                    size: 2 * GTurboFormatV1.alignmentBytes),
             ],
             expertsPerLayer: 2,
             numLayers: 1,
@@ -146,7 +144,7 @@ private enum FormatFixture {
         #expect(throws: GTurboFormatError.self) { try GTurboManifestCodec.decode(data) }
     }
 
-    @Test(arguments: ["manifest.json", "verified-install.json", "tokenizer"])
+    @Test(arguments: ["manifest.json", "tokenizer"])
     func rejectsReservedManifestPaths(_ reserved: String) throws {
         var root = try #require(JSONSerialization.jsonObject(
             with: GTurboManifestCodec.encode(FormatFixture.manifest())) as? [String: Any])

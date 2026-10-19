@@ -28,28 +28,6 @@ extension ModelLoaderTests {
         _ = try model.routedExpert(layer: 0, expert: 0)
     }
 
-    @Test func trustedReceiptKeepsRootSymlinkPathBinding() throws {
-        let target = try Self.writeToySynthetic()
-        let alias = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-receipt-root-\(UUID().uuidString)")
-        defer {
-            try? FileManager.default.removeItem(at: alias)
-            try? FileManager.default.removeItem(at: target)
-        }
-        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
-        try Self.writeVerifiedInstallReceipt(directoryURL: alias)
-        let device = try #require(MTLCreateSystemDefaultDevice())
-
-        _ = try Model.load(
-            directoryURL: alias, device: device, expecting: .gemma4Toy(),
-            integrityPolicy: .sizeCheckTrustedReceipt)
-        #expect(throws: ModelError.self) {
-            try Model.load(
-                directoryURL: target, device: device, expecting: .gemma4Toy(),
-                integrityPolicy: .sizeCheckTrustedReceipt)
-        }
-    }
-
     @Test func rejectsManifestLeafSymlink() throws {
         let dir = try Self.writeToySynthetic()
         let outside = FileManager.default.temporaryDirectory
@@ -83,27 +61,6 @@ extension ModelLoaderTests {
 
         #expect(throws: ModelError.self) {
             try Model.load(directoryURL: dir, device: device, expecting: .gemma4Toy())
-        }
-    }
-
-    @Test func rejectsTrustedReceiptSymlink() throws {
-        let dir = try Self.writeToySynthetic()
-        try Self.writeVerifiedInstallReceipt(directoryURL: dir)
-        let outside = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-receipt-\(UUID().uuidString).json")
-        defer {
-            try? FileManager.default.removeItem(at: dir)
-            try? FileManager.default.removeItem(at: outside)
-        }
-        let receipt = dir.appendingPathComponent(VerifiedInstallReceiptReader.fileName)
-        try FileManager.default.moveItem(at: receipt, to: outside)
-        try FileManager.default.createSymbolicLink(at: receipt, withDestinationURL: outside)
-        let device = try #require(MTLCreateSystemDefaultDevice())
-
-        #expect(throws: ModelError.self) {
-            try Model.load(
-                directoryURL: dir, device: device, expecting: .gemma4Toy(),
-                integrityPolicy: .sizeCheckTrustedReceipt)
         }
     }
 

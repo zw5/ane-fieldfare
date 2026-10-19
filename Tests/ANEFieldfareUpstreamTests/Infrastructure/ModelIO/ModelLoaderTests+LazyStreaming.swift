@@ -41,31 +41,4 @@ extension ModelLoaderTests {
     #expect(b2 == 0xC1)
     #expect(b3 == 0xC2)
   }
-
-  @Test func tamperedLayerFileFailsOnFirstTouch() throws {
-    let dir = try Self.writeToySynthetic()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    let model = try Model.load(
-      directoryURL: dir, device: device,
-      expecting: .gemma4Toy())
-
-    // Flip one byte inside layer_01.bin AFTER the manifest is written.
-    let url = dir.appendingPathComponent("packed_experts/layer_01.bin")
-    var data = try Data(contentsOf: url)
-    data[100] ^= 0xFF
-    try data.write(to: url)
-
-    // Layer 0 still loads.
-    _ = try model.routedExpert(layer: 0, expert: 0)
-    // Layer 1 first touch fails with checksumMismatch.
-    #expect {
-      _ = try model.routedExpert(layer: 1, expert: 0)
-    } throws: { error in
-      if case ModelError.checksumMismatch(let f) = error {
-        return f == "packed_experts/layer_01.bin"
-      }
-      return false
-    }
-  }
 }

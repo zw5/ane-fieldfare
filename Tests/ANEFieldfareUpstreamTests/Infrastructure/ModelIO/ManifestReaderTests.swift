@@ -65,11 +65,11 @@ import Darwin
             files = f
         } else {
             files = [
-                "model_weights.bin": ["size": 1024, "sha256": String(repeating: "0", count: 64)],
-                "packed_experts/layout.json": ["size": 1024, "sha256": String(repeating: "0", count: 64)],
+                "model_weights.bin": ["size": 1024],
+                "packed_experts/layout.json": ["size": 1024],
             ]
             for L in 0..<toy.numLayers {
-                files["packed_experts/layer_\(L).bin"] = ["size": 16384, "sha256": String(repeating: "0", count: 64)]
+                files["packed_experts/layer_\(L).bin"] = ["size": 16384]
             }
         }
 
@@ -263,10 +263,10 @@ import Darwin
 
     @Test func defersPackedLayerFilenamesToLayoutValidation() throws {
         let files: [String: [String: Any]] = [
-            "model_weights.bin": ["size": 1024, "sha256": String(repeating: "0", count: 64)],
-            "packed_experts/layout.json": ["size": 1024, "sha256": String(repeating: "0", count: 64)],
-            "packed_experts/experts_a.bin": ["size": 16384, "sha256": String(repeating: "0", count: 64)],
-            "packed_experts/experts_b.bin": ["size": 16384, "sha256": String(repeating: "0", count: 64)],
+            "model_weights.bin": ["size": 1024],
+            "packed_experts/layout.json": ["size": 1024],
+            "packed_experts/experts_a.bin": ["size": 16384],
+            "packed_experts/experts_b.bin": ["size": 16384],
         ]
         let (dir, toy) = try Self.writeToyManifest(filesOverride: files)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -277,10 +277,10 @@ import Darwin
     @Test func acceptsZeroPaddedLayerFilenames() throws {
         // Writer emits packed_experts/layer_%02d.bin; loader should accept either form.
         let files: [String: [String: Any]] = [
-            "model_weights.bin": ["size": 1024, "sha256": String(repeating: "0", count: 64)],
-            "packed_experts/layout.json": ["size": 1024, "sha256": String(repeating: "0", count: 64)],
-            "packed_experts/layer_00.bin": ["size": 16384, "sha256": String(repeating: "0", count: 64)],
-            "packed_experts/layer_01.bin": ["size": 16384, "sha256": String(repeating: "0", count: 64)],
+            "model_weights.bin": ["size": 1024],
+            "packed_experts/layout.json": ["size": 1024],
+            "packed_experts/layer_00.bin": ["size": 16384],
+            "packed_experts/layer_01.bin": ["size": 16384],
         ]
         let (dir, toy) = try Self.writeToyManifest(filesOverride: files)
         defer { try? FileManager.default.removeItem(at: dir) }

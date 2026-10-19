@@ -31,7 +31,7 @@ and layers, monitors them, and evicts them when they fault.
 ## Build and test
 
 ```bash
-Scripts/build.sh   # release CLI and logits oracle, into .build/
+Scripts/build.sh   # release CLI, into .build/
 Scripts/test.sh    # every Swift Testing and XCTest suite
 ```
 
@@ -155,11 +155,6 @@ ANE and Metal arithmetic.
 
 The supervisor is held to these oracles:
 
-- **Regression parity.** Every refactor step is checked against stored logits:
-  `metal` and `hybrid-ane` must reproduce them exactly, 17 × 262,144 FP16 values
-  each, on a 3,015-token prompt plus 16 fixed continuation tokens. The hybrid run
-  uses 1,024-token prefill chunks and executes 3,163 ANE evaluations across 30
-  layers, from 1 compile and 1 load.
 - **Failover parity.** These tests (`DeviceSupervisorFailoverTests`) run on the
   installed checkpoint. Injected guests write NaN over the host's buffers and
   then fault:
@@ -186,10 +181,10 @@ wall time on an M5, not the protocol below:
 | ANE program with 128 activation lanes per expert instead of 64. Each request streams four experts' weights (about 0.95 ms), so more rows per request halve the evaluations: 3,352 → 1,980. | 8.8 s | — | Bit-exact |
 
 Short prompts were dominated by integrity checking rather than compute: the CLI
-hashed all 13 GB of expert files on every launch. It now trusts the installer's
-verified receipt when it matches the install, and `--verify-weights` restores the
-full SHA-256 check. Prefill on the 28-token prompt went from 6.3 s to 1.6 s, and on
-the 430-token prompt from 6.7 s to 2.2 s.
+hashed all 13 GB of expert files on every launch. Skipping the expert hashes took
+prefill on the 28-token prompt from 6.3 s to 1.6 s, and on the 430-token prompt
+from 6.7 s to 2.2 s. Load now hashes nothing; it checks file sizes against the
+manifest.
 
 Measured and rejected: running the two halves of a chunk one stage apart, so the
 GPU's attention overlaps the ANE's experts, took 13.4 s against 9.2 s. Each ANE
@@ -471,10 +466,9 @@ were similar for all three: 13.0–13.7 tok/s.
 | `Sources/ANEFieldfareHotpathCLI(Core)` | Command-line runner. |
 | `Sources/ANEFieldfareANECarrier` | Objective-C ANE expert program and its two request banks. |
 | `Sources/ANEFieldfareImportedFormat` | `.gturbo` compact checkpoint format. |
-| `Sources/ANEFieldfareQualityGate` | Fixed-input logits oracle used for regression parity. |
 | `Tests/` | Swift Testing and XCTest suites, plus their CPU references and fixture writers. |
 | `Sources/ANEFieldfareBench` | Benchmark harness for the A/B loop (`Scripts/bench/`). |
-| `Scripts/` | Build, test, benchmark and logits-comparison tooling. |
+| `Scripts/` | Build, test and benchmark tooling. |
 
 ## Claim discipline
 

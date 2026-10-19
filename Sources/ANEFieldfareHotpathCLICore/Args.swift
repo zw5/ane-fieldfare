@@ -6,8 +6,6 @@ public struct Args: Equatable, Sendable {
     public var backend: RuntimeBackend
     public var promptFile: String?
     public var countTokens: Bool
-    /// Hash every weight file at load instead of trusting the install receipt.
-    public var verifyWeights: Bool
     public var expertTopK: Int
     public var prefillExpertCap: Int?
     public var prompt: String?
@@ -39,7 +37,6 @@ public struct Args: Equatable, Sendable {
                 backend: RuntimeBackend = .metal,
                 promptFile: String? = nil,
                 countTokens: Bool = false,
-                verifyWeights: Bool = false,
                 expertTopK: Int = 8,
                 prefillExpertCap: Int? = nil,
                 prompt: String? = nil,
@@ -70,7 +67,6 @@ public struct Args: Equatable, Sendable {
         self.faultPolicy = faultPolicy
         self.promptFile = promptFile
         self.countTokens = countTokens
-        self.verifyWeights = verifyWeights
         self.expertTopK = expertTopK
         self.prefillExpertCap = prefillExpertCap
         self.prompt = prompt
@@ -152,8 +148,6 @@ extension Args {
                                  evict the guest and continue on Metal.
       --prompt-file <path>       Read a raw-completion prompt from UTF-8 text.
       --count-tokens             Print text prompt token count and exit.
-      --verify-weights           SHA-256 every weight file at load (about 5 s)
-                                 instead of trusting the install receipt.
       --expert-top-k <n>         Routed experts per token, 1...8 (default 8).
       --prefill-expert-cap <n>   Optional lossy expert-union cap, 1...128.
       --max-new <int>            Generated-token limit (default 1024).
@@ -218,7 +212,6 @@ extension Args {
         var faultPolicy = RuntimeConfiguration.production.faultPolicy
         var promptFile: String?
         var countTokens = false
-        var verifyWeights = false
         var expertTopK = 8
         var prefillExpertCap: Int?
         var model: String?
@@ -266,9 +259,6 @@ extension Args {
                 promptFile = try takeValue(argv, &index, flag: flag)
             case "--count-tokens":
                 countTokens = true
-                index += 1
-            case "--verify-weights":
-                verifyWeights = true
                 index += 1
             case "--expert-top-k", "--prefill-expert-cap":
                 let value = try takeValue(argv, &index, flag: flag)
@@ -427,7 +417,6 @@ extension Args {
                              backend: backend,
                              promptFile: promptFile,
                              countTokens: countTokens,
-                             verifyWeights: verifyWeights,
                              expertTopK: expertTopK,
                              prefillExpertCap: prefillExpertCap,
                              prompt: prompt,

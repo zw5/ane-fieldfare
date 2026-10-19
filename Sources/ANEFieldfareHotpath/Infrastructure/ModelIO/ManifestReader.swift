@@ -3,7 +3,6 @@ import ANEFieldfareImportedFormat
 
 public struct ManifestFileEntry: Decodable, Equatable, Sendable {
     public let size: UInt64
-    public let sha256: String
 }
 
 public struct ManifestArch: Decodable, Equatable, Sendable {
@@ -196,7 +195,7 @@ public enum ManifestReader {
 
 private extension ManifestFileEntry {
     init(wire: GTurboManifestFileV1) {
-        self.init(size: wire.size, sha256: wire.sha256)
+        self.init(size: wire.size)
     }
 }
 

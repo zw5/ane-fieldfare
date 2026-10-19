@@ -56,8 +56,7 @@ private struct Generation: Decodable {
     }
 
     static func loadModel(_ path: String, context: MetalContext) throws -> Model {
-        try Model.load(directoryURL: URL(fileURLWithPath: path), device: context.device,
-                       integrityPolicy: .sizeCheckTrustedReceipt)
+        try Model.load(directoryURL: URL(fileURLWithPath: path), device: context.device)
     }
 
     static func write(_ bytes: UnsafeRawBufferPointer, to path: String) throws {

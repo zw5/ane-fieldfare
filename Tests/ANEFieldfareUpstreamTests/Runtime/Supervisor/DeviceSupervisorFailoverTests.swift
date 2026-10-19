@@ -117,8 +117,7 @@ struct DeviceSupervisorFailoverTests {
 
         init() throws {
             context = try MetalContext()
-            model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device,
-                                   integrityPolicy: .sizeCheckTrustedReceipt)
+            model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device)
         }
 
         func runner(_ supervisor: DeviceSupervisor) throws -> RealForwardRunner {

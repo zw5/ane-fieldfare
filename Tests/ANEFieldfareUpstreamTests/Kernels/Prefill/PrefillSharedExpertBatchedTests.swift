@@ -43,8 +43,7 @@ struct PrefillSharedExpertBatchedTests {
     @Test(arguments: [0, 14, 29])
     func batchedIsNoLessAccurateThanPerToken(layer: Int) throws {
         let context = try MetalContext()
-        let model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device,
-                                   integrityPolicy: .sizeCheckTrustedReceipt)
+        let model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device)
         let d = model.config.hiddenSize, f = model.config.intermediateSize, t = Self.tokens
         let views = (gate: try model.sharedExpertGate(layer: layer), up: try model.sharedExpertUp(layer: layer),
                      down: try model.sharedExpertDown(layer: layer))

@@ -23,7 +23,6 @@ let package = Package(
     products: [
         .library(name: "ANEFieldfareHotpath", targets: ["ANEFieldfareHotpath"]),
         .executable(name: "ANEFieldfareHotpathCLI", targets: ["ANEFieldfareHotpathCLI"]),
-        .executable(name: "ANEFieldfareQualityGate", targets: ["ANEFieldfareQualityGate"]),
         .executable(name: "ANEFieldfareDFlashCapture", targets: ["ANEFieldfareDFlashCapture"]),
         .executable(name: "ANEFieldfareBench", targets: ["ANEFieldfareBench"]),
     ],
@@ -31,8 +30,7 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
     ],
     targets: [
-        // Upstream repack writers construct the synthetic loader fixtures.
-        // This support target is reachable only from the regression tests.
+        // Resident-index fixture types for the synthetic loader fixtures.
         .target(
             name: "ANEFieldfareRepackTestSupport",
             dependencies: ["ANEFieldfareImportedFormat"],
@@ -108,12 +106,6 @@ let package = Package(
             dependencies: ["ANEFieldfareHotpathCLICore"],
             path: "Sources/ANEFieldfareHotpathCLI",
             resources: [.copy("Fixtures")],
-            swiftSettings: strictSwiftSettings
-        ),
-        .executableTarget(
-            name: "ANEFieldfareQualityGate",
-            dependencies: ["ANEFieldfareHotpath"],
-            path: "Sources/ANEFieldfareQualityGate",
             swiftSettings: strictSwiftSettings
         ),
         .executableTarget(

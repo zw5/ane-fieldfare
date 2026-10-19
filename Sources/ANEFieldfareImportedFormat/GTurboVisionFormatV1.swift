@@ -10,39 +10,6 @@ package enum GTurboVisionFormatV1 {
     package static let weightsFile = "vision_weights.bin"
     package static let processorFile = "processor_config.json"
     package static let manifestFile = "manifest.json"
-    package static let receiptFile = "verified-install.json"
-    /// Whether an entry is something the OS wrote beside the pack rather than
-    /// part of it.
-    ///
-    /// Naming `.DS_Store` alone fixed one case and left every other sidecar:
-    /// a pack round-tripped through ExFAT, SMB or an archive carries
-    /// AppleDouble companions (`._manifest.json`), and Spotlight and iCloud
-    /// leave their own. Each of those made a pack whose manifest, receipt,
-    /// sizes and SHA-256 all verified fail to open, reporting that image
-    /// support was unavailable. The cryptographic checks are what establish the
-    /// pack is intact; an unexpected neighbour does not disprove it.
-    package static func isSidecarEntry(_ name: String) -> Bool {
-        name == ".DS_Store"
-            || name.hasPrefix("._")
-            || name.hasPrefix(".Spotlight-")
-            || name.hasPrefix(".fseventsd")
-            || name.hasPrefix(".TemporaryItems")
-            || name.hasSuffix(".icloud")
-    }
-
-    /// A directory mismatch stated in both directions. Reporting only what is
-    /// present labels the *surviving* files "unexpected" when the real problem
-    /// is a deleted one, which is the opposite of what the reader needs.
-    package static func entryDifference(
-        expected: Set<String>, actual: Set<String>
-    ) -> String {
-        let missing = expected.subtracting(actual).sorted()
-        let unexpected = actual.subtracting(expected).sorted()
-        var parts: [String] = []
-        if !missing.isEmpty { parts.append("missing \(missing)") }
-        if !unexpected.isEmpty { parts.append("unexpected \(unexpected)") }
-        return parts.isEmpty ? "entries differ" : parts.joined(separator: ", ")
-    }
 }
 
 package enum GTurboVisionDTypeV1: String, Codable, Equatable, Sendable {
@@ -107,10 +74,7 @@ package struct GTurboVisionManifestV1: Codable, Equatable, Sendable {
     package let versionMinor: Int
     package let modelID: String
     package let sourceRevision: String
-    package let sourceIndexSha256: String
-    package let processorConfigSha256: String
     package let compatibleTextSourceSnapshotHash: String
-    package let compatibleTextManifestSha256: String
     package let files: [String: GTurboManifestFileV1]
     package let tensors: [GTurboVisionTensorRegionV1]
 
@@ -119,9 +83,7 @@ package struct GTurboVisionManifestV1: Codable, Equatable, Sendable {
                  versionMajor: Int = GTurboVisionFormatV1.versionMajor,
                  versionMinor: Int = GTurboVisionFormatV1.versionMinor,
                  modelID: String, sourceRevision: String,
-                 sourceIndexSha256: String, processorConfigSha256: String,
                  compatibleTextSourceSnapshotHash: String,
-                 compatibleTextManifestSha256: String,
                  files: [String: GTurboManifestFileV1],
                  tensors: [GTurboVisionTensorRegionV1]) {
         self.magic = magic
@@ -130,10 +92,7 @@ package struct GTurboVisionManifestV1: Codable, Equatable, Sendable {
         self.versionMinor = versionMinor
         self.modelID = modelID
         self.sourceRevision = sourceRevision
-        self.sourceIndexSha256 = sourceIndexSha256
-        self.processorConfigSha256 = processorConfigSha256
         self.compatibleTextSourceSnapshotHash = compatibleTextSourceSnapshotHash
-        self.compatibleTextManifestSha256 = compatibleTextManifestSha256
         self.files = files
         self.tensors = tensors
     }
@@ -194,10 +153,6 @@ package enum GTurboVisionStructuralValidator {
             throw GTurboFormatError.invalid(field: "vision.manifest",
                                              reason: "missing source identity")
         }
-        try validateSHA(manifest.sourceIndexSha256, field: "vision.sourceIndexSha256")
-        try validateSHA(manifest.processorConfigSha256, field: "vision.processorConfigSha256")
-        try validateSHA(manifest.compatibleTextManifestSha256,
-                        field: "vision.compatibleTextManifestSha256")
 
         let expectedFiles = Set([
             GTurboVisionFormatV1.weightsFile,
@@ -208,14 +163,12 @@ package enum GTurboVisionStructuralValidator {
                                              reason: "expected exactly two payload files")
         }
         var filesystemKeys = Set<String>()
-        for (path, entry) in manifest.files {
+        for path in manifest.files.keys {
             try GTurboPathValidator.validateBasename(path, field: "vision.manifest.files.\(path)")
             guard filesystemKeys.insert(GTurboPathValidator.appleFilesystemKey(path)).inserted else {
                 throw GTurboFormatError.invalid(field: "vision.manifest.files.\(path)",
                                                  reason: "filesystem-equivalent duplicate path")
             }
-            try validateSHA(entry.sha256,
-                            field: "vision.manifest.files.\(path).sha256")
         }
 
         guard !manifest.tensors.isEmpty else {
@@ -286,122 +239,5 @@ package enum GTurboVisionStructuralValidator {
             }
             previousEnd = end
         }
-    }
-
-    private static func validateSHA(_ value: String, field: String) throws {
-        guard value.count == 64,
-              value.unicodeScalars.allSatisfy({
-                  (48...57).contains($0.value) || (65...70).contains($0.value)
-                      || (97...102).contains($0.value)
-              }) else {
-            throw GTurboFormatError.invalid(field: field,
-                                             reason: "expected 64 hexadecimal characters")
-        }
-    }
-}
-
-package struct GTurboVisionReceiptV1: Codable, Equatable, Sendable {
-    package let schemaVersion: Int
-    package let artifactKind: String
-    package let manifestSha256: String
-    package let companionDirectoryPath: String
-    package let compatibleTextManifestSha256: String
-    package let sourceRepoID: String
-    package let sourceRevision: String
-    package let verificationTimestamp: String
-    package let toolVersion: String
-    package let files: [String: GTurboManifestFileV1]
-
-    package init(schemaVersion: Int = 1,
-                 artifactKind: String = GTurboVisionFormatV1.artifactKind,
-                 manifestSha256: String, companionDirectoryPath: String,
-                 compatibleTextManifestSha256: String,
-                 sourceRepoID: String, sourceRevision: String,
-                 verificationTimestamp: String, toolVersion: String,
-                 files: [String: GTurboManifestFileV1]) {
-        self.schemaVersion = schemaVersion
-        self.artifactKind = artifactKind
-        self.manifestSha256 = manifestSha256
-        self.companionDirectoryPath = companionDirectoryPath
-        self.compatibleTextManifestSha256 = compatibleTextManifestSha256
-        self.sourceRepoID = sourceRepoID
-        self.sourceRevision = sourceRevision
-        self.verificationTimestamp = verificationTimestamp
-        self.toolVersion = toolVersion
-        self.files = files
-    }
-}
-
-package enum GTurboVisionReceiptCodec {
-    package static func decode(_ data: Data) throws -> GTurboVisionReceiptV1 {
-        guard UInt64(data.count) <= GTurboVisionFormatV1.metadataMaxBytes else {
-            throw GTurboFormatError.invalid(field: GTurboVisionFormatV1.receiptFile,
-                                             reason: "metadata exceeds 4 MiB")
-        }
-        let receipt: GTurboVisionReceiptV1
-        do { receipt = try JSONDecoder().decode(GTurboVisionReceiptV1.self, from: data) }
-        catch {
-            throw GTurboFormatError.invalid(field: GTurboVisionFormatV1.receiptFile,
-                                             reason: "\(error)")
-        }
-        try validate(receipt)
-        return receipt
-    }
-
-    package static func encode(_ receipt: GTurboVisionReceiptV1) throws -> Data {
-        try validate(receipt)
-        let encoder = JSONEncoder()
-        do {
-            let object = try JSONSerialization.jsonObject(with: encoder.encode(receipt))
-            let data = try JSONSerialization.data(
-                withJSONObject: object,
-                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-            guard UInt64(data.count) <= GTurboVisionFormatV1.metadataMaxBytes else {
-                throw GTurboFormatError.invalid(field: GTurboVisionFormatV1.receiptFile,
-                                                 reason: "metadata exceeds 4 MiB")
-            }
-            return data
-        } catch let error as GTurboFormatError {
-            throw error
-        } catch {
-            throw GTurboFormatError.invalid(field: GTurboVisionFormatV1.receiptFile,
-                                             reason: "\(error)")
-        }
-    }
-
-    private static func validate(_ receipt: GTurboVisionReceiptV1) throws {
-        guard receipt.schemaVersion == 1,
-              receipt.artifactKind == GTurboVisionFormatV1.artifactKind,
-              !receipt.companionDirectoryPath.isEmpty,
-              !receipt.sourceRepoID.isEmpty, !receipt.sourceRevision.isEmpty,
-              !receipt.verificationTimestamp.isEmpty, !receipt.toolVersion.isEmpty else {
-            throw GTurboFormatError.invalid(field: "vision.receipt",
-                                             reason: "invalid identity")
-        }
-        try GTurboVisionStructuralValidator.validateReceiptSHA(
-            receipt.manifestSha256, field: "vision.receipt.manifestSha256")
-        try GTurboVisionStructuralValidator.validateReceiptSHA(
-            receipt.compatibleTextManifestSha256,
-            field: "vision.receipt.compatibleTextManifestSha256")
-        let expected = Set([
-            GTurboVisionFormatV1.manifestFile,
-            GTurboVisionFormatV1.weightsFile,
-            GTurboVisionFormatV1.processorFile,
-        ])
-        guard Set(receipt.files.keys) == expected else {
-            throw GTurboFormatError.invalid(field: "vision.receipt.files",
-                                             reason: "file set mismatch")
-        }
-        for (path, file) in receipt.files {
-            try GTurboPathValidator.validateBasename(path, field: "vision.receipt.files.\(path)")
-            try GTurboVisionStructuralValidator.validateReceiptSHA(
-                file.sha256, field: "vision.receipt.files.\(path).sha256")
-        }
-    }
-}
-
-private extension GTurboVisionStructuralValidator {
-    static func validateReceiptSHA(_ value: String, field: String) throws {
-        try validateSHA(value, field: field)
     }
 }

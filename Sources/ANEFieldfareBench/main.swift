@@ -77,8 +77,7 @@ import Metal
         let started = Date()
         let modelURL = URL(fileURLWithPath: options.model)
         let context = try MetalContext()
-        let model = try Model.load(directoryURL: modelURL, device: context.device,
-                                   integrityPolicy: .sizeCheckTrustedReceipt)
+        let model = try Model.load(directoryURL: modelURL, device: context.device)
         let tokenizer = try await GFTokenizer.load(forModelDirectory: modelURL)
         let maxContext = 4096
         let runner = try RealForwardRunner(model: model, context: context, maxContext: maxContext,

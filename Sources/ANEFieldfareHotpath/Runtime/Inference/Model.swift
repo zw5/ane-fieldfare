@@ -3,27 +3,12 @@ public import Metal
 import Darwin
 import ANEFieldfareImportedFormat
 
-public struct ModelLoadStats: Sendable {
-    public var manifestSha256Nanos: UInt64
-    public var receiptValidationNanos: UInt64
-    public var eagerSha256Nanos: UInt64
-
-    public init(manifestSha256Nanos: UInt64 = 0,
-                receiptValidationNanos: UInt64 = 0,
-                eagerSha256Nanos: UInt64 = 0) {
-        self.manifestSha256Nanos = manifestSha256Nanos
-        self.receiptValidationNanos = receiptValidationNanos
-        self.eagerSha256Nanos = eagerSha256Nanos
-    }
-}
-
 /// Loaded `.gturbo/` model. Resident weights live behind one mmap'd
 /// `MTLBuffer`; routed expert weights are per-layer mappings, opened lazily
 /// on first touch and served from the OS page cache (`MappedExpertLayer`).
 public struct Model {
     public let device: any MTLDevice
     public let config: ArchConfig
-    public let integrityPolicy: ModelIntegrityPolicy
     public var modelID: String { manifest.modelID }
     public var sourceSnapshotHash: String? { manifest.sourceSnapshotHash }
     public var sharedExpertWeightBits: Int { manifest.quant?.sharedExpert.weightBits ?? 8 }
@@ -40,15 +25,12 @@ public struct Model {
 
     init(device: any MTLDevice,
          config: ArchConfig,
-         integrityPolicy: ModelIntegrityPolicy,
          residentBuffer: ResidentBuffer,
          residentIndex: ResidentIndex,
          packedExpertsLayout: PackedExpertsLayout,
          manifest: Manifest,
          directoryURL: URL,
-         modelDirectory: GTurboModelDirectory,
-         loadStats: ModelLoadStats) throws {
-        self.loadStats = loadStats
+         modelDirectory: GTurboModelDirectory) throws {
         self.embedding = try Self.resident(
             name: "language_model.model.embed_tokens.weight",
             index: residentIndex, buffer: residentBuffer)
@@ -57,7 +39,6 @@ public struct Model {
             index: residentIndex, buffer: residentBuffer)
         self.device = device
         self.config = config
-        self.integrityPolicy = integrityPolicy
         self.residentBuffer = residentBuffer
         self.residentIndex = residentIndex
         self.packedExpertsLayout = packedExpertsLayout
@@ -69,8 +50,7 @@ public struct Model {
             layout: packedExpertsLayout,
             manifest: manifest,
             directoryURL: directoryURL,
-            modelDirectory: modelDirectory,
-            integrityPolicy: integrityPolicy)
+            modelDirectory: modelDirectory)
     }
 
     // MARK: - Resident accessors
@@ -116,8 +96,6 @@ public struct Model {
         try resident(name: "language_model.model.layers.\(L).post_attention_layernorm.weight")
     }
     public let finalNorm: TensorView
-    /// Integrity-check timings from `load`.
-    public let loadStats: ModelLoadStats
 
     // MARK: - Per-head attention norms (Q/K only)
     //
@@ -237,12 +215,12 @@ public struct Model {
         return view
     }
 
-    /// Layer L's mapping, opening and verifying its file on first touch.
+    /// Layer L's mapping, opening its file on first touch.
     func expertLayer(_ L: Int) throws -> MappedExpertLayer {
         try routedLayers.layer(L)
     }
 
-    /// Open layer L's file + verify SHA, idempotent.
+    /// Open layer L's file and check its size, idempotent.
     func ensureLayerOpened(_ L: Int) throws {
         _ = try expertLayer(L)
     }
@@ -265,15 +243,12 @@ public struct Model {
 
 extension Model {
 
-    /// Open a `.gturbo/` directory and return a typed handle. Eagerly verifies
-    /// SHA-256 of `model_weights.bin` and `packed_experts/layout.json`; layer
-    /// files are verified lazily on first `routedExpert(...)` touch.
+    /// Open a `.gturbo/` directory and return a typed handle. File sizes are
+    /// checked against the manifest; layer files are opened lazily on first
+    /// `routedExpert(...)` touch.
     public static func load(directoryURL: URL,
                             device: any MTLDevice,
-                            expecting: ArchConfig = .gemma4_26B_A4B,
-                            integrityPolicy: ModelIntegrityPolicy? = nil) throws -> Model {
-        var stats = ModelLoadStats()
-        let resolvedIntegrityPolicy = integrityPolicy ?? .fullSha256
+                            expecting: ArchConfig = .gemma4_26B_A4B) throws -> Model {
         let modelDirectory = try GTurboModelDirectory(rootURL: directoryURL)
         let manifestFD: Int32
         do { manifestFD = try modelDirectory.openFile("manifest.json") }
@@ -282,49 +257,10 @@ extension Model {
         let manifestData = try modelDirectory.readMetadata(
             fileDescriptor: manifestFD, relativePath: "manifest.json",
             maxBytes: ManifestReader.defaultMaxBytes)
-        let manifestSize = UInt64(manifestData.count)
-        let manifestShaStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-        let manifestSha = Sha256Verifier.hashData(manifestData)
-        stats.manifestSha256Nanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - manifestShaStart
-        let receipt: VerifiedInstallReceipt?
-        if resolvedIntegrityPolicy == .sizeCheckTrustedReceipt {
-            let receiptStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            let receiptFD: Int32
-            do {
-                receiptFD = try modelDirectory.openFile(VerifiedInstallReceiptReader.fileName)
-            } catch ModelError.missingFile {
-                throw ModelError.trustedReceiptInvalid(
-                    detail: "\(VerifiedInstallReceiptReader.fileName) is missing")
-            }
-            defer { close(receiptFD) }
-            let receiptData = try modelDirectory.readMetadata(
-                fileDescriptor: receiptFD,
-                relativePath: VerifiedInstallReceiptReader.fileName,
-                maxBytes: VerifiedInstallReceiptReader.defaultMaxBytes)
-            let loadedReceipt = try VerifiedInstallReceiptReader.decode(data: receiptData)
-            try VerifiedInstallReceiptReader.validateManifestBinding(
-                loadedReceipt,
-                directoryURL: directoryURL,
-                manifestSha256: manifestSha)
-            stats.receiptValidationNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - receiptStart
-            receipt = loadedReceipt
-        } else {
-            receipt = nil
-        }
-
         let manifest = try ManifestReader.decode(
             data: manifestData, expecting: expecting)
-        if let receipt {
-            let receiptStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            try VerifiedInstallReceiptReader.validate(receipt,
-                                                      directoryURL: directoryURL,
-                                                      manifest: manifest,
-                                                      manifestSha256: manifestSha,
-                                                      manifestSize: manifestSize)
-            stats.receiptValidationNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - receiptStart
-        }
 
-        // Verify the small, always-touched files before mapping model data.
+        // Check the small, always-touched files before mapping model data.
         let weightsURL = directoryURL.appendingPathComponent("model_weights.bin")
         guard let weightsEntry = manifest.files["model_weights.bin"] else {
             throw ModelError.missingFile(name: "model_weights.bin")
@@ -353,25 +289,8 @@ extension Model {
                 expected: weightsEntry.size,
                 actual: weightsSize)
         }
-        let eagerShaStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-        try Sha256Verifier.verifyFile(fileDescriptor: weightsFD,
-                                      named: "model_weights.bin",
-                                      expectedHex: weightsEntry.sha256)
-        guard Sha256Verifier.hashData(layoutData).lowercased()
-                == layoutEntry.sha256.lowercased() else {
-            throw ModelError.checksumMismatch(file: "packed_experts/layout.json")
-        }
-        stats.eagerSha256Nanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - eagerShaStart
-
         let layout = try PackedExpertsLayoutReader.decode(data: layoutData,
                                                           manifest: manifest)
-        if resolvedIntegrityPolicy == .sizeCheckTrustedReceipt {
-            let receiptStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            try validateTrustedReceiptLayerLayout(modelDirectory: modelDirectory,
-                                                  manifest: manifest,
-                                                  layout: layout)
-            stats.receiptValidationNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - receiptStart
-        }
 
         let residentIndex = try ResidentIndexReader.load(
             fileDescriptor: weightsFD, displayPath: "model_weights.bin")
@@ -402,36 +321,12 @@ extension Model {
         return try Model(
             device: device,
             config: expecting,
-            integrityPolicy: resolvedIntegrityPolicy,
             residentBuffer: residentBuffer,
             residentIndex: residentIndex,
             packedExpertsLayout: layout,
             manifest: manifest,
             directoryURL: directoryURL,
-            modelDirectory: modelDirectory,
-            loadStats: stats)
-    }
-
-    private static func validateTrustedReceiptLayerLayout(modelDirectory: GTurboModelDirectory,
-                                                          manifest: Manifest,
-                                                          layout: PackedExpertsLayout) throws {
-        for layer in layout.layers {
-            let relativePath = "packed_experts/\(layer.file)"
-            guard let manifestEntry = manifest.files[relativePath] else {
-                throw ModelError.trustedReceiptInvalid(detail: "manifest missing \(relativePath)")
-            }
-            let actualSize: UInt64
-            do {
-                let fd = try modelDirectory.openFile(relativePath)
-                defer { close(fd) }
-                actualSize = try modelDirectory.fileSize(
-                    fileDescriptor: fd, relativePath: relativePath)
-            }
-            guard actualSize == manifestEntry.size else {
-                throw ModelError.trustedReceiptInvalid(
-                    detail: "\(relativePath) size \(actualSize) != \(manifestEntry.size)")
-            }
-        }
+            modelDirectory: modelDirectory)
     }
 
     static func validateRuntimeSchema(residentIndex: ResidentIndex,
@@ -655,7 +550,7 @@ extension Model {
     /// Unmaps routed-expert layers before vision encoding under `.onDemand`.
     /// Expert pages live in the page cache, which the OS reclaims under
     /// pressure either way, so this only drops the mappings; layers reopen on
-    /// next touch without re-verifying.
+    /// next touch.
     ///
     /// The caller must serialize this transition against forward execution.
     public func prepareExpertResidencyForVision(
@@ -663,8 +558,6 @@ extension Model {
         gpuDrainNanoseconds: UInt64 = 0
     ) -> VisionExpertResidencyTransition {
         let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-        // `RoutedExpertLayers` keeps each layer's verification across a
-        // release, so reopening never re-hashes 13 GB.
         let released = policy == .onDemand ? routedLayers.release() : 0
         return VisionExpertResidencyTransition(
             policy: policy,
