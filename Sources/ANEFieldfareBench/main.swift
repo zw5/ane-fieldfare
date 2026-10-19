@@ -93,9 +93,14 @@ import Metal
         log(unsafe "[bench \(options.label)] load \(String(format: "%.1f", Date().timeIntervalSince(started)))s; "
             + "\(promptSet.count) prompts x \(modes.count) modes x \(options.reps) reps, \(options.tokens) tokens")
 
+        // Plain decode guesses its head from the hot vocabulary unless
+        // ANE_FIELDFARE_HOT_HEAD=0; output is the same either way.
+        let useHotHead = ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOT_HEAD"] != "0"
         // Warm-up: compiles pipelines and fills the page cache the same way for
         // both builds before anything is measured.
-        _ = try await generate(prompt: promptSet[0].1, tokens: 48, producer: runner, tokenizer: tokenizer,
+        _ = try await generate(prompt: promptSet[0].1, tokens: 48,
+                               producer: (useHotHead ? HotHeadDecoder(runner: runner) : nil) ?? runner,
+                               tokenizer: tokenizer,
                                context: context, scratch: scratch)
         if let drafter {
             _ = try await generate(prompt: promptSet[0].1, tokens: 48,
@@ -114,8 +119,10 @@ import Metal
                     let decoder = try drafter.flatMap { drafter in
                         try mode == "spec" ? SpeculativeDecoder(runner: runner, drafter: drafter) : nil
                     }
+                    let hot = useHotHead ? HotHeadDecoder(runner: runner) : nil
+                    let plain: any LogitProducer = hot ?? runner
                     let result = try await generate(prompt: text, tokens: options.tokens,
-                                                    producer: decoder ?? runner, tokenizer: tokenizer,
+                                                    producer: decoder ?? plain, tokenizer: tokenizer,
                                                     context: context, scratch: scratch)
                     let delta = Counters(runner).minus(before)
                     let decodeTPS = result.result.decodeSeconds > 0
@@ -130,6 +137,9 @@ import Metal
                         "generated_ids": result.ids.map(Int.init),
                         "counters": delta.json,
                     ]
+                    if let hot {
+                        record["hot_head"] = ["guessed_steps": hot.guessedSteps, "wrong_guesses": hot.wrongGuesses]
+                    }
                     if let decoder {
                         var spec = decoder.stats.profile
                         spec["acceptance_rate"] = decoder.policy.acceptanceRate

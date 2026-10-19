@@ -94,7 +94,7 @@ let package = Package(
                 .product(name: "Hub", package: "swift-transformers"),
             ],
             path: "Sources/ANEFieldfareHotpath",
-            resources: [.copy("Metal"), .copy("NextLayerGuess")],
+            resources: [.copy("Metal"), .copy("NextLayerGuess"), .copy("HotVocabulary")],
             swiftSettings: strictSwiftSettings
         ),
         .target(

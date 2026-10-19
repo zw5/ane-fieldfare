@@ -155,6 +155,18 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// hold all 8 routes in about 9 of 10 layers.
     private let bindTop = ProcessInfo.processInfo.environment["ANE_FIELDFARE_BIND_TOP"].flatMap(Int.init) ?? 24
     private let greedyTokenBuf: any MTLBuffer // 4 B UInt32 fused-head output
+    /// The hot-vocabulary head `HotHeadDecoder` guesses with; nil when the
+    /// runtime ships no list for this vocabulary or the head writes logits.
+    let hotVocabulary: HotVocabulary?
+    /// When set, decode leaves its normalized final row at `row` of
+    /// `headCheckRows`. With `check` false it guesses its token from
+    /// `hotVocabulary`; with `check` true it runs the full head over rows
+    /// 0...row instead, leaving their tokens in `checkedTokens` and its own as
+    /// `lastGreedyToken`.
+    var hotHead: (row: Int, check: Bool)?
+    private(set) var checkedTokens: [UInt32] = []
+    private let headCheckRows: any MTLBuffer
+    private let headCheckTokens: any MTLBuffer
     private var prefillChunkState = PrefillChunkCommitState()
     private var prefillScratch: PrefillChunkScratchBuffers?
     /// Owns the ANE guest; the forward loop asks it per layer whether the
@@ -323,6 +335,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             throw ModelError.residentBufferWrapFailed
         }
         self.greedyTokenBuf = tok
+        let vocab = cfg.vocabSize, hiddenSize = cfg.hiddenSize
+        self.hotVocabulary = try runtimeConfiguration.headPath == .fusedRows && hiddenSize == 2816
+            ? HotVocabulary.shipped(vocab: vocab).map {
+                try HotVocabulary(url: $0, vocab: vocab, device: device)
+            }
+            : nil
+        self.headCheckRows = try buf(LMHeadChainInt4.maxCheckRows * cfg.hiddenSize)
+        self.headCheckTokens = try buf(LMHeadChainInt4.maxCheckRows, MemoryLayout<UInt32>.size)
         self.chunkGuessIDs = try buf(Self.maxVerifyTokens * cfg.topKExperts, MemoryLayout<UInt32>.size)
         self.chunkGuessWeights = try buf(Self.maxVerifyTokens * cfg.topKExperts)
 
@@ -2088,7 +2108,41 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         let lm    = model.embedding
         let tHead = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         let headBefore = totalHeadFusedNanos
-        if useFusedGreedyHead && outputMode == .greedyIfAvailable {
+        if useFusedGreedyHead && outputMode == .greedyIfAvailable, let (row, check) = hotHead,
+           let hot = hotVocabulary {
+            let lm = model.lmHead
+            try runSync { cb in
+                if check {
+                    self.fusionHead.encodeNormRow(
+                        commandBuffer: cb, hidden: self.hidden,
+                        normWeight: fNorm.buffer, normOffset: Int(fNorm.offset),
+                        normedRows: self.headCheckRows, row: row, d: D, rmsEps: eps)
+                    self.fusionHead.encodeGreedyCheck(
+                        commandBuffer: cb, normedRows: self.headCheckRows, rowCount: row + 1,
+                        weights: lm.buffer, weightsOffset: Int(lm.offset),
+                        scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                        biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                        outTokens: self.headCheckTokens, d: D, vocab: UInt32(self.cfg.vocabSize))
+                } else {
+                    self.fusionHead.encodeHotGreedyDecode(
+                        commandBuffer: cb, hidden: self.hidden,
+                        normWeight: fNorm.buffer, normOffset: Int(fNorm.offset), table: hot,
+                        weights: lm.buffer, weightsOffset: Int(lm.offset),
+                        scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                        biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                        normedRows: self.headCheckRows, row: row,
+                        outToken: self.greedyTokenBuf, d: D, rmsEps: eps)
+                }
+            }
+            totalHeadFusedNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
+            if check {
+                let out = unsafe headCheckTokens.contents().bindMemory(to: UInt32.self, capacity: row + 1)
+                checkedTokens = (0...row).map { unsafe out[$0] }
+                lastGreedyToken = checkedTokens[row]
+            } else {
+                lastGreedyToken = unsafe greedyTokenBuf.contents().load(as: UInt32.self)
+            }
+        } else if useFusedGreedyHead && outputMode == .greedyIfAvailable {
             try runSync { cb in
                 self.fusionHead.encodeGreedyDecode(
                     commandBuffer: cb,

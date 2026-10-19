@@ -222,4 +222,74 @@ import ANEFieldfareValidationSupport
             hiddenOffset: selectedRow * rowStride * MemoryLayout<Float16>.stride)
         #expect(result == UInt32(target))
     }
+
+    /// `encodeGreedyCheck` over 1-4 saved rows gives each row the token the
+    /// single-row head gives it, ties to the lowest index included; and the
+    /// hot-vocabulary guess is the single-row head's argmax over its listed
+    /// rows. Decode's shape (D = 2816), a 4,099-row head with a tied pair.
+    @Test func checkAndHotGuessMatchSingleRowHead() throws {
+        let d = 2816, v = 4099, rowsChecked = 4
+        var rng = SplitMix64(seed: 0xC4EC_4EAD)
+        var rows = (0..<v).map { _ in
+            Quantization.quantizeInt4Affine((0..<d).map { _ in rng.uniform(-0.5, 0.5) })
+        }
+        rows[3001] = rows[1200]
+        let (packed, scales, biases) = Self.packRows(rows)
+        let hidden = (0..<(rowsChecked * d)).map { _ in Float16(rng.uniform(-1, 1)) }
+        let norm = (0..<d).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
+        let context = try MetalContext()
+        let device = context.device
+        let chain = try LMHeadChainInt4(context: context, maxD: d, maxVocab: v)
+        func buffer<T: BitwiseCopyable>(_ values: [T]) -> any MTLBuffer {
+            values.withUnsafeBytes {
+                unsafe device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)!
+            }
+        }
+        let hiddenBuffer = buffer(hidden), normBuffer = buffer(norm)
+        let w = buffer(packed), s = buffer(scales), b = buffer(biases)
+        let normed = device.makeBuffer(length: rowsChecked * d * 2, options: .storageModeShared)!
+        let out = device.makeBuffer(length: 16, options: .storageModeShared)!
+
+        var single: [UInt32] = []
+        for row in 0..<rowsChecked {
+            let cb = context.queue.makeCommandBuffer()!
+            chain.encodeGreedyDecode(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
+                                     normWeight: normBuffer, weights: w, scales: s, biases: b,
+                                     outToken: out, d: UInt32(d), vocab: UInt32(v))
+            cb.commit(); cb.waitUntilCompleted()
+            single.append(unsafe out.contents().load(as: UInt32.self))
+        }
+        for count in 1...rowsChecked {
+            let cb = context.queue.makeCommandBuffer()!
+            for row in 0..<count {
+                chain.encodeNormRow(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
+                                    normWeight: normBuffer, normedRows: normed, row: row, d: UInt32(d))
+            }
+            chain.encodeGreedyCheck(commandBuffer: cb, normedRows: normed, rowCount: count,
+                                    weights: w, scales: s, biases: b, outTokens: out,
+                                    d: UInt32(d), vocab: UInt32(v))
+            cb.commit(); cb.waitUntilCompleted()
+            let checked = (0..<count).map { unsafe out.contents().load(fromByteOffset: 4 * $0, as: UInt32.self) }
+            #expect(checked == Array(single.prefix(count)), "\(count) rows")
+        }
+
+        // A list holding each row's winner and every other row but a few.
+        let listed = (0..<UInt32(v)).filter { $0 % 7 != 3 || single.contains($0) }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("hot-\(UUID()).bin")
+        var data = Data(HotVocabulary.magic)
+        for value in [UInt32(v), UInt32(listed.count)] + listed.reversed() {
+            withUnsafeBytes(of: value.littleEndian) { unsafe data.append(contentsOf: $0) }
+        }
+        try data.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let table = try HotVocabulary(url: file, vocab: v, device: device)
+        for row in 0..<rowsChecked {
+            let cb = context.queue.makeCommandBuffer()!
+            chain.encodeHotGreedyDecode(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
+                                        normWeight: normBuffer, table: table, weights: w, scales: s, biases: b,
+                                        normedRows: normed, row: row, outToken: out, d: UInt32(d))
+            cb.commit(); cb.waitUntilCompleted()
+            #expect(unsafe out.contents().load(as: UInt32.self) == single[row], "hot guess row \(row)")
+        }
+    }
 }

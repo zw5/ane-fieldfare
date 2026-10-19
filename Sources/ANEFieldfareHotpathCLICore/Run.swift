@@ -270,9 +270,17 @@ public func run(args: Args,
                                             context: context, maxContext: args.maxContext)
             speculative = try SpeculativeDecoder(runner: runner, drafter: drafter)
         }
-        let producer: any LogitProducer = speculative ?? runner
         let effectiveMaxNew = min(args.maxNew, args.maxContext - promptIds.count)
         let config = makeConfig(maxNewTokens: effectiveMaxNew)
+        // Plain greedy text decoding guesses from the hot vocabulary and
+        // checks every token against the full head; the output is the same.
+        var producer: any LogitProducer = runner
+        if let speculative {
+            producer = speculative
+        } else if multimodalInput == nil, config.isPureGreedy, runtime.prefillConfig.mode == .chunked,
+                  let hotHead = HotHeadDecoder(runner: runner) {
+            producer = hotHead
+        }
 
         var generatedTokenIDs: [Int32] = []
         let stats = try await runRawCompletion(
