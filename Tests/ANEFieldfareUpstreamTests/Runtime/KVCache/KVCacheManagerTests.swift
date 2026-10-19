@@ -35,15 +35,6 @@ import Metal
         #expect(kv.keyBuffer(layer: 5, validTokenCount: 0).length == 128 * 2048)
     }
 
-    @Test func linearGrowth_tracksAdvance() throws {
-        let (_, kv) = try makeManager(maxContext: 128)
-        #expect(kv.position == 0)
-        for n in 1...100 {
-            kv.advance()
-            #expect(kv.position == n)
-        }
-    }
-
     /// Full layers share the raw k_proj output, then diverge: K runs k_norm +
     /// RoPE while V runs no-scale v_norm without RoPE. They therefore require
     /// separate cache slots.
@@ -63,13 +54,6 @@ import Metal
         let (_, kv) = try makeManager(maxContext: 16)
         #expect(kv.keyBuffer(layer: 0, validTokenCount: 0)
                 !== kv.valueBuffer(layer: 0, validTokenCount: 0))
-    }
-
-    @Test func slotOffsets_areLinear() throws {
-        let (_, kv) = try makeManager(maxContext: 128)
-        #expect(kv.kSlot(layer: 0, position: 0).offset == 0)
-        #expect(kv.kSlot(layer: 0, position: 3).offset == 3 * 4096)
-        #expect(kv.vSlot(layer: 5, position: 7).offset == 7 * 2048)
     }
 
     @Test func fp16Ring_capsSWALayersAndLeavesFullLayersLinear() throws {

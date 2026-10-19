@@ -541,22 +541,6 @@ func parseInput(args: Args) throws -> PromptInput {
     return .multimodal(messages: messages, images: images)
 }
 
-/// An image prompt's token count follows from geometry, so an oversized one can
-/// be refused in milliseconds instead of after a model load and a GPU encode.
-func validatePromptSize(
-    tokens: Int,
-    args: Args,
-    stderr: FileHandle
-) -> RunResult? {
-    guard tokens + args.maxNew <= args.maxContext else {
-        return errored(
-            stderr,
-            "context overflow: prompt \(tokens) + maxNew \(args.maxNew) exceeds maxContext \(args.maxContext)",
-            2)
-    }
-    return nil
-}
-
 private func errored(_ stderr: FileHandle, _ message: String, _ code: Int32) -> RunResult {
     stderr.write(Data("error: \(message)\n".utf8))
     return RunResult(exitCode: code)

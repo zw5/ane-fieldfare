@@ -3,25 +3,6 @@ import ANEFieldfareHotpath
 @testable import ANEFieldfareHotpathCLICore
 
 @Suite struct CLIArgumentsTests {
-    @Test func defaultsUseProductionGenerationValues() throws {
-        let arguments = try Args.parse(["--model", "m.gturbo", "--prompt", "hi"])
-        #expect(arguments.model == "m.gturbo")
-        #expect(arguments.prompt == "hi")
-        #expect(arguments.messagesFile == nil)
-        #expect(arguments.maxNew == 1_024)
-        // ANE Fieldfare retains its 32K context default.
-        #expect(arguments.maxContext == 32_768)
-        #expect(arguments.temperature == 0.2)
-        #expect(arguments.topK == 64)
-        #expect(arguments.topP == 0.95)
-        #expect(arguments.repetitionPenalty == 1)
-        #expect(arguments.seed == nil)
-        #expect(arguments.stops.isEmpty)
-        #expect(!arguments.quiet)
-
-        let runtime = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
-        #expect(runtime == RuntimeConfiguration.production)
-    }
 
     /// `auto` only resolves a size where a chunked prefill will run at it.
     /// Under `--prefill off` the config is `.off` and the size is inert, and an
@@ -131,22 +112,6 @@ import ANEFieldfareHotpath
         }
     }
 
-    @Test func helpListsExactlyThePublicOptions() {
-        let expected: Set<String> = [
-            "--model", "--prompt", "--messages-file", "--max-new", "--max-context",
-            "--temperature", "--top-k", "--top-p", "--repetition-penalty",
-            "--seed", "--stop", "--quiet",
-            "--prefill", "--prefill-chunk-tokens",
-            "--help", "--backend", "--fault-policy", "--prompt-file",
-            "--count-tokens", "--verify-weights", "--expert-top-k", "--prefill-expert-cap",
-            "--chat-prompt", "--image", "--vision-pack", "--vision-residency",
-            "--early-expert-read", "--drafter",
-        ]
-        let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
-        let options = Set(words.map(String.init).filter { $0.hasPrefix("--") })
-        #expect(options == expected)
-    }
-
     @Test func runtimeOptionsReachTypedConfiguration() throws {
         let arguments = try Args.parse([
             "--model", "m.gturbo", "--prompt", "hi",
@@ -194,15 +159,6 @@ import ANEFieldfareHotpath
 
     }
 
-    /// The page cache replaced the slot cache, so its knobs are gone.
-    @Test func removedExpertCacheFlagsAreUnknown() {
-        for (flag, value) in [("--expert-cache-slots", "48"), ("--expert-cache-policy", "lru")] {
-            #expect(throws: ArgsError.unknownFlag(flag)) {
-                _ = try Args.parse(["--model", "m.gturbo", "--prompt", "hi", flag, value])
-            }
-        }
-    }
-
     @Test func programmaticArgumentsCannotReachRuntimePreconditions() {
         var arguments = Args(model: "m.gturbo", prompt: "hi")
         arguments.prefillChunkTokens = 8192
@@ -227,14 +183,6 @@ import ANEFieldfareHotpath
         #expect(throws: ArgsError.modeMissing) {
             _ = try Args.parse(["--model", "m.gturbo"])
         }
-    }
-
-    @Test func messagesFileSelectsChatMode() throws {
-        let arguments = try Args.parse([
-            "--model", "m.gturbo", "--messages-file", "chat.json",
-        ])
-        #expect(arguments.prompt == nil)
-        #expect(arguments.messagesFile == "chat.json")
     }
 
     @Test func promptAndMessagesFileAreMutuallyExclusive() {

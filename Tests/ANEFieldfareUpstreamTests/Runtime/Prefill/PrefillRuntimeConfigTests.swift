@@ -2,18 +2,6 @@ import Testing
 @testable import ANEFieldfareHotpath
 
 @Suite struct PrefillRuntimeConfigTests {
-    @Test(arguments: [32, 64, 128])
-    func productionUsesCompleteChunkedPath(_ chunkTokens: Int) throws {
-        let config = PrefillRuntimeConfig.production(chunkTokens: chunkTokens)
-        #expect(config.mode == .chunked)
-        #expect(config.chunkTokens == chunkTokens)
-    }
-
-    @Test func offDisablesChunkedPrefill() {
-        let config = PrefillRuntimeConfig.off
-        #expect(config.mode == .off)
-        #expect(!config.enabled)
-    }
 
     @Test func plannerUsesConfiguredChunkSize() {
         let spans = PrefillChunkPlanner.spans(

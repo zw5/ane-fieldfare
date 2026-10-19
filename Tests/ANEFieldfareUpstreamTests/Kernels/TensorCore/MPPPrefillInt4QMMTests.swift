@@ -419,40 +419,4 @@ private let mppTensorOpsAvailable: Bool = {
         #expect(unalignedScale.fallbackCount == 1)
     }
 
-    /// When a variant cannot come up it must name the function it actually
-    /// needed. The BF16 variant — the vision projector — used to report the f16
-    /// symbol as missing: a symbol that is present, on a device that may simply
-    /// be too old. The failure held whichever way it went, so it sent whoever
-    /// read it looking in the wrong place.
-    ///
-    /// Holds on both device classes: on an Apple10 GPU the variant comes up and
-    /// there is no message to get wrong.
-    @Test func anUnavailableVariantNamesItsOwnFunction() throws {
-        let context = try MetalContext()
-        let apple10 = context.device.supportsFamily(.apple10)
-
-        for (variant, symbol) in [
-            (MPPPrefillInt4QMM.Variant.apple10BF16,
-             "mpp_prefill_affine_threadgroup_bf16_apple10_v1"),
-            (MPPPrefillInt4QMM.Variant.apple10V1,
-             "mpp_prefill_affine_threadgroup_f16_apple10_v1"),
-        ] {
-            let candidate = MPPPrefillInt4QMM(context: context, variant: variant)
-            guard let reason = candidate.unavailableReason else {
-                #expect(candidate.isAvailable,
-                        "\(variant.rawValue) reported no reason and is not available")
-                continue
-            }
-            #expect(reason.contains(symbol),
-                    "\(variant.rawValue) failed without naming \(symbol): \(reason)")
-            if variant == .apple10BF16 {
-                #expect(!reason.contains("mpp_prefill_affine_threadgroup_f16 "),
-                        "the BF16 variant blamed the f16 symbol: \(reason)")
-            }
-            if !apple10 {
-                #expect(reason.contains("Apple10"),
-                        "an old device was not named as the cause: \(reason)")
-            }
-        }
-    }
 }

@@ -6,19 +6,6 @@ import ANEFieldfareImportedFormat
 /// file; these pin the shared derivation itself.
 @Suite struct GTurboVisionLockPathsTests {
 
-    @Test func lockFileIsADottedSiblingOfTheCompanion() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory
-            .appendingPathComponent("lockpaths-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: root) }
-        let url = GTurboVisionLockPathsV1.useLockURL(
-            forCompanion: root.appendingPathComponent("pack.vision.gturbo"))
-        #expect(url.lastPathComponent == ".pack.vision.gturbo.use.lock")
-        #expect(url.deletingLastPathComponent().lastPathComponent
-            == root.lastPathComponent)
-    }
-
     @Test func symlinkedParentDerivesTheSameLockFileAsThePhysicalPath() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory

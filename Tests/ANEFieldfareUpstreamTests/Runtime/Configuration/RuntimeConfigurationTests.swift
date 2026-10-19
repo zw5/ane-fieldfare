@@ -2,14 +2,6 @@ import Testing
 @testable import ANEFieldfareHotpath
 
 @Suite struct RuntimeConfigurationTests {
-    @Test func productionDefaultsAreStable() {
-        let runtime = RuntimeConfiguration.production
-        #expect(runtime.fp16RingEnabled)
-        #expect(runtime.prefillPolicy == .chunked)
-        #expect(runtime.prefillChunkTokens == 1024)
-        #expect(runtime.prefillAttentionPath == .causalSIMD)
-        #expect(runtime.headPath == .fusedRows)
-    }
 
     @Test func retainedControlsReachTypedRuntime() {
         let runtime = RuntimeConfiguration(

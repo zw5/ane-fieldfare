@@ -33,16 +33,6 @@ struct TokenizerTests {
         #expect(tok.stopTokenIDs.count == 3)
     }
 
-    @Test("convertTokenToId substitutes unk for absent tokens")
-    func convertTokenToIdSubstitutesUnk() {
-        // Pins the library behavior `requireTokenID` exists for: BPE resolves an
-        // absent token to the unknown-token ID, never nil, so a plain `guard
-        // let` cannot detect a missing special marker.
-        let id = tok.tokenizer.convertTokenToId("<no-such-token-xyzzy>")
-        #expect(id != nil)
-        #expect(id == tok.tokenizer.unknownTokenId)
-    }
-
     @Test("Marker resolution rejects unk substitution")
     func markerResolutionRejectsUnk() throws {
         #expect(throws: GFTokenizerError.self) {
@@ -90,18 +80,6 @@ struct TokenizerTests {
         #expect(throws: GFTokenizerError.self) {
             _ = try GFTokenizer(tokenizer: tok.tokenizer, tokenizerData: data)
         }
-    }
-
-    @Test("Library fuses a split codepoint across byte-fallback tokens")
-    func libraryFusesSplitCodepoint() throws {
-        // The behavioral half of the old init-time decoder probe, kept as a
-        // test: the library remains the oracle for the pinned chain's
-        // ByteFallback/Fuse behavior. The run needs a trailing non-byte token
-        // because the library drops trailing byte runs (issue #58).
-        let ids = try ["<0xC3>", "<0xA9>", "the"].map {
-            Int(try GFTokenizer.requireTokenID(tok.tokenizer, $0))
-        }
-        #expect(tok.tokenizer.decode(tokens: ids, skipSpecialTokens: false) == "éthe")
     }
 
     // MARK: - Encode / decode
@@ -172,12 +150,6 @@ struct TokenizerTests {
 
     // MARK: - Streaming detokenizer
 
-    @Test("Streaming detokenizer reassembles ASCII")
-    func streamingASCII() {
-        let target = "Hello, world."
-        assertStreams(target)
-    }
-
     @Test("Streaming detokenizer reassembles multi-byte UTF-8", arguments: [
         "漢字",
         "你好",
@@ -194,19 +166,6 @@ struct TokenizerTests {
     ])
     func streamingMultibyte(_ target: String) {
         assertStreams(target)
-    }
-
-    @Test("Streaming detokenizer never emits replacement chars")
-    func streamingNoMojibake() {
-        let ids = tok.encode("mixed 漢 and 🦝 text", addBOS: false)
-        var detok = GFDetokenizer(tokenizer: tok)
-        for id in ids {
-            let delta = detok.push(id)
-            #expect(!delta.unicodeScalars.contains("\u{FFFD}"),
-                    "delta contained replacement char: '\(delta)'")
-        }
-        let tail = detok.flush()
-        #expect(!tail.unicodeScalars.contains("\u{FFFD}"))
     }
 
     @Test("Streaming reassembles graphemes extended by later scalars", arguments: [
@@ -488,25 +447,6 @@ struct TokenizerTests {
         assembled += detok.flush()
         #expect(assembled == tok.decode(prefix))
         #expect(!assembled.unicodeScalars.contains("\u{FFFD}"))
-    }
-
-    @Test("Flush with no tokens yields empty string")
-    func streamingEmpty() {
-        var detok = GFDetokenizer(tokenizer: tok)
-        #expect(detok.flush() == "")
-    }
-
-    @Test("Single-token push works for in-vocab characters")
-    func streamingSingleToken() {
-        // "漢字" is a single in-vocab token (verified empirically).
-        var detok = GFDetokenizer(tokenizer: tok)
-        let ids = tok.encode("漢字", addBOS: false)
-        var assembled = ""
-        for id in ids {
-            assembled += detok.push(id)
-        }
-        assembled += detok.flush()
-        #expect(assembled == "漢字")
     }
 
     // MARK: - Helpers

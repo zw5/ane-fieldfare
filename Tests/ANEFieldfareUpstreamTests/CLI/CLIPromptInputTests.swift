@@ -81,36 +81,6 @@ import ANEFieldfareHotpath
                 "./a.png resolved to \(resolved)")
     }
 
-    /// The size half of the prompt check, which the image path calls before the
-    /// model load. An oversized image used to cost a full load and a GPU encode
-    /// before anything refused it.
-    @Test func anOversizedPromptIsRefusedByTheSizeCheckAlone() throws {
-        let pipe = Pipe()
-        var args = try Args.parse(["--model", "m.gturbo", "--prompt", "hi"])
-        args.maxContext = 512
-        args.maxNew = 64
-
-        let fits = validatePromptSize(
-            tokens: 400, args: args, stderr: pipe.fileHandleForWriting)
-        #expect(fits == nil, "a prompt inside the context was refused")
-
-        let overflows = validatePromptSize(
-            tokens: 449, args: args, stderr: pipe.fileHandleForWriting)
-        #expect(overflows?.exitCode == 2,
-                "prompt 449 + maxNew 64 exceeds maxContext 512 and was accepted")
-
-        // The boundary itself fits: 448 + 64 == 512.
-        #expect(validatePromptSize(
-            tokens: 448, args: args, stderr: pipe.fileHandleForWriting) == nil,
-                "an exactly-fitting prompt was refused")
-
-        pipe.fileHandleForWriting.closeFile()
-        let message = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(),
-                             as: UTF8.self)
-        #expect(message.contains("context overflow"),
-                "the refusal did not say why: \(message)")
-    }
-
     /// The CLI must reach the same residency default as the runtime and the
     /// conversation, which is why there is one constant rather than four
     /// literals — one of the four had drifted to `keepReady`.

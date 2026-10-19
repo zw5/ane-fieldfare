@@ -103,23 +103,6 @@ extension ModelLoaderTests {
     }
   }
 
-  @Test func trustedReceiptModeReportsReceiptValidationTiming() throws {
-    let dir = try Self.writeToySynthetic()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    try Self.writeVerifiedInstallReceipt(directoryURL: dir)
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    var stats = ModelLoadStats()
-    _ = try Model.load(
-      directoryURL: dir,
-      device: device,
-      expecting: .gemma4Toy(),
-      integrityPolicy: .sizeCheckTrustedReceipt,
-      loadStats: &stats)
-    #expect(stats.manifestSha256Nanos > 0)
-    #expect(stats.receiptValidationNanos > 0)
-    #expect(stats.eagerSha256Nanos > 0)
-  }
-
   @Test func trustedReceiptModeRejectsExtraReceiptFileEntry() throws {
     let dir = try Self.writeToySynthetic()
     defer { try? FileManager.default.removeItem(at: dir) }

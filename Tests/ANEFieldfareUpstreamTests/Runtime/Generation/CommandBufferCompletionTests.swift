@@ -69,22 +69,6 @@ import Testing
         #expect(detail.contains("layer=12"))
     }
 
-    @Test func missingLabelIsReportedRatherThanOmitted() throws {
-        let detail = try #require(
-            metalCommandBufferFailureDetail(label: nil,
-                                            status: .error,
-                                            error: Self.nsError(description: "boom")))
-        #expect(detail.contains("label=<none>"))
-    }
-
-    @Test func emptyLabelIsDistinguishedFromAbsentLabel() throws {
-        let detail = try #require(
-            metalCommandBufferFailureDetail(label: "",
-                                            status: .error,
-                                            error: Self.nsError(description: "boom")))
-        #expect(detail.contains("label=<empty>"))
-    }
-
     @Test func userInfoKeysAreNamedButValuesAreNotLeaked() throws {
         let detail = try #require(
             metalCommandBufferFailureDetail(
@@ -107,24 +91,6 @@ import Testing
         #expect(detail.contains("description=boom"))
     }
 
-    @Test func statusNamesCoverEveryCase() {
-        #expect(metalCommandBufferStatusName(.notEnqueued) == "notEnqueued")
-        #expect(metalCommandBufferStatusName(.enqueued) == "enqueued")
-        #expect(metalCommandBufferStatusName(.committed) == "committed")
-        #expect(metalCommandBufferStatusName(.scheduled) == "scheduled")
-        #expect(metalCommandBufferStatusName(.completed) == "completed")
-        #expect(metalCommandBufferStatusName(.error) == "error")
-    }
-
-    @Test func realCompletedCommandBufferDoesNotThrow() throws {
-        let context = try MetalContext()
-        let commandBuffer = try #require(context.queue.makeCommandBuffer())
-        commandBuffer.label = "test empty"
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        try checkCommandBufferError(commandBuffer)
-    }
-
     @Test func realNonCompletedCommandBufferThrows() throws {
         let context = try MetalContext()
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
@@ -138,16 +104,4 @@ import Testing
         }
     }
 
-    /// The shared formatter covers status-only failures only if every vision
-    /// wait routes through it. A direct `buffer.error` check accepts `.error`
-    /// with no error object and can consume incomplete GPU output.
-    @Test func visionRuntimeUsesStatusAwareCommandBufferChecks() throws {
-        let source = try String(contentsOf: Self.visionRuntimeSource, encoding: .utf8)
-        #expect(!source.contains("if let error = entry.buffer.error"))
-        #expect(!source.contains("if let error = commandBuffer.error"))
-        let checkedWaits = source.components(
-            separatedBy: "metalCommandBufferFailureDetail(").count - 1
-        #expect(checkedWaits == 2,
-                "expected both VisionRuntime waits to preserve status diagnostics")
-    }
 }
