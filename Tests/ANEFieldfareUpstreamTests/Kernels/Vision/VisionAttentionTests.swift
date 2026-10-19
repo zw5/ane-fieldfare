@@ -31,7 +31,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         }
         func make(_ values: [Float]) throws -> any MTLBuffer {
             let bits = values.map(Quantization.bf16Bits)
-            return try #require(context.device.makeBuffer(
+            return try #require(unsafe context.device.makeBuffer(
                 bytes: bits, length: bits.count * MemoryLayout<UInt16>.stride,
                 options: .storageModeShared))
         }
@@ -67,8 +67,8 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
             commandBuffer.commit()
             commandBuffer.waitUntilCompleted()
             #expect(commandBuffer.error == nil)
-            let bits = output.contents().bindMemory(to: UInt16.self, capacity: q.count)
-            return (0..<q.count).map { Quantization.bf16ToFloat(bits[$0]) }
+            let bits = unsafe output.contents().bindMemory(to: UInt16.self, capacity: q.count)
+            return (0..<q.count).map { unsafe Quantization.bf16ToFloat(bits[$0]) }
         }
 
         // Same attention, same values, two layouts. A layout misread is a gross
@@ -111,7 +111,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         }
         func make(_ values: [Float]) throws -> any MTLBuffer {
             let bits = values.map(Quantization.bf16Bits)
-            return try #require(context.device.makeBuffer(
+            return try #require(unsafe context.device.makeBuffer(
                 bytes: bits, length: bits.count * MemoryLayout<UInt16>.stride,
                 options: .storageModeShared))
         }
@@ -154,7 +154,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
             commandBuffer.waitUntilCompleted()
             #expect(commandBuffer.error == nil)
 
-            let actualBits = output.contents().bindMemory(
+            let actualBits = unsafe output.contents().bindMemory(
                 to: UInt16.self, capacity: q.count)
             for query in 0..<length {
                 for head in 0..<heads {
@@ -176,7 +176,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
                         }
                         expected /= denominator
                         let index = (query * heads + head) * dimension + d
-                        let actual = Quantization.bf16ToFloat(actualBits[index])
+                        let actual = unsafe Quantization.bf16ToFloat(actualBits[index])
                         #expect(abs(actual - expected) <= 0.02,
                                 "fused=\(fused) index=\(index) actual=\(actual) expected=\(expected)")
                     }

@@ -109,22 +109,22 @@ import ANEFieldfareValidationSupport
 
         let context = try MetalContext()
         let kernel = try MoE(context: context)
-        guard let weightBuffer = context.device.makeBuffer(
+        guard let weightBuffer = unsafe context.device.makeBuffer(
                   bytes: packed, length: packed.count, options: .storageModeShared),
-              let scaleBuffer = context.device.makeBuffer(
+              let scaleBuffer = unsafe context.device.makeBuffer(
                   bytes: scales,
                   length: scales.count * MemoryLayout<UInt16>.stride,
                   options: .storageModeShared),
-              let biasBuffer = context.device.makeBuffer(
+              let biasBuffer = unsafe context.device.makeBuffer(
                   bytes: biases,
                   length: biases.count * MemoryLayout<UInt16>.stride,
                   options: .storageModeShared),
               let hiddenBuffer = Fp16Buffer.make(context.device, values: hidden),
-              let effectiveBuffer = context.device.makeBuffer(
+              let effectiveBuffer = unsafe context.device.makeBuffer(
                   bytes: effectiveScale.map(Quantization.bf16Bits),
                   length: effectiveScale.count * MemoryLayout<UInt16>.stride,
                   options: .storageModeShared),
-              let expertScaleBuffer = context.device.makeBuffer(
+              let expertScaleBuffer = unsafe context.device.makeBuffer(
                   bytes: expertScale.map(Quantization.bf16Bits),
                   length: expertScale.count * MemoryLayout<UInt16>.stride,
                   options: .storageModeShared),
@@ -152,10 +152,10 @@ import ANEFieldfareValidationSupport
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)
 
-        let indexPointer = indexBuffer.contents().bindMemory(
+        let indexPointer = unsafe indexBuffer.contents().bindMemory(
             to: UInt32.self, capacity: Self.topK)
         return Result(
-            indices: (0..<Self.topK).map { indexPointer[$0] },
+            indices: (0..<Self.topK).map { unsafe indexPointer[$0] },
             weights: Fp16Buffer.read(outputWeightBuffer, count: Self.topK))
     }
 }

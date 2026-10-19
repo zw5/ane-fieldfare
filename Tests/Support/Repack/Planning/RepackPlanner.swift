@@ -175,7 +175,7 @@ enum RepackPlanner {
             return "0000/\(name)"
         }
         if let layer = layerIndex(in: name), name.hasPrefix("vision_tower.encoder.layers.") {
-            return String(format: "1000/%03d/%@", layer, name)
+            return unsafe String(format: "1000/%03d/%@", layer, name)
         }
         if name == "vision_tower.std_bias" || name == "vision_tower.std_scale" {
             return "2000/\(name)"
@@ -291,7 +291,7 @@ enum RepackPlanner {
             guard let gName = bundle["gate"], let uName = bundle["up"], let dName = bundle["down"] else {
                 if bundle.isEmpty {
                     layerPlans.append(LayerFilePlan(layerIndex: layer,
-                                                    path: (layersDir as NSString).appendingPathComponent("layer_\(String(format: "%02d", layer)).bin"),
+                                                    path: (layersDir as NSString).appendingPathComponent(unsafe "layer_\(String(format: "%02d", layer)).bin"),
                                                     expertsPerLayer: 0,
                                                     expertStride: 0,
                                                     subTensors: []))
@@ -301,7 +301,7 @@ enum RepackPlanner {
                     "layer \(layer) routed-expert bundle incomplete: \(bundle)")
             }
             let path = (layersDir as NSString)
-                .appendingPathComponent("layer_\(String(format: "%02d", layer)).bin")
+                .appendingPathComponent(unsafe "layer_\(String(format: "%02d", layer)).bin")
             let lp = try planLayerFile(path: path, layer: layer,
                                        gateName: gName, upName: uName, downName: dName,
                                        registry: registry, meta: meta, arch: arch)

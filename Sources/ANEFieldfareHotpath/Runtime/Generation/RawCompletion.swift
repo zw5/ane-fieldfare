@@ -339,5 +339,5 @@ private func sampleOnce(scratch: RawCompletionScratch, context: MetalContext,
                            outToken: scratch.outToken)
     cb.commit(); cb.waitUntilCompleted()
     try checkCommandBufferError(cb)
-    return Int32(bitPattern: scratch.outToken.contents().load(as: UInt32.self))
+    return unsafe Int32(bitPattern: scratch.outToken.contents().load(as: UInt32.self))
 }

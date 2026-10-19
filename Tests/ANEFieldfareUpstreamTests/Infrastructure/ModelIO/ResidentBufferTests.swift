@@ -26,7 +26,7 @@ import Darwin
             device: device)
         #expect(resident.buffer.length == payload.count)
         for i in 0..<payload.count {
-            let got = resident.buffer.contents().load(
+            let got = unsafe resident.buffer.contents().load(
                 fromByteOffset: i, as: UInt8.self)
             #expect(got == UInt8(i & 0xFF), "byte \(i)")
         }
@@ -49,7 +49,7 @@ import Darwin
             fileURL: url, fileOffset: UInt64(preLen),
             residentSize: UInt64(payload.count), device: device)
         for i in 0..<payload.count {
-            let got = resident.buffer.contents().load(
+            let got = unsafe resident.buffer.contents().load(
                 fromByteOffset: i, as: UInt8.self)
             #expect(got == UInt8(0x80 | (i & 0x7F)), "byte \(i)")
         }
@@ -64,9 +64,9 @@ import Darwin
         let target = directory.appendingPathComponent("target.bin")
         let alias = directory.appendingPathComponent("alias.bin")
         try Data(repeating: 0x5A, count: 64).write(to: target)
-        #expect(symlink(target.path, alias.path) == 0)
+        unsafe #expect(symlink(target.path, alias.path) == 0)
         let resident = try ResidentBuffer(
             fileURL: alias, fileOffset: 0, residentSize: 64, device: device)
-        #expect(resident.buffer.contents().load(as: UInt8.self) == 0x5A)
+        unsafe #expect(resident.buffer.contents().load(as: UInt8.self) == 0x5A)
     }
 }

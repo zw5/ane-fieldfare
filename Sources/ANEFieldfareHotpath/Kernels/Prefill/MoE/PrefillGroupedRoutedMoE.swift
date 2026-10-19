@@ -280,7 +280,7 @@ final class PrefillGroupedRoutedMoE {
                 "prefill sorted route pairs exceed reusable capacity")
         }
         routes.sortedPairs.withUnsafeBytes { source in
-            UnsafeMutableRawBufferPointer(start: reusableSortedPairsBuffer.contents(), count: bytes)
+            unsafe UnsafeMutableRawBufferPointer(start: reusableSortedPairsBuffer.contents(), count: bytes)
                 .copyMemory(from: source)
         }
         return PrefillGroupedRoutedMoEStreamedMetadataBuffers(
@@ -321,9 +321,7 @@ final class PrefillGroupedRoutedMoE {
                               index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
                 enc.setBuffer(argumentBuffer.buffer, offset: 0,
                               index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
-                enc.setBytes(&p,
-                             length: MemoryLayout<PrefillGroupedRoutedMoEStreamedParams>.stride,
-                             index: PrefillGroupedRoutedMoEBufferIndex.params)
+                enc.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
                 for view in binding.views {
                     enc.useResource(view.buffer, usage: .read)
                 }
@@ -345,9 +343,7 @@ final class PrefillGroupedRoutedMoE {
                               index: PrefillGroupedRoutedMoEBufferIndex.downScratch)
                 enc.setBuffer(argumentBuffer.buffer, offset: 0,
                               index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
-                enc.setBytes(&p,
-                             length: MemoryLayout<PrefillGroupedRoutedMoEStreamedParams>.stride,
-                             index: PrefillGroupedRoutedMoEBufferIndex.params)
+                enc.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
                 for view in binding.views {
                     enc.useResource(view.buffer, usage: .read)
                 }
@@ -396,8 +392,8 @@ final class PrefillGroupedRoutedMoE {
             acts = buffer
         }
         let constants = [MetalFunctionConstant(index: 90, value: .uint32(UInt32(rows)))]
-        var p = params
-        var segs = segments
+        let p = params
+        let segs = segments
         for (name, width) in [("verify_routed_gate_up_act", Int(params.routedIntermediate)),
                               ("verify_routed_down", (Int(params.d) + 1) / 2)] {
             guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
@@ -408,9 +404,8 @@ final class PrefillGroupedRoutedMoE {
             enc.setBuffer(acts, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
             enc.setBuffer(argumentBuffer.buffer, offset: 0,
                           index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
-            enc.setBytes(&p, length: MemoryLayout<PrefillGroupedRoutedMoEStreamedParams>.stride,
-                         index: PrefillGroupedRoutedMoEBufferIndex.params)
-            enc.setBytes(&segs, length: segs.count * MemoryLayout<SIMD2<UInt32>>.stride, index: 11)
+            enc.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
+            enc.setValues(segs, index: 11)
             for view in binding.views { enc.useResource(view.buffer, usage: .read) }
             enc.dispatchThreadgroups(MTLSize(width: (width + 7) / 8, height: live, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))

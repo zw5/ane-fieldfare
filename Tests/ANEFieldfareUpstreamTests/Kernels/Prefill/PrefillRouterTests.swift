@@ -165,22 +165,22 @@ import ANEFieldfareValidationSupport
         let packed = packWeights(weights)
         let effBits = effectiveScale.map { Quantization.bf16Bits($0) }
         let pesBits = perExpertScale.map { Quantization.bf16Bits($0) }
-        guard let wBuf = ctx.device.makeBuffer(bytes: packed.packed,
+        guard let wBuf = unsafe ctx.device.makeBuffer(bytes: packed.packed,
                                                length: packed.packed.count,
                                                options: .storageModeShared),
-              let sBuf = ctx.device.makeBuffer(bytes: packed.scales,
+              let sBuf = unsafe ctx.device.makeBuffer(bytes: packed.scales,
                                                length: packed.scales.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
-              let bBuf = ctx.device.makeBuffer(bytes: packed.biases,
+              let bBuf = unsafe ctx.device.makeBuffer(bytes: packed.biases,
                                                length: packed.biases.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
-              let hBuf = ctx.device.makeBuffer(bytes: hidden,
+              let hBuf = unsafe ctx.device.makeBuffer(bytes: hidden,
                                                length: hidden.count * MemoryLayout<Float16>.size,
                                                options: .storageModeShared),
-              let eBuf = ctx.device.makeBuffer(bytes: effBits,
+              let eBuf = unsafe ctx.device.makeBuffer(bytes: effBits,
                                                length: effBits.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
-              let pBuf = ctx.device.makeBuffer(bytes: pesBits,
+              let pBuf = unsafe ctx.device.makeBuffer(bytes: pesBits,
                                                length: pesBits.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
               let idxBuf = ctx.device.makeBuffer(length: rows * Self.topK * MemoryLayout<UInt32>.size,
@@ -203,7 +203,7 @@ import ANEFieldfareValidationSupport
                                         moe: MoE,
                                         buffers: RouterBuffers,
                                         hiddenRow: [Float16]) throws -> ([UInt32], [Float16]) {
-        guard let hBuf = ctx.device.makeBuffer(bytes: hiddenRow,
+        guard let hBuf = unsafe ctx.device.makeBuffer(bytes: hiddenRow,
                                                length: hiddenRow.count * MemoryLayout<Float16>.size,
                                                options: .storageModeShared),
               let idxBuf = ctx.device.makeBuffer(length: Self.topK * MemoryLayout<UInt32>.size,
@@ -301,7 +301,7 @@ import ANEFieldfareValidationSupport
 
     private static func readUInt32(_ buffer: any MTLBuffer, count: Int) -> [UInt32] {
         (0..<count).map {
-            buffer.contents().load(fromByteOffset: $0 * MemoryLayout<UInt32>.size,
+            unsafe buffer.contents().load(fromByteOffset: $0 * MemoryLayout<UInt32>.size,
                                    as: UInt32.self)
         }
     }

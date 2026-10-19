@@ -37,10 +37,10 @@ import ANEFieldfareValidationSupport
         let fused = try FusedLayerTail(context: ctx)
         let block = try PrefillLayerTail(context: ctx)
         guard
-            let wPostFFN2Buf = ctx.device.makeBuffer(bytes: wPostFFN2,
+            let wPostFFN2Buf = unsafe ctx.device.makeBuffer(bytes: wPostFFN2,
                                                      length: wPostFFN2.count * MemoryLayout<UInt16>.size,
                                                      options: .storageModeShared),
-            let wPostFFNBuf = ctx.device.makeBuffer(bytes: wPostFFN,
+            let wPostFFNBuf = unsafe ctx.device.makeBuffer(bytes: wPostFFN,
                                                     length: wPostFFN.count * MemoryLayout<UInt16>.size,
                                                     options: .storageModeShared),
             let h2Block = Fp16Buffer.make(ctx.device, halves: h2),
@@ -145,10 +145,10 @@ import ANEFieldfareValidationSupport
                                                rows: Int,
                                                rowStride: Int,
                                                usedPerRow: Int) {
-        let ptr = buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
+        let ptr = unsafe buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
         for row in 0..<rows {
             for i in usedPerRow..<rowStride {
-                #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
+                unsafe #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
                         "padding changed at row=\(row) i=\(i)")
             }
         }

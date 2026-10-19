@@ -47,7 +47,7 @@ public enum MoeRef {
         let upOut   = DequantInt4GemvRef.apply(weightRows: upRows,   x: x, n: d)
         let gated   = geluTanh(gateOut)
         var act = [Float](repeating: 0, count: f)
-        vDSP_vmul(gated, 1, upOut, 1, &act, 1, vDSP_Length(f))
+        unsafe vDSP_vmul(gated, 1, upOut, 1, &act, 1, vDSP_Length(f))
         return DequantInt4GemvRef.apply(weightRows: downRows, x: act, n: f)
     }
 
@@ -81,8 +81,8 @@ public enum MoeRef {
             )
             var scale = w
             var scaled = [Float](repeating: 0, count: d)
-            vDSP_vsmul(out, 1, &scale, &scaled, 1, vDSP_Length(d))
-            vDSP_vadd(y, 1, scaled, 1, &y, 1, vDSP_Length(d))
+            unsafe vDSP_vsmul(out, 1, &scale, &scaled, 1, vDSP_Length(d))
+            unsafe vDSP_vadd(y, 1, scaled, 1, &y, 1, vDSP_Length(d))
         }
         return y
     }

@@ -9,7 +9,7 @@ public enum Sha256Verifier {
     /// whole file.
     public static func hashFile(at fileURL: URL,
                                 chunkBytes: Int = 1 << 20) throws -> String {
-        let fd = open(fileURL.path, O_RDONLY)
+        let fd = unsafe open(fileURL.path, O_RDONLY)
         guard fd >= 0 else {
             throw ModelError.posixFailed(call: "open(\(fileURL.path))", errno: errno)
         }
@@ -26,33 +26,33 @@ public enum Sha256Verifier {
             throw ModelError.indexCorrupt(detail: "SHA-256 chunk size must be positive")
         }
         var ctx = CC_SHA256_CTX()
-        CC_SHA256_Init(&ctx)
+        unsafe CC_SHA256_Init(&ctx)
         var buf = [UInt8](repeating: 0, count: chunkBytes)
         while true {
-            let got = read(fd, &buf, chunkBytes)
+            let got = unsafe read(fd, &buf, chunkBytes)
             if got == 0 { break }
             if got < 0, errno == EINTR { continue }
             if got < 0 {
                 throw ModelError.posixFailed(call: "read(\(displayName))", errno: errno)
             }
-            _ = CC_SHA256_Update(&ctx, buf, CC_LONG(got))
+            _ = unsafe CC_SHA256_Update(&ctx, buf, CC_LONG(got))
         }
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        _ = CC_SHA256_Final(&digest, &ctx)
-        return digest.map { String(format: "%02x", $0) }.joined()
+        _ = unsafe CC_SHA256_Final(&digest, &ctx)
+        return digest.map { unsafe String(format: "%02x", $0) }.joined()
     }
 
     public static func hashData(_ data: Data) -> String {
         var ctx = CC_SHA256_CTX()
-        CC_SHA256_Init(&ctx)
-        data.withUnsafeBytes { raw in
+        unsafe CC_SHA256_Init(&ctx)
+        unsafe data.withUnsafeBytes { raw in
             if let base = raw.baseAddress, raw.count > 0 {
-                _ = CC_SHA256_Update(&ctx, base, CC_LONG(raw.count))
+                _ = unsafe CC_SHA256_Update(&ctx, base, CC_LONG(raw.count))
             }
         }
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        _ = CC_SHA256_Final(&digest, &ctx)
-        return digest.map { String(format: "%02x", $0) }.joined()
+        _ = unsafe CC_SHA256_Final(&digest, &ctx)
+        return digest.map { unsafe String(format: "%02x", $0) }.joined()
     }
 
     /// Throw `ModelError.checksumMismatch(file)` if the on-disk file's

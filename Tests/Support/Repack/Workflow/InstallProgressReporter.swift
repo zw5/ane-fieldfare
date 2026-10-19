@@ -90,6 +90,6 @@ public struct InstallProgressReporter: Sendable {
         }
         return unit == 0
             ? "\(count) B"
-            : String(format: "%.1f %@", value, units[unit])
+            : unsafe String(format: "%.1f %@", value, units[unit])
     }
 }

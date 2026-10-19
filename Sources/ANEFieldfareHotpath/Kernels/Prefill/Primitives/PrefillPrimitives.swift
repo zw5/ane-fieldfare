@@ -26,12 +26,12 @@ final class PrefillEmbedLookupInt4 {
         enc.setBuffer(biases, offset: biasesOffset, index: 2)
         enc.setBuffer(tokens, offset: tokensOffset, index: 3)
         enc.setBuffer(out, offset: outOffset, index: 4)
-        var tVar = t
-        var dVar = d
-        var scaleVar = outScale
-        enc.setBytes(&tVar, length: MemoryLayout<UInt32>.size, index: 5)
-        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 6)
-        enc.setBytes(&scaleVar, length: MemoryLayout<Float>.size, index: 7)
+        let tVar = t
+        let dVar = d
+        let scaleVar = outScale
+        enc.setValue(tVar, index: 5)
+        enc.setValue(dVar, index: 6)
+        enc.setValue(scaleVar, index: 7)
         enc.dispatchThreads(MTLSize(width: Int(d), height: Int(t), depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         enc.endEncoding()
@@ -57,12 +57,12 @@ final class PrefillRMSNorm {
         enc.setBuffer(x, offset: xOffset, index: 0)
         enc.setBuffer(weight, offset: weightOffset, index: 1)
         enc.setBuffer(out, offset: outOffset, index: 2)
-        var tVar = t
-        var dVar = d
-        var epsVar = eps
-        enc.setBytes(&tVar, length: MemoryLayout<UInt32>.size, index: 3)
-        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 4)
-        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size, index: 5)
+        let tVar = t
+        let dVar = d
+        let epsVar = eps
+        enc.setValue(tVar, index: 3)
+        enc.setValue(dVar, index: 4)
+        enc.setValue(epsVar, index: 5)
         let threads = min(Int(psoBF16W.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreadgroups(MTLSize(width: Int(t), height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
@@ -95,12 +95,12 @@ final class PrefillInt4QMM {
         enc.setBuffer(biases, offset: biasesOffset, index: 2)
         enc.setBuffer(x, offset: xOffset, index: 3)
         enc.setBuffer(y, offset: yOffset, index: 4)
-        var tVar = UInt32(t)
-        var nVar = UInt32(n)
-        var kVar = UInt32(k)
-        enc.setBytes(&tVar, length: MemoryLayout<UInt32>.size, index: 5)
-        enc.setBytes(&nVar, length: MemoryLayout<UInt32>.size, index: 6)
-        enc.setBytes(&kVar, length: MemoryLayout<UInt32>.size, index: 7)
+        let tVar = UInt32(t)
+        let nVar = UInt32(n)
+        let kVar = UInt32(k)
+        enc.setValue(tVar, index: 5)
+        enc.setValue(nVar, index: 6)
+        enc.setValue(kVar, index: 7)
         enc.dispatchThreadgroups(
             MTLSize(width: (n + 7) / 8, height: (t + 7) / 8, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))

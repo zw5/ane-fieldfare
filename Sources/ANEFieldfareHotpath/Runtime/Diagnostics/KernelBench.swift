@@ -27,6 +27,6 @@ public enum KernelBench {
             best = min(best, (cb.gpuEndTime - cb.gpuStartTime) / Double(dispatches))
         }
         let bytes = Double(wBytes + 2 * sBytes)
-        return String(format: "cold gemv m=%d n=%d: %.1f us/dispatch, %.0f GB/s", m, n, best * 1e6, bytes / best / 1e9)
+        return unsafe String(format: "cold gemv m=%d n=%d: %.1f us/dispatch, %.0f GB/s", m, n, best * 1e6, bytes / best / 1e9)
     }
 }

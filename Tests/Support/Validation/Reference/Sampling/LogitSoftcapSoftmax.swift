@@ -22,33 +22,33 @@ public enum LogitSoftcapSoftmaxRef {
         var s = invC
         x.withUnsafeBufferPointer { px in
             y.withUnsafeMutableBufferPointer { py in
-                vDSP_vsmul(px.baseAddress!, 1, &s, py.baseAddress!, 1, vDSP_Length(v))
+                unsafe vDSP_vsmul(px.baseAddress!, 1, &s, py.baseAddress!, 1, vDSP_Length(v))
             }
         }
         y = vForce.tanh(y)
         var c = softcap
         y.withUnsafeMutableBufferPointer { py in
-            vDSP_vsmul(py.baseAddress!, 1, &c, py.baseAddress!, 1, vDSP_Length(v))
+            unsafe vDSP_vsmul(py.baseAddress!, 1, &c, py.baseAddress!, 1, vDSP_Length(v))
         }
 
         // 2. Numerically stable softmax: subtract max, exp, divide by sum.
         var mx: Float = -.infinity
         y.withUnsafeBufferPointer { py in
-            vDSP_maxv(py.baseAddress!, 1, &mx, vDSP_Length(v))
+            unsafe vDSP_maxv(py.baseAddress!, 1, &mx, vDSP_Length(v))
         }
         var negMax = -mx
         y.withUnsafeMutableBufferPointer { py in
-            vDSP_vsadd(py.baseAddress!, 1, &negMax, py.baseAddress!, 1, vDSP_Length(v))
+            unsafe vDSP_vsadd(py.baseAddress!, 1, &negMax, py.baseAddress!, 1, vDSP_Length(v))
         }
         y = vForce.exp(y)
 
         var sum: Float = 0
         y.withUnsafeBufferPointer { py in
-            vDSP_sve(py.baseAddress!, 1, &sum, vDSP_Length(v))
+            unsafe vDSP_sve(py.baseAddress!, 1, &sum, vDSP_Length(v))
         }
         var invSum = 1.0 / sum
         y.withUnsafeMutableBufferPointer { py in
-            vDSP_vsmul(py.baseAddress!, 1, &invSum, py.baseAddress!, 1, vDSP_Length(v))
+            unsafe vDSP_vsmul(py.baseAddress!, 1, &invSum, py.baseAddress!, 1, vDSP_Length(v))
         }
         return y
     }

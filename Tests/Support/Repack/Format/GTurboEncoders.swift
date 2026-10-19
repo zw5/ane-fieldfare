@@ -15,7 +15,7 @@ enum GTurboBinary {
                                         indexSize: UInt64,
                                         residentSize: UInt64,
                                         entryCount: UInt64) {
-        GTurboResidentIndexCodec.writeHeader(
+        unsafe GTurboResidentIndexCodec.writeHeader(
             into: buf,
             header: GTurboResidentIndexHeaderV1(
                 indexSize: indexSize,
@@ -27,7 +27,7 @@ enum GTurboBinary {
     static func writeIndexEntry(into dst: UnsafeMutableRawPointer,
                                        entry: ResidentEntry,
                                        nameOffset: UInt32) {
-        GTurboResidentIndexCodec.writeEntry(
+        unsafe GTurboResidentIndexCodec.writeEntry(
             into: dst,
             entry: GTurboResidentIndexEntryV1(
                 name: entry.name,

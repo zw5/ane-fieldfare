@@ -7,18 +7,18 @@ import Testing
     private static let key = "AGX_RELAX_CDM_CTXSTORE_TIMEOUT"
 
     private static func read() -> String? {
-        guard let raw = getenv(key) else { return nil }
-        return String(cString: raw)
+        guard let raw = unsafe getenv(key) else { return nil }
+        return unsafe String(cString: raw)
     }
 
     private static func withCleanEnvironment(_ body: () throws -> Void) rethrows {
         let saved = read()
-        unsetenv(key)
+        unsafe unsetenv(key)
         defer {
             if let saved {
-                setenv(key, saved, 1)
+                unsafe setenv(key, saved, 1)
             } else {
-                unsetenv(key)
+                unsafe unsetenv(key)
             }
         }
         try body()
@@ -35,7 +35,7 @@ import Testing
 
     @Test func anExplicitOperatorOverrideIsNotOverwritten() throws {
         try Self.withCleanEnvironment {
-            setenv(Self.key, "0", 1)
+            unsafe setenv(Self.key, "0", 1)
             _ = try MetalContext()
             #expect(Self.read() == "0")
         }

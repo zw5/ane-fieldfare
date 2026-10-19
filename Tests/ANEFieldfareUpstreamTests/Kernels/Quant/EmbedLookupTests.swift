@@ -40,13 +40,13 @@ import ANEFieldfareValidationSupport
         let ctx = try MetalContext()
         let kernel = try EmbedLookupInt4(context: ctx)
 
-        guard let tableBuf = ctx.device.makeBuffer(
+        guard let tableBuf = unsafe ctx.device.makeBuffer(
                 bytes: packed, length: packed.count,
                 options: .storageModeShared),
-              let scalesBuf = ctx.device.makeBuffer(
+              let scalesBuf = unsafe ctx.device.makeBuffer(
                 bytes: scales, length: scales.count * MemoryLayout<UInt16>.size,
                 options: .storageModeShared),
-              let biasesBuf = ctx.device.makeBuffer(
+              let biasesBuf = unsafe ctx.device.makeBuffer(
                 bytes: biases, length: biases.count * MemoryLayout<UInt16>.size,
                 options: .storageModeShared),
               let outBuf = Fp16Buffer.make(ctx.device, count: Sizes.D) else {
@@ -79,13 +79,13 @@ import ANEFieldfareValidationSupport
         let ctx = try MetalContext()
         let kernel = try EmbedLookupInt4(context: ctx)
 
-        guard let tableBuf = ctx.device.makeBuffer(
+        guard let tableBuf = unsafe ctx.device.makeBuffer(
                 bytes: packed, length: packed.count,
                 options: .storageModeShared),
-              let scalesBuf = ctx.device.makeBuffer(
+              let scalesBuf = unsafe ctx.device.makeBuffer(
                 bytes: scales, length: scales.count * MemoryLayout<UInt16>.size,
                 options: .storageModeShared),
-              let biasesBuf = ctx.device.makeBuffer(
+              let biasesBuf = unsafe ctx.device.makeBuffer(
                 bytes: biases, length: biases.count * MemoryLayout<UInt16>.size,
                 options: .storageModeShared),
               let outBuf = Fp16Buffer.make(ctx.device, count: Sizes.D) else {

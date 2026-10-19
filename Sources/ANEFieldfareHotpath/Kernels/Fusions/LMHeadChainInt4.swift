@@ -119,14 +119,14 @@ final class LMHeadChainInt4 {
                                   xStrideElements: Int(d), yStrideElements: Int(vocab),
                                   types: .f16ToF32)
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
-            var vocabValue = vocab
+            let vocabValue = vocab
             encoder.setComputePipelineState(rowsArgmax)
             encoder.setBuffer(rowsLogitsBuffer, offset: 0, index: 0)
             encoder.setBuffer(outTokens, offset: outTokensOffset, index: 1)
-            encoder.setBytes(&vocabValue, length: 4, index: 2)
+            encoder.setValue(vocabValue, index: 2)
             encoder.setBuffer(rowsConfidence, offset: 0, index: 3)
-            var cap = softcap
-            encoder.setBytes(&cap, length: 4, index: 4)
+            let cap = softcap
+            encoder.setValue(cap, index: 4)
             encoder.dispatchThreadgroups(
                 MTLSize(width: rowCount, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
@@ -178,10 +178,10 @@ final class LMHeadChainInt4 {
             encoder.setBuffer(scales, offset: scalesOffset, index: 2)
             encoder.setBuffer(biases, offset: biasesOffset, index: 3)
             encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 4)
-            var dValue = d
-            var vocabValue = vocab
-            encoder.setBytes(&dValue, length: MemoryLayout<UInt32>.size, index: 5)
-            encoder.setBytes(&vocabValue, length: MemoryLayout<UInt32>.size, index: 6)
+            let dValue = d
+            let vocabValue = vocab
+            encoder.setValue(dValue, index: 5)
+            encoder.setValue(vocabValue, index: 6)
 
             let threadgroupSize = MTLSize(
                 width: 32 * Self.rowsPerThreadgroup,
@@ -197,8 +197,8 @@ final class LMHeadChainInt4 {
             encoder.setComputePipelineState(rowReducer)
             encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 0)
             encoder.setBuffer(outToken, offset: outTokenOffset, index: 1)
-            var rowGroupCount = UInt32(rowGroups)
-            encoder.setBytes(&rowGroupCount, length: MemoryLayout<UInt32>.size, index: 2)
+            let rowGroupCount = UInt32(rowGroups)
+            encoder.setValue(rowGroupCount, index: 2)
 
             let threadgroupSize = MTLSize(width: 256, height: 1, depth: 1)
             encoder.dispatchThreads(threadgroupSize, threadsPerThreadgroup: threadgroupSize)

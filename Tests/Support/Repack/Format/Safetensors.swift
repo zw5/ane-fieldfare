@@ -18,7 +18,7 @@ enum Safetensors {
         let fd = try Posix.openRead(path)
         defer { close(fd) }
         var st = stat()
-        if fstat(fd, &st) != 0 {
+        if unsafe fstat(fd, &st) != 0 {
             throw RepackError.fileStatFailed(path: path, errno: errno)
         }
         let fileSize = UInt64(st.st_size)
@@ -28,7 +28,7 @@ enum Safetensors {
 
         var headerSizeLE: UInt64 = 0
         try withUnsafeMutableBytes(of: &headerSizeLE) { raw in
-            try Posix.preadAll(fd: fd, path: path, buf: raw.baseAddress!, count: 8, offset: 0)
+            try unsafe Posix.preadAll(fd: fd, path: path, buf: raw.baseAddress!, count: 8, offset: 0)
         }
         let headerSize = UInt64(littleEndian: headerSizeLE)
         if headerSize > maxHeaderBytes || headerSize > fileSize - 8 {
@@ -36,9 +36,9 @@ enum Safetensors {
         }
 
         let buf = UnsafeMutableRawBufferPointer.allocate(byteCount: Int(headerSize), alignment: 16)
-        defer { buf.deallocate() }
-        try Posix.preadAll(fd: fd, path: path, buf: buf.baseAddress!, count: Int(headerSize), offset: 8)
-        let data = Data(bytesNoCopy: buf.baseAddress!, count: Int(headerSize), deallocator: .none)
+        defer { unsafe buf.deallocate() }
+        try unsafe Posix.preadAll(fd: fd, path: path, buf: buf.baseAddress!, count: Int(headerSize), offset: 8)
+        let data = unsafe Data(bytesNoCopy: buf.baseAddress!, count: Int(headerSize), deallocator: .none)
 
         return try parseHeaderBytes(path: path,
                                     fileSize: fileSize,

@@ -38,7 +38,7 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
         let scratch = UnsafeMutableRawBufferPointer.allocate(
             byteCount: writeTileBytes,
             alignment: 16_384)
-        defer { scratch.deallocate() }
+        defer { unsafe scratch.deallocate() }
         audit.largestScratchBytes = max(audit.largestScratchBytes, scratch.count)
 
         var outputFDs: [String: Int32] = [:]
@@ -85,7 +85,7 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
                         outputFDs[destination.destinationPath] = destinationFD
                     }
                     touched.insert(destination.destinationPath)
-                    try copyBytes(
+                    try unsafe copyBytes(
                         sourceFD: sourceFD,
                         sourcePath: temporary.path,
                         destinationFD: destinationFD,
@@ -108,7 +108,7 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
                     try Posix.fsync(descriptor, path: path)
                 }
             }
-            let digest = try Self.destinationDigest(
+            let digest = try unsafe Self.destinationDigest(
                 copy,
                 partialDirectory: partialDirectory,
                 scratch: scratch)
@@ -128,11 +128,11 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
         partialDirectory: String,
         scratch suppliedScratch: UnsafeMutableRawBufferPointer? = nil
     ) throws -> String {
-        let scratch = suppliedScratch ?? UnsafeMutableRawBufferPointer.allocate(
+        let scratch = unsafe suppliedScratch ?? UnsafeMutableRawBufferPointer.allocate(
             byteCount: WriterCore.tileBytes,
             alignment: 16_384)
         defer {
-            if suppliedScratch == nil { scratch.deallocate() }
+            if unsafe suppliedScratch == nil { unsafe scratch.deallocate() }
         }
 
         var digest = DestinationDigest(copy: copy)
@@ -150,13 +150,13 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
             var offset = destination.destinationOffset
             while remaining > 0 {
                 let count = min(Int(remaining), scratch.count)
-                try Posix.preadAll(
+                try unsafe Posix.preadAll(
                     fd: descriptor,
                     path: destination.destinationPath,
                     buf: scratch.baseAddress!,
                     count: count,
                     offset: offset)
-                digest.append(UnsafeRawBufferPointer(
+                unsafe digest.append(UnsafeRawBufferPointer(
                     start: scratch.baseAddress,
                     count: count))
                 remaining -= UInt64(count)
@@ -183,13 +183,13 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
         while remaining > 0 {
             try Task.checkCancellation()
             let count = min(Int(remaining), scratch.count)
-            try Posix.preadAll(
+            try unsafe Posix.preadAll(
                 fd: sourceFD,
                 path: sourcePath,
                 buf: scratch.baseAddress!,
                 count: count,
                 offset: source)
-            try Posix.pwriteAll(
+            try unsafe Posix.pwriteAll(
                 fd: destinationFD,
                 path: destinationPath,
                 buf: scratch.baseAddress!,
@@ -216,17 +216,17 @@ private struct DestinationDigest {
 
     mutating func append(_ value: UInt64) {
         var littleEndian = value.littleEndian
-        withUnsafeBytes(of: &littleEndian) { stream.update($0) }
+        withUnsafeBytes(of: &littleEndian) { unsafe stream.update($0) }
     }
 
     mutating func append(_ value: String) {
         let data = Data(value.utf8)
         append(UInt64(data.count))
-        data.withUnsafeBytes { stream.update($0) }
+        unsafe data.withUnsafeBytes { unsafe stream.update($0) }
     }
 
     mutating func append(_ bytes: UnsafeRawBufferPointer) {
-        stream.update(bytes)
+        unsafe stream.update(bytes)
     }
 
     func finalize() -> String {

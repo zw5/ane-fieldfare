@@ -62,7 +62,7 @@ import ANEFieldfareValidationSupport
         let context = try MetalContext()
         let kernel = try MoE(context: context)
         let routedBuffers = blobs.compactMap {
-            context.device.makeBuffer(bytes: $0.bytes,
+            unsafe context.device.makeBuffer(bytes: $0.bytes,
                                       length: $0.bytes.count,
                                       options: .storageModeShared)
         }
@@ -76,11 +76,11 @@ import ANEFieldfareValidationSupport
                 context.device, count: Self.topK * Self.intermediate),
               let fullOutput = Fp16Buffer.make(context.device, count: Self.dimension),
               let splitOutput = Fp16Buffer.make(context.device, count: Self.dimension),
-              let lowSlots = context.device.makeBuffer(
+              let lowSlots = unsafe context.device.makeBuffer(
                 bytes: [UInt32](0...3),
                 length: 4 * MemoryLayout<UInt32>.stride,
                 options: .storageModeShared),
-              let highSlots = context.device.makeBuffer(
+              let highSlots = unsafe context.device.makeBuffer(
                 bytes: [UInt32](4...7),
                 length: 4 * MemoryLayout<UInt32>.stride,
                 options: .storageModeShared),

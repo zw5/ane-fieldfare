@@ -24,7 +24,7 @@ import Testing
         var destination = [UInt8](repeating: 0, count: dw * dh * 4)
         source.withUnsafeBufferPointer { input in
             destination.withUnsafeMutableBufferPointer { output in
-                _ = TorchBicubicResize.resize(
+                _ = unsafe TorchBicubicResize.resize(
                     source: input.baseAddress!, sourceWidth: sw, sourceHeight: sh,
                     sourceRowBytes: sw * 4,
                     destination: output.baseAddress!,
@@ -40,7 +40,7 @@ import Testing
         var destination = [UInt8](repeating: 0, count: dw * dh * 4)
         try source.withUnsafeBufferPointer { input in
             try destination.withUnsafeMutableBufferPointer { output in
-                try resizer.resize(
+                unsafe try resizer.resize(
                     source: input.baseAddress!, sourceWidth: sw, sourceHeight: sh,
                     sourceRowBytes: sw * 4,
                     destination: output.baseAddress!,

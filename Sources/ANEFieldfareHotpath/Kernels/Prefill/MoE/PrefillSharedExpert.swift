@@ -90,8 +90,8 @@ final class PrefillSharedExpert {
         encoder.setBuffer(buffers.gate, offset: 0, index: 0)
         encoder.setBuffer(buffers.up, offset: 0, index: 1)
         encoder.setBuffer(buffers.act, offset: 0, index: 2)
-        var count = UInt32(queryCount * intermediate)
-        encoder.setBytes(&count, length: MemoryLayout<UInt32>.size, index: 3)
+        let count = UInt32(queryCount * intermediate)
+        encoder.setValue(count, index: 3)
         encoder.dispatchThreads(MTLSize(width: Int(count), height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: min(geluMulPSO.maxTotalThreadsPerThreadgroup, 256),
                                                                height: 1, depth: 1))

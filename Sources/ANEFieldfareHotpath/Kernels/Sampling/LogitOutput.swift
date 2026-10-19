@@ -28,10 +28,10 @@ final class LogitSoftcapSoftmax {
         enc.setComputePipelineState(pso)
         enc.setBuffer(logits, offset: 0, index: 0)
         enc.setBuffer(probs,  offset: 0, index: 1)
-        var vVar       = v
-        var softcapVar = softcap
-        enc.setBytes(&vVar,       length: MemoryLayout<UInt32>.size, index: 2)
-        enc.setBytes(&softcapVar, length: MemoryLayout<Float>.size,  index: 3)
+        let vVar       = v
+        let softcapVar = softcap
+        enc.setValue(vVar, index: 2)
+        enc.setValue(softcapVar, index: 3)
 
         let threadsPerGroup = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         let gridSize = MTLSize(width: threadsPerGroup, height: 1, depth: 1)
@@ -73,18 +73,18 @@ final class Sample {
         enc.setComputePipelineState(pso)
         enc.setBuffer(probs,    offset: 0, index: 0)
         enc.setBuffer(outToken, offset: 0, index: 1)
-        var vVar    = v
-        var tVar    = temperature
-        var kVar    = topK
-        var pVar    = topP
-        var sVar    = seed
-        var posVar  = position
-        enc.setBytes(&vVar, length: MemoryLayout<UInt32>.size,  index: 2)
-        enc.setBytes(&tVar, length: MemoryLayout<Float>.size,   index: 3)
-        enc.setBytes(&kVar, length: MemoryLayout<UInt32>.size,  index: 4)
-        enc.setBytes(&pVar, length: MemoryLayout<Float>.size,   index: 5)
-        enc.setBytes(&sVar, length: MemoryLayout<UInt64>.size,  index: 6)
-        enc.setBytes(&posVar, length: MemoryLayout<UInt32>.size, index: 7)
+        let vVar    = v
+        let tVar    = temperature
+        let kVar    = topK
+        let pVar    = topP
+        let sVar    = seed
+        let posVar  = position
+        enc.setValue(vVar, index: 2)
+        enc.setValue(tVar, index: 3)
+        enc.setValue(kVar, index: 4)
+        enc.setValue(pVar, index: 5)
+        enc.setValue(sVar, index: 6)
+        enc.setValue(posVar, index: 7)
 
         let threadsPerGroup = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         let gridSize = MTLSize(width: threadsPerGroup, height: 1, depth: 1)
@@ -172,8 +172,8 @@ final class SampleTopK64 {
             enc.setBuffer(probs, offset: 0, index: 0)
             enc.setBuffer(stage1Values, offset: 0, index: 1)
             enc.setBuffer(stage1Indices, offset: 0, index: 2)
-            var v = UInt32(vocab)
-            enc.setBytes(&v, length: MemoryLayout<UInt32>.size, index: 3)
+            let v = UInt32(vocab)
+            enc.setValue(v, index: 3)
             enc.dispatchThreadgroups(MTLSize(width: stage1Groups, height: 1, depth: 1),
                                      threadsPerThreadgroup: threads)
             enc.endEncoding()
@@ -185,8 +185,8 @@ final class SampleTopK64 {
             enc.setBuffer(stage1Indices, offset: 0, index: 1)
             enc.setBuffer(stage2Values, offset: 0, index: 2)
             enc.setBuffer(stage2Indices, offset: 0, index: 3)
-            var count = UInt32(stage1Count)
-            enc.setBytes(&count, length: MemoryLayout<UInt32>.size, index: 4)
+            let count = UInt32(stage1Count)
+            enc.setValue(count, index: 4)
             enc.dispatchThreadgroups(MTLSize(width: stage2Groups, height: 1, depth: 1),
                                      threadsPerThreadgroup: threads)
             enc.endEncoding()
@@ -197,14 +197,14 @@ final class SampleTopK64 {
             enc.setBuffer(stage2Values, offset: 0, index: 0)
             enc.setBuffer(stage2Indices, offset: 0, index: 1)
             enc.setBuffer(outToken, offset: 0, index: 2)
-            var count = UInt32(stage2Count)
-            var temp = temperature
-            var p = topP
-            var rngSeed = seed
-            enc.setBytes(&count, length: MemoryLayout<UInt32>.size, index: 3)
-            enc.setBytes(&temp, length: MemoryLayout<Float>.size, index: 4)
-            enc.setBytes(&p, length: MemoryLayout<Float>.size, index: 5)
-            enc.setBytes(&rngSeed, length: MemoryLayout<UInt64>.size, index: 6)
+            let count = UInt32(stage2Count)
+            let temp = temperature
+            let p = topP
+            let rngSeed = seed
+            enc.setValue(count, index: 3)
+            enc.setValue(temp, index: 4)
+            enc.setValue(p, index: 5)
+            enc.setValue(rngSeed, index: 6)
             enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: threads)
             enc.endEncoding()

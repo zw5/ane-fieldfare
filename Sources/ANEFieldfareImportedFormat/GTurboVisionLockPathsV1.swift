@@ -15,9 +15,9 @@ package enum GTurboVisionLockPathsV1 {
         let companion = companionURL.standardizedFileURL
         let parent = companion.deletingLastPathComponent()
         let resolvedParent: URL
-        if let resolved = realpath(parent.path, nil) {
-            defer { free(resolved) }
-            resolvedParent = URL(fileURLWithPath: String(cString: resolved),
+        if let resolved = unsafe realpath(parent.path, nil) {
+            defer { unsafe free(resolved) }
+            resolvedParent = unsafe URL(fileURLWithPath: String(cString: resolved),
                                  isDirectory: true)
         } else {
             // The parent does not exist yet; the caller's `open` will fail

@@ -70,7 +70,7 @@ public final class VisionResize {
               destinationWidth > 0, destinationHeight > 0 else { return }
         if sourceWidth == destinationWidth && sourceHeight == destinationHeight {
             for row in 0..<sourceHeight {
-                memcpy(destination.advanced(by: row * destinationRowBytes),
+                unsafe memcpy(destination.advanced(by: row * destinationRowBytes),
                        source.advanced(by: row * sourceRowBytes),
                        sourceWidth * 4)
             }
@@ -78,12 +78,12 @@ public final class VisionResize {
         }
 
         let device = context.device
-        guard let sourceBuffer = device.makeBuffer(
+        guard let sourceBuffer = unsafe device.makeBuffer(
             bytes: source, length: sourceHeight * sourceRowBytes,
             options: .storageModeShared) else {
             throw MetalError.noDevice
         }
-        try resize(sourceBuffer: sourceBuffer,
+        try unsafe resize(sourceBuffer: sourceBuffer,
                    sourceWidth: sourceWidth, sourceHeight: sourceHeight,
                    sourceRowBytes: sourceRowBytes,
                    destination: destination,
@@ -109,7 +109,7 @@ public final class VisionResize {
         destinationRowBytes: Int
     ) throws {
         let device = context.device
-        let source = UnsafeRawPointer(sourceBuffer.contents())
+        let source = unsafe UnsafeRawPointer(sourceBuffer.contents())
 
         // Horizontal first, into an intermediate that keeps every source row:
         // the vertical pass then reads columns of the already-narrowed image,
@@ -144,7 +144,7 @@ public final class VisionResize {
                        gridHeight: sourceHeight)
         } else {
             for row in 0..<sourceHeight {
-                memcpy(intermediate.contents().advanced(by: row * intermediateRowBytes),
+                unsafe memcpy(intermediate.contents().advanced(by: row * intermediateRowBytes),
                        source.advanced(by: row * sourceRowBytes),
                        sourceWidth * 4)
             }
@@ -177,7 +177,7 @@ public final class VisionResize {
         let rowBytes = sourceHeight == destinationHeight
             ? intermediateRowBytes : destinationRowBytes
         for row in 0..<destinationHeight {
-            memcpy(destination.advanced(by: row * destinationRowBytes),
+            unsafe memcpy(destination.advanced(by: row * destinationRowBytes),
                    finished.contents().advanced(by: row * rowBytes),
                    destinationWidth * 4)
         }
@@ -206,11 +206,11 @@ public final class VisionResize {
         // Buffers, not `setBytes`: that path is capped at 4 KB and a 4x
         // reduction of a 4,000-pixel axis needs about 32 KB of taps, which
         // aborted the process rather than failing a call.
-        guard let starts = context.device.makeBuffer(
+        guard let starts = unsafe context.device.makeBuffer(
             bytes: table.starts,
             length: table.starts.count * MemoryLayout<Int32>.stride,
             options: .storageModeShared),
-              let weights = context.device.makeBuffer(
+              let weights = unsafe context.device.makeBuffer(
                 bytes: table.weights,
                 length: table.weights.count * MemoryLayout<Int16>.stride,
                 options: .storageModeShared) else {
@@ -218,7 +218,7 @@ public final class VisionResize {
         }
         encoder.setBuffer(starts, offset: 0, index: 2)
         encoder.setBuffer(weights, offset: 0, index: 3)
-        encoder.setBytes(&params, length: MemoryLayout<Params>.stride, index: 4)
+        encoder.setValue(params, index: 4)
 
         let width = min(pipeline.threadExecutionWidth, gridWidth)
         let height = max(1, min(pipeline.maxTotalThreadsPerThreadgroup / width, gridHeight))

@@ -136,7 +136,7 @@ import Testing
 
     private static func writeSolidPNG(width: Int, height: Int, to url: URL) throws {
         let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
-        let bitmap = try #require(CGContext(
+        let bitmap = unsafe try #require(CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
@@ -306,7 +306,7 @@ import Testing
         width: Int, height: Int, type: UTType, to url: URL
     ) throws {
         let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
-        let bitmap = try #require(CGContext(
+        let bitmap = unsafe try #require(CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))

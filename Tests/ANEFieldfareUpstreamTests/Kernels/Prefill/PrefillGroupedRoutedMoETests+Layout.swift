@@ -42,9 +42,9 @@ extension PrefillGroupedRoutedMoETests {
     #expect(buffers.sortedPairs.length == max(pairBytes, PrefillRuntimeConfig.maxChunkTokens * 8 * MemoryLayout<PrefillTokenExpertPair>.stride))
     #expect(omittedBytes > 0)
 
-    let pairPtr = buffers.sortedPairs.contents()
+    let pairPtr = unsafe buffers.sortedPairs.contents()
       .bindMemory(to: PrefillTokenExpertPair.self, capacity: routes.sortedPairs.count)
-    #expect(pairPtr[0] == routes.sortedPairs[0])
-    #expect(pairPtr[routes.sortedPairs.count - 1] == routes.sortedPairs.last)
+    unsafe #expect(pairPtr[0] == routes.sortedPairs[0])
+    unsafe #expect(pairPtr[routes.sortedPairs.count - 1] == routes.sortedPairs.last)
   }
 }

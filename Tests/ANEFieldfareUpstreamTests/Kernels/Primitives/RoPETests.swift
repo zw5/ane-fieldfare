@@ -53,7 +53,7 @@ import ANEFieldfareValidationSupport
         let context = try MetalContext()
         let kernel = try RoPE(context: context)
         let buffer = try #require(Fp16Buffer.make(context.device, values: input))
-        let before = Array(UnsafeBufferPointer(
+        let before = unsafe Array(UnsafeBufferPointer(
             start: buffer.contents().assumingMemoryBound(to: UInt8.self),
             count: count * MemoryLayout<Float16>.size))
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
@@ -83,20 +83,20 @@ import ANEFieldfareValidationSupport
 
         let halfDim = headDim / 2
         let stride = MemoryLayout<Float16>.size
-        let after = UnsafeBufferPointer(
+        let after = unsafe UnsafeBufferPointer(
             start: buffer.contents().assumingMemoryBound(to: UInt8.self),
             count: count * stride)
         for head in 0..<heads {
             let base = head * headDim * stride
             for index in rotatedPairs..<halfDim {
                 let offset = base + index * stride
-                #expect(after[offset] == before[offset])
-                #expect(after[offset + 1] == before[offset + 1])
+                unsafe #expect(after[offset] == before[offset])
+                unsafe #expect(after[offset + 1] == before[offset + 1])
             }
             for index in (halfDim + rotatedPairs)..<headDim {
                 let offset = base + index * stride
-                #expect(after[offset] == before[offset])
-                #expect(after[offset + 1] == before[offset + 1])
+                unsafe #expect(after[offset] == before[offset])
+                unsafe #expect(after[offset + 1] == before[offset + 1])
             }
         }
     }

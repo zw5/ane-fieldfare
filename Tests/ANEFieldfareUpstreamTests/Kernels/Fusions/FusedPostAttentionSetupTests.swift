@@ -21,23 +21,23 @@ import ANEFieldfareValidationSupport
         let fused = try FusedPostAttentionSetup(context: ctx)
 
         guard
-            let hiddenLegacy = ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(Self.d), options: .storageModeShared),
-            let attnLegacy = ctx.device.makeBuffer(bytes: attn, length: Self.bytes(Self.d), options: .storageModeShared),
+            let hiddenLegacy = unsafe ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(Self.d), options: .storageModeShared),
+            let attnLegacy = unsafe ctx.device.makeBuffer(bytes: attn, length: Self.bytes(Self.d), options: .storageModeShared),
             let denseLegacy = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
             let routedLegacy = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
             let routerLegacy = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
-            let hiddenFused = ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(Self.d), options: .storageModeShared),
-            let attnFused = ctx.device.makeBuffer(bytes: attn, length: Self.bytes(Self.d), options: .storageModeShared),
+            let hiddenFused = unsafe ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(Self.d), options: .storageModeShared),
+            let attnFused = unsafe ctx.device.makeBuffer(bytes: attn, length: Self.bytes(Self.d), options: .storageModeShared),
             let denseFused = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
             let routedFused = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
             let routerFused = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
-            let wPostBuf = ctx.device.makeBuffer(bytes: wPost,
+            let wPostBuf = unsafe ctx.device.makeBuffer(bytes: wPost,
                                                  length: wPost.count * MemoryLayout<UInt16>.size,
                                                  options: .storageModeShared),
-            let wPreBuf = ctx.device.makeBuffer(bytes: wPre,
+            let wPreBuf = unsafe ctx.device.makeBuffer(bytes: wPre,
                                                 length: wPre.count * MemoryLayout<UInt16>.size,
                                                 options: .storageModeShared),
-            let wPre2Buf = ctx.device.makeBuffer(bytes: wPre2,
+            let wPre2Buf = unsafe ctx.device.makeBuffer(bytes: wPre2,
                                                  length: wPre2.count * MemoryLayout<UInt16>.size,
                                                  options: .storageModeShared)
         else {
@@ -62,10 +62,10 @@ import ANEFieldfareValidationSupport
             return
         }
 
-        let hiddenPointer = hiddenLegacy.contents().assumingMemoryBound(to: Float16.self)
-        let attentionPointer = attnLegacy.contents().assumingMemoryBound(to: Float16.self)
+        let hiddenPointer = unsafe hiddenLegacy.contents().assumingMemoryBound(to: Float16.self)
+        let attentionPointer = unsafe attnLegacy.contents().assumingMemoryBound(to: Float16.self)
         for index in 0..<Self.d {
-            hiddenPointer[index] += attentionPointer[index]
+            unsafe hiddenPointer[index] += attentionPointer[index]
         }
 
         guard let cb = ctx.queue.makeCommandBuffer() else {
@@ -118,7 +118,7 @@ import ANEFieldfareValidationSupport
     }
 
     private static func bufferBytes(_ buffer: any MTLBuffer) -> [UInt8] {
-        let ptr = buffer.contents().assumingMemoryBound(to: UInt8.self)
-        return Array(UnsafeBufferPointer(start: ptr, count: Self.bytes(Self.d)))
+        let ptr = unsafe buffer.contents().assumingMemoryBound(to: UInt8.self)
+        return unsafe Array(UnsafeBufferPointer(start: ptr, count: Self.bytes(Self.d)))
     }
 }

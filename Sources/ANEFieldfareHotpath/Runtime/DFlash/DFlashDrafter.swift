@@ -189,7 +189,7 @@ public final class DFlashDrafter {
     /// Appends target features for positions `[contextLength, contextLength + rows)`.
     /// `captured` is `[contextLayers][stride][hidden]` FP16 as `PrefillCapture`
     /// delivers it; only its first `rows` rows per layer are used.
-    public func appendContext(captured: UnsafeBufferPointer<Float16>, stride: Int, rows: Int) throws {
+    public func appendContext(captured: Span<Float16>, stride: Int, rows: Int) throws {
         let D = config.hiddenSize, layers = config.contextLayers.count
         guard rows >= 0, rows <= stride, captured.count >= layers * stride * D,
               contextLength + rows <= maxContext else {
@@ -197,14 +197,16 @@ public final class DFlashDrafter {
         }
         var done = 0
         while done < rows {
-            guard let source = captured.baseAddress else {
-                throw DFlashError.invalidState("empty captured context")
-            }
             let n = min(Self.appendRows, rows - done)
-            let dst = staging.contents().assumingMemoryBound(to: Float16.self)
-            for layer in 0..<layers {
-                (dst + layer * n * D).update(from: source + (layer * stride + done) * D,
-                                             count: n * D)
+            // The guard above bounds every source row by `captured.count`, and
+            // `staging` holds `appendRows` rows per layer.
+            captured.withUnsafeBufferPointer { source in
+                let dst = unsafe staging.contents().assumingMemoryBound(to: Float16.self)
+                for layer in 0..<layers {
+                    let from = unsafe UnsafeBufferPointer(rebasing: source[(layer * stride + done) * D ..< (layer * stride + done + n) * D])
+                    _ = unsafe UnsafeMutableBufferPointer(start: dst + layer * n * D, count: n * D)
+                        .update(fromContentsOf: from)
+                }
             }
             try encodeAppend(rows: n)
             done += n
@@ -250,9 +252,9 @@ public final class DFlashDrafter {
         guard contextLength + count <= maxContext else { throw DFlashError.invalidState("context full") }
         let D = config.hiddenSize, R = count, F = config.intermediateSize
         let kvWidth = config.kvHeads * config.headDim, qWidth = config.heads * config.headDim
-        let idPtr = ids.contents().assumingMemoryBound(to: UInt32.self)
-        idPtr[0] = UInt32(bitPattern: anchor)
-        for r in 1..<R { idPtr[r] = UInt32(bitPattern: config.maskTokenID) }
+        let idPtr = unsafe ids.contents().assumingMemoryBound(to: UInt32.self)
+        unsafe idPtr[0] = UInt32(bitPattern: anchor)
+        for r in 1..<R { unsafe idPtr[r] = UInt32(bitPattern: config.maskTokenID) }
 
         guard let cb = ctx.queue.makeCommandBuffer() else { throw DFlashError.invalidState("command buffer") }
         cb.label = "dflash propose ctx=\(contextLength) block=\(R)"
@@ -264,9 +266,9 @@ public final class DFlashDrafter {
             enc.setBuffer(emb.buffer, offset: Int(emb.biasOffset), index: 2)
             enc.setBuffer(ids, offset: 0, index: 3)
             enc.setBuffer(residual, offset: 0, index: 4)
-            var d = UInt32(D), scale = Float(D).squareRoot()
-            enc.setBytes(&d, length: 4, index: 5)
-            enc.setBytes(&scale, length: 4, index: 6)
+            let d = UInt32(D), scale = Float(D).squareRoot()
+            enc.setValue(d, index: 5)
+            enc.setValue(scale, index: 6)
             enc.dispatchThreads(MTLSize(width: D, height: R, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             enc.endEncoding()
@@ -287,10 +289,10 @@ public final class DFlashDrafter {
                 for (i, b) in [q, kCache[l], vCache[l], kBlock, vBlock, attention].enumerated() {
                     enc.setBuffer(b, offset: 0, index: i)
                 }
-                var params: [UInt32] = [UInt32(config.heads), UInt32(config.kvHeads), UInt32(contextLength),
+                let params: [UInt32] = [UInt32(config.heads), UInt32(config.kvHeads), UInt32(contextLength),
                                         UInt32(R), config.slidingLayers[l] ? 1 : 0,
                                         UInt32(min(config.slidingWindow, Int(UInt32.max)))]
-                for i in params.indices { enc.setBytes(&params[i], length: 4, index: 6 + i) }
+                for i in params.indices { enc.setValue(params[i], index: 6 + i) }
                 enc.dispatchThreadgroups(MTLSize(width: config.heads, height: R, depth: 1),
                                          threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
                 enc.endEncoding()
@@ -310,8 +312,8 @@ public final class DFlashDrafter {
         enc.setComputePipelineState(toF16PSO)
         enc.setBuffer(residual, offset: D * 4, index: 0)
         enc.setBuffer(headRows, offset: 0, index: 1)
-        var n = UInt32((R - 1) * D)
-        enc.setBytes(&n, length: 4, index: 2)
+        let n = UInt32((R - 1) * D)
+        enc.setValue(n, index: 2)
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
@@ -326,10 +328,10 @@ public final class DFlashDrafter {
         cb.commit()
         cb.waitUntilCompleted()
         if let error = cb.error { throw DFlashError.invalidState("propose failed: \(error)") }
-        let out = draftTokens.contents().assumingMemoryBound(to: UInt32.self)
-        let confidence = head.rowsConfidence.contents().assumingMemoryBound(to: Float.self)
-        lastConfidences = (0..<(R - 1)).map { confidence[$0] }
-        return (0..<(R - 1)).map { Int32(bitPattern: out[$0]) }
+        let out = unsafe draftTokens.contents().assumingMemoryBound(to: UInt32.self)
+        let confidence = unsafe head.rowsConfidence.contents().assumingMemoryBound(to: Float.self)
+        lastConfidences = (0..<(R - 1)).map { unsafe confidence[$0] }
+        return (0..<(R - 1)).map { unsafe Int32(bitPattern: out[$0]) }
     }
 
     // MARK: - Encoding helpers
@@ -383,21 +385,21 @@ public final class DFlashDrafter {
             throw DFlashError.invalidState("INT4 drafter allocation failed")
         }
         out.label = "dflash.int4"
-        let src = source.contents(), dst = out.contents()
+        let src = unsafe source.contents(), dst = unsafe out.contents()
         for (name, rows, cols) in shapes {
             guard let view = views[name], let range = ranges[name] else {
                 throw DFlashError.invalidCheckpoint("tensor \(name) was not laid out")
             }
-            let w = src.advanced(by: range.lowerBound).assumingMemoryBound(to: UInt16.self)
-            let packed = dst.advanced(by: view.weights).assumingMemoryBound(to: UInt8.self)
-            let scales = dst.advanced(by: view.scales).assumingMemoryBound(to: UInt16.self)
-            let biases = dst.advanced(by: view.biases).assumingMemoryBound(to: UInt16.self)
+            let w = unsafe src.advanced(by: range.lowerBound).assumingMemoryBound(to: UInt16.self)
+            let packed = unsafe dst.advanced(by: view.weights).assumingMemoryBound(to: UInt8.self)
+            let scales = unsafe dst.advanced(by: view.scales).assumingMemoryBound(to: UInt16.self)
+            let biases = unsafe dst.advanced(by: view.biases).assumingMemoryBound(to: UInt16.self)
             let groupsPerRow = cols / Quantization.groupSize
             // SAFETY: iteration `row` reads only row `row` of the source and
             // writes only that row's packed weights, scales and biases, so no
             // two iterations touch the same bytes, and every write lands
             // before `concurrentPerform` returns.
-            nonisolated(unsafe) let (wp, pp, sp, bp) = (w, packed, scales, biases)
+            nonisolated(unsafe) let (wp, pp, sp, bp) = unsafe (w, packed, scales, biases)
             // SAFETY: one-time CPU quantization at load, fanned over GCD
             // workers; it never runs on the Swift concurrency pool.
             DispatchQueue.concurrentPerform(iterations: rows) { row in
@@ -405,20 +407,20 @@ public final class DFlashDrafter {
                     let base = row * cols + g * Quantization.groupSize
                     var lo = Float.infinity, hi = -Float.infinity
                     for i in 0..<Quantization.groupSize {
-                        let v = Quantization.bf16ToFloat(wp[base + i])
+                        let v = unsafe Quantization.bf16ToFloat(wp[base + i])
                         lo = min(lo, v); hi = max(hi, v)
                     }
                     let sBits = Quantization.bf16Bits(hi == lo ? 1 : (hi - lo) / 15)
                     let bBits = Quantization.bf16Bits(lo)
-                    sp[row * groupsPerRow + g] = sBits
-                    bp[row * groupsPerRow + g] = bBits
+                    unsafe sp[row * groupsPerRow + g] = sBits
+                    unsafe bp[row * groupsPerRow + g] = bBits
                     let scale = Quantization.bf16ToFloat(sBits), bias = Quantization.bf16ToFloat(bBits)
                     let inv = scale == 0 ? 0 : 1 / scale
                     for i in stride(from: 0, to: Quantization.groupSize, by: 2) {
                         func q(_ v: UInt16) -> UInt8 {
                             UInt8(max(0, min(15, Int(((Quantization.bf16ToFloat(v) - bias) * inv).rounded()))))
                         }
-                        pp[(base + i) / 2] = q(wp[base + i]) | (q(wp[base + i + 1]) << 4)
+                        unsafe pp[(base + i) / 2] = unsafe q(wp[base + i]) | (q(wp[base + i + 1]) << 4)
                     }
                 }
             }
@@ -441,7 +443,7 @@ public final class DFlashDrafter {
         out.label = "dflash.weights"
         for (name, range) in ranges {
             guard let offset = offsets[name] else { continue }
-            out.contents().advanced(by: offset)
+            unsafe out.contents().advanced(by: offset)
                 .copyMemory(from: source.contents().advanced(by: range.lowerBound), byteCount: range.count)
         }
         return (out, offsets)
@@ -457,8 +459,8 @@ public final class DFlashDrafter {
         guard let enc = cb.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)
         for (i, b) in buffers.enumerated() { enc.setBuffer(b, offset: 0, index: i) }
-        var values = constants
-        for i in values.indices { enc.setBytes(&values[i], length: 4, index: buffers.count + i) }
+        let values = constants
+        for i in values.indices { enc.setValue(values[i], index: buffers.count + i) }
         enc.dispatchThreads(grid, threadsPerThreadgroup: MTLSize(width: min(256, grid.width), height: 1, depth: 1))
         enc.endEncoding()
     }
@@ -470,9 +472,9 @@ public final class DFlashDrafter {
         enc.setBuffer(x, offset: 0, index: 0)
         enc.setBuffer(weights, offset: try offset(weight), index: 1)
         enc.setBuffer(out, offset: 0, index: 2)
-        var d = UInt32(config.hiddenSize), eps = config.rmsEps
-        enc.setBytes(&d, length: 4, index: 3)
-        enc.setBytes(&eps, length: 4, index: 4)
+        let d = UInt32(config.hiddenSize), eps = config.rmsEps
+        enc.setValue(d, index: 3)
+        enc.setValue(eps, index: 4)
         enc.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
@@ -485,11 +487,11 @@ public final class DFlashDrafter {
         enc.setBuffer(x, offset: 0, index: 0)
         enc.setBuffer(weights, offset: try offset(weight), index: 1)
         enc.setBuffer(out, offset: outOffset, index: 2)
-        var h = UInt32(heads), p = UInt32(pos0), theta = config.ropeTheta, eps = config.rmsEps
-        enc.setBytes(&h, length: 4, index: 3)
-        enc.setBytes(&p, length: 4, index: 4)
-        enc.setBytes(&theta, length: 4, index: 5)
-        enc.setBytes(&eps, length: 4, index: 6)
+        let h = UInt32(heads), p = UInt32(pos0), theta = config.ropeTheta, eps = config.rmsEps
+        enc.setValue(h, index: 3)
+        enc.setValue(p, index: 4)
+        enc.setValue(theta, index: 5)
+        enc.setValue(eps, index: 6)
         enc.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
         enc.endEncoding()
@@ -502,7 +504,7 @@ public final class DFlashDrafter {
         guard let lengthData = try handle.read(upToCount: 8), lengthData.count == 8 else {
             throw DFlashError.invalidCheckpoint("short safetensors file")
         }
-        let headerLength = Int(lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) })
+        let headerLength = unsafe Int(lengthData.withUnsafeBytes { unsafe $0.loadUnaligned(as: UInt64.self) })
         guard let headerData = try handle.read(upToCount: headerLength), headerData.count == headerLength,
               let header = try JSONSerialization.jsonObject(with: headerData) as? [String: Any] else {
             throw DFlashError.invalidCheckpoint("bad safetensors header")
@@ -522,12 +524,12 @@ public final class DFlashDrafter {
         }
         buffer.label = "dflash.weights"
         var read = 0
-        let base = buffer.contents()
+        let base = unsafe buffer.contents()
         while read < dataLength {
             guard let chunk = try handle.read(upToCount: min(64 << 20, dataLength - read)), !chunk.isEmpty else {
                 throw DFlashError.invalidCheckpoint("truncated safetensors data")
             }
-            chunk.copyBytes(to: UnsafeMutableRawBufferPointer(start: base + read, count: chunk.count))
+            unsafe chunk.copyBytes(to: UnsafeMutableRawBufferPointer(start: base + read, count: chunk.count))
             read += chunk.count
         }
         return (buffer, offsets)

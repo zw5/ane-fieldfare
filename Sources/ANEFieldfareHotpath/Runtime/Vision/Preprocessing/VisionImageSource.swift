@@ -48,18 +48,18 @@ public struct VisionImageSource: Sendable {
             // O_NONBLOCK or a FIFO blocks here forever: the regular-file check
             // below runs only once open returns. pread on a regular file ignores
             // it, so nothing downstream changes. Matches every other open here.
-            Darwin.open($0, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
+            unsafe Darwin.open($0, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         }
         guard descriptor >= 0 else {
             throw VisionImageError.invalidSource(
-                "open failed for \(fileURL.lastPathComponent): \(String(cString: strerror(errno)))")
+                unsafe "open failed for \(fileURL.lastPathComponent): \(String(cString: strerror(errno)))")
         }
         var status = stat()
-        guard fstat(descriptor, &status) == 0 else {
+        guard unsafe fstat(descriptor, &status) == 0 else {
             let savedErrno = errno
             Darwin.close(descriptor)
             throw VisionImageError.invalidSource(
-                "fstat failed: \(String(cString: strerror(savedErrno)))")
+                unsafe "fstat failed: \(String(cString: strerror(savedErrno)))")
         }
         guard (status.st_mode & S_IFMT) == S_IFREG, status.st_size >= 0,
               let encodedBytes = Int(exactly: status.st_size) else {
@@ -74,24 +74,24 @@ public struct VisionImageSource: Sendable {
 
         let fileProvider = VisionFileProvider(
             descriptor: descriptor, encodedBytes: encodedBytes)
-        let context = Unmanaged.passRetained(fileProvider)
-        var callbacks = CGDataProviderDirectCallbacks(
+        let context = unsafe Unmanaged.passRetained(fileProvider)
+        var callbacks = unsafe CGDataProviderDirectCallbacks(
             version: 0,
             getBytePointer: nil,
             releaseBytePointer: nil,
             getBytesAtPosition: { opaque, buffer, position, count in
-                guard let opaque else { return 0 }
-                return Unmanaged<VisionFileProvider>.fromOpaque(opaque)
+                guard let opaque = unsafe opaque else { return 0 }
+                return unsafe Unmanaged<VisionFileProvider>.fromOpaque(opaque)
                     .takeUnretainedValue()
                     .read(into: buffer, position: position, count: count)
             },
             releaseInfo: { opaque in
-                guard let opaque else { return }
-                Unmanaged<VisionFileProvider>.fromOpaque(opaque).release()
+                guard let opaque = unsafe opaque else { return }
+                unsafe Unmanaged<VisionFileProvider>.fromOpaque(opaque).release()
             })
-        guard let provider = CGDataProvider(
+        guard let provider = unsafe CGDataProvider(
             directInfo: context.toOpaque(), size: off_t(encodedBytes), callbacks: &callbacks) else {
-            context.release()
+            unsafe context.release()
             throw VisionImageError.invalidSource("could not create image data provider")
         }
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
@@ -148,7 +148,7 @@ package struct OpenedVisionImage {
         var buffer = [UInt8](repeating: 0, count: Self.scanChunkBytes)
         while position < encodedBytes {
             let count = min(Self.scanChunkBytes, encodedBytes - position)
-            let read = fileProvider.read(into: &buffer, position: off_t(position), count: count)
+            let read = unsafe fileProvider.read(into: &buffer, position: off_t(position), count: count)
             guard read == count else { return false }
             if carry == 0xFF, buffer[0] == 0xD9 { return true }
             var index = 0
@@ -174,7 +174,7 @@ package struct OpenedVisionImage {
         let trailer = 12
         guard encodedBytes >= 8 + trailer else { return false }
         var tail = [UInt8](repeating: 0, count: trailer)
-        let read = fileProvider.read(into: &tail,
+        let read = unsafe fileProvider.read(into: &tail,
                                      position: off_t(encodedBytes - trailer),
                                      count: trailer)
         guard read == trailer else { return false }
@@ -189,7 +189,7 @@ package struct OpenedVisionImage {
         var position = 2  // past SOI
         var header = [UInt8](repeating: 0, count: 4)
         while position + 4 <= min(encodedBytes, Self.markerScanLimitBytes) {
-            let read = fileProvider.read(into: &header, position: off_t(position), count: 4)
+            let read = unsafe fileProvider.read(into: &header, position: off_t(position), count: 4)
             guard read == 4, header[0] == 0xFF else { return nil }
             // Fill bytes: any number of 0xFF may precede a marker (ITU T.81
             // B.1.1.2), and scanners and older camera firmware emit them.
@@ -242,7 +242,7 @@ private final class VisionFileProvider {
         let requested = min(count, encodedBytes - offset)
         var completed = 0
         while completed < requested {
-            let result = pread(
+            let result = unsafe pread(
                 descriptor,
                 buffer.advanced(by: completed),
                 requested - completed,

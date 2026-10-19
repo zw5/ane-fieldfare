@@ -37,8 +37,8 @@ import ANEFieldfareValidationSupport
         }
 
         func writeLogits(_ values: [Float]) {
-            let ptr = logits.contents().bindMemory(to: Float16.self, capacity: vocab)
-            for i in 0..<vocab { ptr[i] = Float16(values[i]) }
+            let ptr = unsafe logits.contents().bindMemory(to: Float16.self, capacity: vocab)
+            for i in 0..<vocab { unsafe ptr[i] = Float16(values[i]) }
         }
 
         @discardableResult
@@ -50,7 +50,7 @@ import ANEFieldfareValidationSupport
                                       history: history, config: config,
                                       position: position, outToken: outToken)
             cmd.commit(); cmd.waitUntilCompleted()
-            return (outToken.contents().load(as: UInt32.self), path)
+            return unsafe (outToken.contents().load(as: UInt32.self), path)
         }
     }
 

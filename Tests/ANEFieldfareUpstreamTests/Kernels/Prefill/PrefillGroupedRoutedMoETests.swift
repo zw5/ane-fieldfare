@@ -72,7 +72,7 @@ import ANEFieldfareValidationSupport
     }
 
     static func byte(_ view: TensorView, at relativeOffset: Int) -> UInt8 {
-        view.buffer.contents()
+        unsafe view.buffer.contents()
             .advanced(by: Int(view.offset) + relativeOffset)
             .load(as: UInt8.self)
     }
@@ -88,7 +88,7 @@ import ANEFieldfareValidationSupport
             var bytes = [UInt8](repeating: 0xA5, count: prefix)
             bytes.append(contentsOf: pool.bytes[start..<end])
             bytes.append(contentsOf: repeatElement(UInt8(0x5A), count: suffix))
-            guard let buffer = device.makeBuffer(bytes: bytes,
+            guard let buffer = unsafe device.makeBuffer(bytes: bytes,
                                                  length: bytes.count,
                                                  options: .storageModeShared) else {
                 throw PrefillGroupedRoutedMoEError.allocationFailed("streamed expert \(expertID)")

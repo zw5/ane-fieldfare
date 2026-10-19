@@ -89,7 +89,7 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
             originalRequest: originalRequest,
             maximumRedirects: maximumRedirects)))
         self.progress = progress
-        let fd = open(targetPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        let fd = unsafe open(targetPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else {
             throw RepackError.fileOpenFailed(path: targetPath, errno: errno)
         }
@@ -175,9 +175,9 @@ private final class RemoteRangeTransferDelegate: NSObject, URLSessionDataDelegat
             return
         }
         do {
-            try data.withUnsafeBytes { raw in
+            try unsafe data.withUnsafeBytes { raw in
                 guard let base = raw.baseAddress else { return }
-                try Posix.pwriteAll(fd: fd,
+                try unsafe Posix.pwriteAll(fd: fd,
                                     path: targetPath,
                                     buf: base,
                                     count: raw.count,

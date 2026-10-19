@@ -50,22 +50,22 @@ final class PrefillPostAttentionSetup {
         enc.setBuffer(postAttentionWeight, offset: postAttentionWeightOffset, index: 5)
         enc.setBuffer(preFFNWeight, offset: preFFNWeightOffset, index: 6)
         enc.setBuffer(preFFN2Weight, offset: preFFN2WeightOffset, index: 7)
-        var tVar = queryCount
-        var dVar = d
-        var hiddenStride = hiddenStrideElements
-        var attnStride = attnStrideElements
-        var denseStride = denseStrideElements
-        var routedStride = routedStrideElements
-        var routerStride = routerStrideElements
-        var epsVar = eps
-        enc.setBytes(&tVar, length: MemoryLayout<UInt32>.size, index: 8)
-        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 9)
-        enc.setBytes(&hiddenStride, length: MemoryLayout<UInt32>.size, index: 10)
-        enc.setBytes(&attnStride, length: MemoryLayout<UInt32>.size, index: 11)
-        enc.setBytes(&denseStride, length: MemoryLayout<UInt32>.size, index: 12)
-        enc.setBytes(&routedStride, length: MemoryLayout<UInt32>.size, index: 13)
-        enc.setBytes(&routerStride, length: MemoryLayout<UInt32>.size, index: 14)
-        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size, index: 15)
+        let tVar = queryCount
+        let dVar = d
+        let hiddenStride = hiddenStrideElements
+        let attnStride = attnStrideElements
+        let denseStride = denseStrideElements
+        let routedStride = routedStrideElements
+        let routerStride = routerStrideElements
+        let epsVar = eps
+        enc.setValue(tVar, index: 8)
+        enc.setValue(dVar, index: 9)
+        enc.setValue(hiddenStride, index: 10)
+        enc.setValue(attnStride, index: 11)
+        enc.setValue(denseStride, index: 12)
+        enc.setValue(routedStride, index: 13)
+        enc.setValue(routerStride, index: 14)
+        enc.setValue(epsVar, index: 15)
 
         let threads = min(pso.maxTotalThreadsPerThreadgroup, 256)
         enc.dispatchThreadgroups(MTLSize(width: Int(queryCount), height: 1, depth: 1),

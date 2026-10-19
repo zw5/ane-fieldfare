@@ -86,10 +86,10 @@ public final class VisionAttention {
         encoder.setBuffer(k, offset: 0, index: 1)
         encoder.setBuffer(v, offset: 0, index: 2)
         encoder.setBuffer(output, offset: 0, index: 3)
-        var length = UInt32(sequenceLength)
-        var heads = UInt32(numHeads)
-        encoder.setBytes(&length, length: MemoryLayout<UInt32>.size, index: 4)
-        encoder.setBytes(&heads, length: MemoryLayout<UInt32>.size, index: 5)
+        let length = UInt32(sequenceLength)
+        let heads = UInt32(numHeads)
+        encoder.setValue(length, index: 4)
+        encoder.setValue(heads, index: 5)
         encoder.dispatchThreadgroups(
             MTLSize(width: (sequenceLength + 7) / 8,
                     height: numHeads, depth: 1),
@@ -105,10 +105,10 @@ public final class VisionAttention {
         inputRowStride: Int
     ) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        var rows = UInt32(sequenceLength), heads = UInt32(numHeads)
+        let rows = UInt32(sequenceLength), heads = UInt32(numHeads)
         // Row-major unpadded output; parallelExp softmax keeps the tile sum
         // sequential per query, bit-identical to the serial phase and faster.
-        var layout = VisionAttentionLayout(
+        let layout = VisionAttentionLayout(
             inputRowStride: UInt32(inputRowStride),
             unpaddedOutputHeadDim: UInt32(Self.headDimension),
             parallelSoftmax: 2)
@@ -117,11 +117,9 @@ public final class VisionAttention {
         encoder.setBuffer(paddedK, offset: 0, index: 1)
         encoder.setBuffer(paddedV, offset: 0, index: 2)
         encoder.setBuffer(output, offset: 0, index: 3)
-        encoder.setBytes(&rows, length: 4, index: 4)
-        encoder.setBytes(&heads, length: 4, index: 5)
-        encoder.setBytes(&layout,
-                         length: MemoryLayout<VisionAttentionLayout>.stride,
-                         index: 6)
+        encoder.setValue(rows, index: 4)
+        encoder.setValue(heads, index: 5)
+        encoder.setValue(layout, index: 6)
         encoder.dispatchThreadgroups(
             MTLSize(width: (sequenceLength + 15) / 16,
                     height: numHeads, depth: 1),

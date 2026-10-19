@@ -636,7 +636,7 @@ public final class RemoteVisionPackInstaller {
 
     private func hash(_ data: Data) -> String {
         var stream = Sha256Stream()
-        data.withUnsafeBytes { stream.update($0) }
+        unsafe data.withUnsafeBytes { unsafe stream.update($0) }
         return stream.finalizeHexString()
     }
 }

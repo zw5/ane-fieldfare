@@ -302,7 +302,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         // The routed MoE kernel seeds y[d] = residual[d]; pinning this buffer
         // to zero once at init makes the routed branch's residual contribution
         // exactly zero (it's combined with the dense MLP downstream).
-        memset(self.zeroResidual.contents(), 0, self.zeroResidual.length)
+        unsafe memset(self.zeroResidual.contents(), 0, self.zeroResidual.length)
         self.outIndices    = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size)
         self.outWeights    = try buf(cfg.topKExperts)
         self.moeActs       = try buf(cfg.topKExperts * cfg.moeIntermediateSize)
@@ -313,7 +313,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.routedSlots = try buf(MoE.maxStreamedExperts, MemoryLayout<UInt64>.size)
         self.routedAddressTable = try buf(cfg.numLayers * cfg.numExperts, MemoryLayout<UInt64>.size)
         self.routedFallback = try buf(model.routedExpertBytes, 1)
-        memset(self.routedFallback.contents(), 0, self.routedFallback.length)
+        unsafe memset(self.routedFallback.contents(), 0, self.routedFallback.length)
         self.savedHidden = try buf(cfg.hiddenSize)
         self.patchSlots = try buf(cfg.numLayers * cfg.topKExperts, MemoryLayout<UInt32>.size)
         self.gpuRoutedDecode = moe.routedSlotsAreAddresses
@@ -363,13 +363,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                               options: .storageModeShared) else {
                 throw ModelError.residentBufferWrapFailed
             }
-            let src = scaleView.buffer.contents()
+            let src = unsafe scaleView.buffer.contents()
                 .advanced(by: Int(scaleView.offset))
                 .assumingMemoryBound(to: UInt16.self)
-            let dst = buf.contents().assumingMemoryBound(to: UInt16.self)
+            let dst = unsafe buf.contents().assumingMemoryBound(to: UInt16.self)
             for i in 0..<dInts {
-                let v = Quantization.bf16ToFloat(src[i]) * invSqrtD
-                dst[i] = Quantization.bf16Bits(v)
+                let v = unsafe Quantization.bf16ToFloat(src[i]) * invSqrtD
+                unsafe dst[i] = Quantization.bf16Bits(v)
             }
             buf.label = "effective_scale.L\(L)"
             perLayer.append(buf)
@@ -416,8 +416,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             logits: out, scratch: scratch,
             config: .production(chunkTokens: scratch.layout.chunkTokens),
             writeFinalHead: true)
-        let values = out.contents().bindMemory(to: UInt32.self, capacity: tokens.count)
-        return (0..<tokens.count).map { Int32(bitPattern: values[$0]) }
+        let values = unsafe out.contents().bindMemory(to: UInt32.self, capacity: tokens.count)
+        return (0..<tokens.count).map { unsafe Int32(bitPattern: values[$0]) }
     }
 
     /// Abandons the newest KV tokens, e.g. rejected speculative drafts. Rows
@@ -475,8 +475,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     }
 
     private func snapshotFP16(_ buffer: any MTLBuffer, count: Int) -> [Float16] {
-        let pointer = buffer.contents().bindMemory(to: Float16.self, capacity: count)
-        return Array(UnsafeBufferPointer(start: pointer, count: count))
+        let pointer = unsafe buffer.contents().bindMemory(to: Float16.self, capacity: count)
+        return unsafe Array(UnsafeBufferPointer(start: pointer, count: count))
     }
 
     public func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
@@ -716,7 +716,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         }
 
         let tokenIDs = tokens.map { UInt32(bitPattern: $0) }
-        guard let tokenBuffer = ctx.device.makeBuffer(bytes: tokenIDs,
+        guard let tokenBuffer = unsafe ctx.device.makeBuffer(bytes: tokenIDs,
                                                       length: tokenIDs.count * MemoryLayout<UInt32>.stride,
                                                       options: .storageModeShared) else {
             throw ModelError.residentBufferWrapFailed
@@ -1220,17 +1220,17 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     if let pending = pendingTail { try settle(pending); pendingTail = nil }
 
                     let routeCount = t * cfg.topKExperts
-                    let idPtr = scratch.routeIDs.contents()
+                    let idPtr = unsafe scratch.routeIDs.contents()
                         .bindMemory(to: UInt32.self, capacity: routeCount)
-                    let weightPtr = scratch.routeWeights.contents()
+                    let weightPtr = unsafe scratch.routeWeights.contents()
                         .bindMemory(to: Float16.self, capacity: routeCount)
                     var routeIDs = [UInt32]()
                     routeIDs.reserveCapacity(routeCount)
                     var routeWeights = [Float16]()
                     routeWeights.reserveCapacity(routeCount)
                     for i in 0..<routeCount {
-                        routeIDs.append(min(idPtr[i], UInt32(cfg.numExperts - 1)))
-                        routeWeights.append(weightPtr[i])
+                        unsafe routeIDs.append(min(idPtr[i], UInt32(cfg.numExperts - 1)))
+                        unsafe routeWeights.append(weightPtr[i])
                         recordExactRoute(expert: routeIDs[i], weight: routeWeights[i])
                     }
                     capture?.routes[L] = routeIDs
@@ -1269,7 +1269,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                 } else {
                                     routeWeights[index] = 0
                                 }
-                                weightPtr[index] = routeWeights[index]
+                                unsafe weightPtr[index] = routeWeights[index]
                             }
                         }
                     }
@@ -1446,8 +1446,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     // competes with the layer's own reads (measured: no gain
                     // on Metal, 16% slower on the ANE path).
                     if guessRows, L + 1 < cfg.numLayers {
-                        let ids = chunkGuessIDs.contents().bindMemory(to: UInt32.self, capacity: t * cfg.topKExperts)
-                        let likely = Set((0..<(t * cfg.topKExperts)).map { min(Int(ids[$0]), cfg.numExperts - 1) })
+                        let ids = unsafe chunkGuessIDs.contents().bindMemory(to: UInt32.self, capacity: t * cfg.topKExperts)
+                        let likely = Set((0..<(t * cfg.topKExperts)).map { unsafe min(Int(ids[$0]), cfg.numExperts - 1) })
                         let absentNext = try model.nonResidentRoutedExperts(
                             layer: L + 1, experts: likely.sorted(), probes: Self.bindProbes)
                         // Advisory reads go out off the critical path.
@@ -1465,7 +1465,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                                       queryCount: UInt32(t),
                                                       topK: UInt32(cfg.topKExperts),
                                                       d: UInt32(D))
-                    let scalarBits = views.layerScalar.buffer.contents()
+                    let scalarBits = unsafe views.layerScalar.buffer.contents()
                         .advanced(by: Int(views.layerScalar.offset))
                         .assumingMemoryBound(to: UInt16.self)[0]
                     prefillLayerTail.encode(commandBuffer: tailCB,
@@ -1572,21 +1572,20 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             finalCB.commit()
             try waitForCompletion(finalCB)
             if verifyTokens == nil, outputMode == .greedyIfAvailable, useFusedGreedyHead {
-                lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
+                lastGreedyToken = unsafe greedyTokenBuf.contents().load(as: UInt32.self)
             }
         }
 
         if let capture, let buffer = capture.buffer {
             // Compact the per-layer slots to `[layers][t][D]` for the consumer.
-            let base = buffer.contents().assumingMemoryBound(to: Float16.self)
+            let base = unsafe buffer.contents().assumingMemoryBound(to: Float16.self)
             let slotElements = scratch.layout.chunkTokens * D
             for slot in capture.hiddenLayers.indices where slot > 0 {
-                memmove(base + slot * t * D, base + slot * slotElements, t * D * MemoryLayout<Float16>.stride)
+                unsafe memmove(base + slot * t * D, base + slot * slotElements, t * D * MemoryLayout<Float16>.stride)
             }
             try capture.onChunk(PrefillCaptureChunk(
-                startPosition: startPosition, tokenCount: t,
-                hidden: UnsafeBufferPointer(start: base, count: capture.hiddenLayers.count * t * D),
-                routes: capture.routes))
+                startPosition: startPosition, tokenCount: t, routes: capture.routes,
+                storage: buffer, hiddenCount: capture.hiddenLayers.count * t * D))
         }
 
         kv.advance(by: tokens.count)
@@ -1690,7 +1689,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let routerW  = try model.router(layer: L)
             let perExpertScale = try model.routerPerExpertScale(layer: L)
             let scalarView = try model.layerScalar(layer: L)
-            let scalarPtr = scalarView.buffer.contents()
+            let scalarPtr = unsafe scalarView.buffer.contents()
                 .advanced(by: Int(scalarView.offset))
                 .assumingMemoryBound(to: UInt16.self)
 
@@ -1866,7 +1865,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             weightOffset: Int(sharedProj.postF1.offset),
                             out: h1Buf, d: D, eps: eps)
 
-            return LayerWork(layer: L, attention: cb, event: routerEventValue, shared: sharedCB,
+            return unsafe LayerWork(layer: L, attention: cb, event: routerEventValue, shared: sharedCB,
                              routed: nil, bound: [],
                              layerScalar: Quantization.bf16ToFloat(scalarPtr[0]),
                              postFFN2: try model.postFFN2(layer: L),
@@ -1882,7 +1881,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let L = work.layer
             let mapped = try model.expertLayer(L)
             let addresses = try routedExpertAddresses(layer: L, mapped: mapped)
-            let table = routedAddressTable.contents().assumingMemoryBound(to: UInt64.self)
+            let table = unsafe routedAddressTable.contents().assumingMemoryBound(to: UInt64.self)
                 + L * numExperts
             var bound = [Bool](repeating: false, count: numExperts)
             var resident: [any MTLBuffer] = [routedFallback]
@@ -1890,7 +1889,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 bound[e] = true
                 resident.append(mapped.buffers[e])
             }
-            for e in 0..<numExperts { table[e] = bound[e] ? addresses[e] : 0 }
+            for e in 0..<numExperts { unsafe table[e] = bound[e] ? addresses[e] : 0 }
             let routedCB = try ctx.makeCommandBuffer()
             moe.encodeGatherRoutedSlots(commandBuffer: routedCB,
                                         indices: outIndices,
@@ -1949,12 +1948,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             }
             let tEncode = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             if activeRoutedExperts < cfg.topKExperts {
-                let weights = outWeights.contents().assumingMemoryBound(to: Float16.self)
-                let full = (0..<cfg.topKExperts).reduce(Float(0)) { $0 + Float(weights[$1]) }
-                let kept = (0..<activeRoutedExperts).reduce(Float(0)) { $0 + Float(weights[$1]) }
+                let weights = unsafe outWeights.contents().assumingMemoryBound(to: Float16.self)
+                let full = (0..<cfg.topKExperts).reduce(Float(0)) { unsafe $0 + Float(weights[$1]) }
+                let kept = (0..<activeRoutedExperts).reduce(Float(0)) { unsafe $0 + Float(weights[$1]) }
                 if kept != 0 {
                     for rank in 0..<activeRoutedExperts {
-                        weights[rank] = Float16(Float(weights[rank]) * full / kept)
+                        unsafe weights[rank] = unsafe Float16(Float(weights[rank]) * full / kept)
                     }
                 }
             }
@@ -1975,8 +1974,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 // slots; recompute only the unbound ones, then the reduce.
                 let slots = (0..<experts.count).filter { !work.bound[experts[$0]] }.map(UInt32.init)
                 let slotOffset = L * cfg.topKExperts * MemoryLayout<UInt32>.stride
-                let slotPtr = (patchSlots.contents() + slotOffset).assumingMemoryBound(to: UInt32.self)
-                for (i, slot) in slots.enumerated() { slotPtr[i] = slot }
+                let slotPtr = unsafe (patchSlots.contents() + slotOffset).assumingMemoryBound(to: UInt32.self)
+                for (i, slot) in slots.enumerated() { unsafe slotPtr[i] = slot }
                 moe.encodeRoutedPersistentPhase1SubsetU16Load(commandBuffer: cb,
                                                               routedArgBuffer: argBuf,
                                                               routedBlobs: blobs,
@@ -2024,18 +2023,18 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             try awaitRouter(work.event, signaledBy: work.attention)
             // Read everything this layer left for the host before the next
             // layer's buffers can overwrite it.
-            let idxPtr = outIndices.contents().assumingMemoryBound(to: UInt32.self)
-            let weightPtr = outWeights.contents().assumingMemoryBound(to: Float16.self)
+            let idxPtr = unsafe outIndices.contents().assumingMemoryBound(to: UInt32.self)
+            let weightPtr = unsafe outWeights.contents().assumingMemoryBound(to: Float16.self)
             if routedWeightMassByRank.count == cfg.topKExperts {
                 for rank in 0..<cfg.topKExperts {
-                    routedWeightMassByRank[rank] += Double(weightPtr[rank])
+                    unsafe routedWeightMassByRank[rank] += Double(weightPtr[rank])
                 }
                 routedWeightMassSamples &+= 1
             }
-            let experts = (0..<activeRoutedExperts).map { min(Int(idxPtr[$0]), numExperts - 1) }
+            let experts = (0..<activeRoutedExperts).map { unsafe min(Int(idxPtr[$0]), numExperts - 1) }
             if earlyExpertReads != nil, next != nil {
-                let p = nextLayerScores.contents().assumingMemoryBound(to: Float.self)
-                for e in 0..<numExperts { scores[e] = p[e] }
+                let p = unsafe nextLayerScores.contents().assumingMemoryBound(to: Float.self)
+                for e in 0..<numExperts { scores[e] = unsafe p[e] }
             }
             let unbound = work.routed == nil ? experts : experts.filter { !work.bound[$0] }
             let absent = unbound.isEmpty ? [] : try model.nonResidentRoutedExperts(layer: L, experts: unbound)
@@ -2085,7 +2084,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     rmsEps: eps)
             }
             totalHeadFusedNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
-            lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
+            lastGreedyToken = unsafe greedyTokenBuf.contents().load(as: UInt32.self)
         } else {
             try runSync { cb in
                 self.rms.encodeBF16W(commandBuffer: cb, x: self.hidden,
@@ -2116,7 +2115,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 let total = kernelProfile.values.reduce(0, +)
                 var lines = "KPROF per token (us), \(kernelProfileTokens) tokens\n"
                 for (name, t) in kernelProfile.sorted(by: { $0.value > $1.value }) {
-                    lines += String(format: "  %-20@ %8.0f  %4.1f%%\n", name as NSString,
+                    unsafe lines += String(format: "  %-20@ %8.0f  %4.1f%%\n", name as NSString,
                                     t / Double(kernelProfileTokens) * 1e6, 100 * t / total)
                 }
                 FileHandle.standardError.write(Data(lines.utf8))
@@ -2124,11 +2123,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         }
         if let capture = prefillCapture, let buffer = capture.buffer {
             try capture.onChunk(PrefillCaptureChunk(
-                startPosition: position, tokenCount: 1,
-                hidden: UnsafeBufferPointer(
-                    start: buffer.contents().assumingMemoryBound(to: Float16.self),
-                    count: capture.hiddenLayers.count * cfg.hiddenSize),
-                routes: capture.routes))
+                startPosition: position, tokenCount: 1, routes: capture.routes,
+                storage: buffer, hiddenCount: capture.hiddenLayers.count * cfg.hiddenSize))
         }
 
         kv.advance()

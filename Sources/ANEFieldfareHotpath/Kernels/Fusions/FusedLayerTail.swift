@@ -42,12 +42,12 @@ final class FusedLayerTail {
         enc.setBuffer(hidden,         offset: 0,                    index: 2)
         enc.setBuffer(postFFN2Weight, offset: postFFN2WeightOffset, index: 3)
         enc.setBuffer(postFFNWeight,  offset: postFFNWeightOffset,  index: 4)
-        var dVar = d
-        var epsVar = eps
-        var scaleVar = layerScalar
-        enc.setBytes(&dVar,     length: MemoryLayout<UInt32>.size, index: 5)
-        enc.setBytes(&epsVar,   length: MemoryLayout<Float>.size,  index: 6)
-        enc.setBytes(&scaleVar, length: MemoryLayout<Float>.size,  index: 7)
+        let dVar = d
+        let epsVar = eps
+        let scaleVar = layerScalar
+        enc.setValue(dVar, index: 5)
+        enc.setValue(epsVar, index: 6)
+        enc.setValue(scaleVar, index: 7)
 
         let threads = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreads(MTLSize(width: threads, height: 1, depth: 1),

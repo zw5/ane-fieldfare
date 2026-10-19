@@ -49,10 +49,10 @@ final class FusedPostAttentionSetup {
         enc.setBuffer(postAttentionWeight, offset: postAttentionWeightOffset, index: 5)
         enc.setBuffer(preFFNWeight,        offset: preFFNWeightOffset,        index: 6)
         enc.setBuffer(preFFN2Weight,       offset: preFFN2WeightOffset,       index: 7)
-        var dVar = d
-        var epsVar = eps
-        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 8)
-        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size, index: 9)
+        let dVar = d
+        let epsVar = eps
+        enc.setValue(dVar, index: 8)
+        enc.setValue(epsVar, index: 9)
 
         let threads = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreads(MTLSize(width: threads, height: 1, depth: 1),

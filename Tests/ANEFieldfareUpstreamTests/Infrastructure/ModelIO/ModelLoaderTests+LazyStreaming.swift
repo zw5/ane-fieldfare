@@ -31,11 +31,11 @@ extension ModelLoaderTests {
       directoryURL: dir, device: device,
       expecting: .gemma4Toy())
     let view = try model.routedExpert(layer: 1, expert: 4)
-    let bufContents = view.buffer.contents()
-    let b0 = bufContents.load(fromByteOffset: Int(view.offset), as: UInt8.self)
-    let b1 = bufContents.load(fromByteOffset: Int(view.offset) + 1, as: UInt8.self)
-    let b2 = bufContents.load(fromByteOffset: Int(view.offset) + 2, as: UInt8.self)
-    let b3 = bufContents.load(fromByteOffset: Int(view.offset) + 3, as: UInt8.self)
+    let bufContents = unsafe view.buffer.contents()
+    let b0 = unsafe bufContents.load(fromByteOffset: Int(view.offset), as: UInt8.self)
+    let b1 = unsafe bufContents.load(fromByteOffset: Int(view.offset) + 1, as: UInt8.self)
+    let b2 = unsafe bufContents.load(fromByteOffset: Int(view.offset) + 2, as: UInt8.self)
+    let b3 = unsafe bufContents.load(fromByteOffset: Int(view.offset) + 3, as: UInt8.self)
     #expect(b0 == 1)  // layer 1
     #expect(b1 == 4)  // expert 4
     #expect(b2 == 0xC1)

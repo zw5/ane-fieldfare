@@ -7,8 +7,8 @@ import Metal
 @Suite struct ModelLoaderMappedExpertTests {
 
     private static func readBytes(_ view: TensorView) -> [UInt8] {
-        let base = view.buffer.contents().advanced(by: Int(view.offset))
-        return [UInt8](UnsafeRawBufferPointer(start: base, count: Int(view.length)))
+        let base = unsafe view.buffer.contents().advanced(by: Int(view.offset))
+        return unsafe [UInt8](UnsafeRawBufferPointer(start: base, count: Int(view.length)))
     }
 
     private static func loadToy() throws -> (URL, Model) {

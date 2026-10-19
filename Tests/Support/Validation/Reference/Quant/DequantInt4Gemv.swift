@@ -28,7 +28,7 @@ public enum DequantInt4GemvRef {
             var dot: Float = 0
             wRow.withUnsafeBufferPointer { pw in
                 x.withUnsafeBufferPointer { px in
-                    vDSP_dotpr(
+                    unsafe vDSP_dotpr(
                         pw.baseAddress!, 1,
                         px.baseAddress!, 1,
                         &dot,

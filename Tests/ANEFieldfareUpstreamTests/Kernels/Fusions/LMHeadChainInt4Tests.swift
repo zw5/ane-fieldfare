@@ -24,7 +24,7 @@ import ANEFieldfareValidationSupport
             var dot: Float = 0
             dequantized.withUnsafeBufferPointer { weights in
                 normed.withUnsafeBufferPointer { input in
-                    vDSP_dotpr(weights.baseAddress!, 1,
+                    unsafe vDSP_dotpr(weights.baseAddress!, 1,
                                input.baseAddress!, 1,
                                &dot,
                                vDSP_Length(d))
@@ -67,23 +67,23 @@ import ANEFieldfareValidationSupport
         let context = try MetalContext()
         let chain = try LMHeadChainInt4(context: context, maxD: d, maxVocab: v)
 
-        guard let hidden = context.device.makeBuffer(
+        guard let hidden = unsafe context.device.makeBuffer(
                   bytes: hiddenFp16,
                   length: hiddenFp16.count * MemoryLayout<Float16>.stride,
                   options: .storageModeShared),
-              let norm = context.device.makeBuffer(
+              let norm = unsafe context.device.makeBuffer(
                   bytes: normBF16,
                   length: normBF16.count * MemoryLayout<UInt16>.stride,
                   options: .storageModeShared),
-              let weights = context.device.makeBuffer(
+              let weights = unsafe context.device.makeBuffer(
                   bytes: packed,
                   length: packed.count,
                   options: .storageModeShared),
-              let scaleBuffer = context.device.makeBuffer(
+              let scaleBuffer = unsafe context.device.makeBuffer(
                   bytes: scales,
                   length: scales.count * MemoryLayout<UInt16>.stride,
                   options: .storageModeShared),
-              let biasBuffer = context.device.makeBuffer(
+              let biasBuffer = unsafe context.device.makeBuffer(
                   bytes: biases,
                   length: biases.count * MemoryLayout<UInt16>.stride,
                   options: .storageModeShared),
@@ -107,7 +107,7 @@ import ANEFieldfareValidationSupport
                                  vocab: UInt32(v))
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        return output.contents().load(as: UInt32.self)
+        return unsafe output.contents().load(as: UInt32.self)
     }
 
     @Test func rawGreedyMatchesCPUReference() throws {

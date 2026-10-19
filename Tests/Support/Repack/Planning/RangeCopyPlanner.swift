@@ -207,7 +207,7 @@ public enum RangeCopyPlanner {
         }
         flush()
         return out.enumerated().map { index, copy in
-            CoalescedRangeCopy(
+            unsafe CoalescedRangeCopy(
                 id: String(format: "range-%08d", index),
                 shardID: copy.shardID,
                 sourceOffset: copy.sourceOffset,
@@ -369,13 +369,13 @@ private struct FingerprintWriter {
 
     mutating func append(_ value: UInt64) {
         var littleEndian = value.littleEndian
-        withUnsafeBytes(of: &littleEndian) { stream.update($0) }
+        withUnsafeBytes(of: &littleEndian) { unsafe stream.update($0) }
     }
 
     mutating func append(_ value: String) {
         let data = Data(value.utf8)
         append(UInt64(data.count))
-        data.withUnsafeBytes { stream.update($0) }
+        unsafe data.withUnsafeBytes { unsafe stream.update($0) }
     }
 
     func finalize() -> String {
@@ -385,6 +385,6 @@ private struct FingerprintWriter {
 
 private func hashData(_ data: Data) -> String {
     var stream = Sha256Stream()
-    data.withUnsafeBytes { stream.update($0) }
+    unsafe data.withUnsafeBytes { unsafe stream.update($0) }
     return stream.finalizeHexString()
 }

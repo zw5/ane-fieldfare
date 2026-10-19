@@ -49,7 +49,7 @@ public enum DiskSpaceChecker {
                                     bytes: UInt64,
                                     reserveBytes: UInt64) throws -> DiskSpaceRequirement {
         var st = statfs()
-        if statfs(path, &st) != 0 {
+        if unsafe statfs(path, &st) != 0 {
             throw RepackError.fileStatFailed(path: path, errno: errno)
         }
         let available = UInt64(st.f_bavail) * UInt64(st.f_bsize)

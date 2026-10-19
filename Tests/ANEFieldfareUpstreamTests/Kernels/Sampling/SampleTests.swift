@@ -26,7 +26,7 @@ import ANEFieldfareValidationSupport
         let kernel = try Sample(context: ctx)
 
         let v = probs.count
-        guard let inBuf  = ctx.device.makeBuffer(bytes: probs,
+        guard let inBuf  = unsafe ctx.device.makeBuffer(bytes: probs,
                                                  length: v * MemoryLayout<Float16>.size,
                                                  options: .storageModeShared),
               let outBuf = ctx.device.makeBuffer(length: MemoryLayout<UInt32>.size,
@@ -44,7 +44,7 @@ import ANEFieldfareValidationSupport
         cmd.commit()
         cmd.waitUntilCompleted()
 
-        return outBuf.contents().load(as: UInt32.self)
+        return unsafe outBuf.contents().load(as: UInt32.self)
     }
 
     /// Temperature = 0 → argmax. We hand-place the max at a known index and

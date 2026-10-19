@@ -82,13 +82,13 @@ import ANEFieldfareValidationSupport
         func pack(_ p: (rows: [Quantization.Int8AffineRow],
                         packed: [UInt8], scales: [UInt16], biases: [UInt16]),
                   rows: UInt32, cols: UInt32) -> SharedExpertInt8Proj {
-            let wBuf = ctx.device.makeBuffer(bytes: p.packed,
+            let wBuf = unsafe ctx.device.makeBuffer(bytes: p.packed,
                                              length: p.packed.count,
                                              options: .storageModeShared)!
-            let sBuf = ctx.device.makeBuffer(bytes: p.scales,
+            let sBuf = unsafe ctx.device.makeBuffer(bytes: p.scales,
                                              length: p.scales.count * 2,
                                              options: .storageModeShared)!
-            let bBuf = ctx.device.makeBuffer(bytes: p.biases,
+            let bBuf = unsafe ctx.device.makeBuffer(bytes: p.biases,
                                              length: p.biases.count * 2,
                                              options: .storageModeShared)!
             return SharedExpertInt8Proj(weights: wBuf, scales: sBuf, biases: bBuf,

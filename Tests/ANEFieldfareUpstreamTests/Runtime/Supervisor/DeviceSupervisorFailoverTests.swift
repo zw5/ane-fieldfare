@@ -133,7 +133,7 @@ struct DeviceSupervisorFailoverTests {
             let buffer = try #require(context.device.makeBuffer(
                 length: vocab * MemoryLayout<Float16>.size, options: .storageModeShared))
             func snapshot() -> [UInt16] {
-                Array(UnsafeBufferPointer(start: buffer.contents().bindMemory(to: UInt16.self, capacity: vocab),
+                unsafe Array(UnsafeBufferPointer(start: buffer.contents().bindMemory(to: UInt16.self, capacity: vocab),
                                           count: vocab))
             }
             _ = try await runner.prefillChunked(tokens: tokens[...], startPosition: 0, outputMode: .logits,

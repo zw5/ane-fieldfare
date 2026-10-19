@@ -84,21 +84,21 @@ private enum FormatFixture {
                                 indexSize: GTurboFormatV1.alignmentBytes,
                                 residentSize: 64, entryCount: 1)) -> Data {
         var bytes = Data(repeating: 0, count: Int(header.indexSize))
-        bytes.withUnsafeMutableBytes { raw in
-            GTurboResidentIndexCodec.writeHeader(into: raw.baseAddress!, header: header)
+        unsafe bytes.withUnsafeMutableBytes { raw in
+            unsafe GTurboResidentIndexCodec.writeHeader(into: raw.baseAddress!, header: header)
             guard raw.count >= 96 else { return }
             let entry = GTurboResidentIndexEntryV1(
                 name: String(decoding: nameBytes, as: UTF8.self), dtype: dtype,
                 fileOffset: fileOffset, sizeBytes: sizeBytes, shape: shape,
                 scaleOffset: scaleOffset, scaleSize: scaleSize,
                 biasOffset: biasOffset, biasSize: biasSize)
-            GTurboResidentIndexCodec.writeEntry(
+            unsafe GTurboResidentIndexCodec.writeEntry(
                 into: raw.baseAddress!.advanced(by: GTurboFormatV1.residentHeaderBytes),
                 entry: entry, nameOffset: nameOffset)
-            raw[GTurboFormatV1.residentHeaderBytes + 7] = reserved
+            unsafe raw[GTurboFormatV1.residentHeaderBytes + 7] = reserved
             if Int(nameOffset) + nameBytes.count <= raw.count {
                 for (index, byte) in nameBytes.enumerated() {
-                    raw[Int(nameOffset) + index] = byte
+                    unsafe raw[Int(nameOffset) + index] = byte
                 }
             }
         }
@@ -233,8 +233,8 @@ private enum FormatFixture {
         let header = GTurboResidentIndexHeaderV1(
             indexSize: GTurboFormatV1.alignmentBytes, residentSize: 64, entryCount: 1)
         let bytes = FormatFixture.residentBytes(header: header)
-        let entries = try bytes.withUnsafeBytes {
-            try GTurboResidentIndexCodec.decodeRegion($0, header: header)
+        let entries = try unsafe bytes.withUnsafeBytes {
+            try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header)
         }
         #expect(entries.map(\.name) == ["weight"])
     }
@@ -246,8 +246,8 @@ private enum FormatFixture {
             scaleOffset: GTurboFormatV1.alignmentBytes + 8,
             header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes {
-                try GTurboResidentIndexCodec.decodeRegion($0, header: header)
+            try unsafe bytes.withUnsafeBytes {
+                try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header)
             }
         }
     }
@@ -258,7 +258,7 @@ private enum FormatFixture {
         let bytes = FormatFixture.residentBytes(
             nameOffset: UInt32(GTurboFormatV1.residentHeaderBytes), header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -267,7 +267,7 @@ private enum FormatFixture {
             indexSize: GTurboFormatV1.alignmentBytes, residentSize: 64, entryCount: 1)
         let bytes = FormatFixture.residentBytes(nameBytes: [0xFF], header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -276,7 +276,7 @@ private enum FormatFixture {
             indexSize: GTurboFormatV1.alignmentBytes, residentSize: 64, entryCount: 1)
         let bytes = FormatFixture.residentBytes(reserved: 1, header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -285,7 +285,7 @@ private enum FormatFixture {
             indexSize: GTurboFormatV1.alignmentBytes, residentSize: 64, entryCount: 1)
         let bytes = FormatFixture.residentBytes(dtype: 255, header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -295,7 +295,7 @@ private enum FormatFixture {
             residentSize: 64, entryCount: UInt64.max)
         let bytes = FormatFixture.residentBytes(header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -306,7 +306,7 @@ private enum FormatFixture {
             fileOffset: GTurboFormatV1.alignmentBytes + 56,
             sizeBytes: 16, header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -315,7 +315,7 @@ private enum FormatFixture {
         let bytes = FormatFixture.residentBytes(
             fileOffset: 128, scaleOffset: 144, biasOffset: 152, header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -327,7 +327,7 @@ private enum FormatFixture {
             scaleOffset: 0, scaleSize: 0, biasOffset: 0, biasSize: 0,
             header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -336,7 +336,7 @@ private enum FormatFixture {
             indexSize: GTurboFormatV1.alignmentBytes, residentSize: 64, entryCount: 1)
         let bytes = FormatFixture.residentBytes(shape: [1, 0, 1, 0], header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 
@@ -347,7 +347,7 @@ private enum FormatFixture {
             scaleOffset: GTurboFormatV1.alignmentBytes + 16, scaleSize: 0,
             biasOffset: 0, biasSize: 0, header: header)
         #expect(throws: GTurboFormatError.self) {
-            try bytes.withUnsafeBytes { try GTurboResidentIndexCodec.decodeRegion($0, header: header) }
+            try unsafe bytes.withUnsafeBytes { try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: header) }
         }
     }
 }

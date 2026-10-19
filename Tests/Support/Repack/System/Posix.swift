@@ -16,37 +16,37 @@ public enum Posix {
     }
 
     public static func openRead(_ path: String) throws -> Int32 {
-        let fd = open(path, O_RDONLY)
+        let fd = unsafe open(path, O_RDONLY)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
         return fd
     }
 
     public static func openReadNoFollow(_ path: String) throws -> Int32 {
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = unsafe open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
         return fd
     }
 
     public static func openCreateRW(_ path: String) throws -> Int32 {
-        let fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0o644)
+        let fd = unsafe open(path, O_RDWR | O_CREAT | O_TRUNC, 0o644)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
         return fd
     }
 
     public static func openExistingRW(_ path: String) throws -> Int32 {
-        let fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        let fd = unsafe open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
         return fd
     }
 
     public static func openDirectory(_ path: String) throws -> Int32 {
-        let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = unsafe open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
         return fd
     }
 
     public static func openLock(_ path: String) throws -> Int32 {
-        let fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        let fd = unsafe open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
         return fd
     }
@@ -65,9 +65,9 @@ public enum Posix {
             offset: offset, count: count, path: path, operation: "pwrite")
         var remaining = count
         var off = checkedOffset
-        var ptr = buf
+        var ptr = unsafe buf
         while remaining > 0 {
-            let n = pwrite(fd, ptr, remaining, off)
+            let n = unsafe pwrite(fd, ptr, remaining, off)
             if n < 0, errno == EINTR { continue }
             if n <= 0 {
                 throw RepackError.pwriteShort(path: path, expected: count,
@@ -75,7 +75,7 @@ public enum Posix {
             }
             remaining -= n
             off += off_t(n)
-            ptr = ptr.advanced(by: n)
+            unsafe ptr = unsafe ptr.advanced(by: n)
         }
     }
 
@@ -86,9 +86,9 @@ public enum Posix {
             offset: offset, count: count, path: path, operation: "pread")
         var remaining = count
         var off = checkedOffset
-        var ptr = buf
+        var ptr = unsafe buf
         while remaining > 0 {
-            let n = pread(fd, ptr, remaining, off)
+            let n = unsafe pread(fd, ptr, remaining, off)
             if n < 0, errno == EINTR { continue }
             if n <= 0 {
                 throw RepackError.preadShort(path: path, expected: count,
@@ -96,7 +96,7 @@ public enum Posix {
             }
             remaining -= n
             off += off_t(n)
-            ptr = ptr.advanced(by: n)
+            unsafe ptr = unsafe ptr.advanced(by: n)
         }
     }
 
@@ -140,13 +140,13 @@ public enum Posix {
     }
 
     public static func rename(from src: String, to dst: String) throws {
-        if Darwin.rename(src, dst) != 0 {
+        if unsafe Darwin.rename(src, dst) != 0 {
             throw RepackError.renameFailed(from: src, to: dst, errno: errno)
         }
     }
 
     public static func renameSwap(_ first: String, _ second: String) throws {
-        if renamex_np(first, second, UInt32(RENAME_SWAP)) != 0 {
+        if unsafe renamex_np(first, second, UInt32(RENAME_SWAP)) != 0 {
             throw RepackError.promotionUnsupported(path: first, errno: errno)
         }
     }
@@ -157,16 +157,16 @@ public enum Posix {
     }
 
     public static func physicalPath(_ path: String) throws -> String {
-        guard let resolved = realpath(path, nil) else {
+        guard let resolved = unsafe realpath(path, nil) else {
             throw RepackError.fileStatFailed(path: path, errno: errno)
         }
-        defer { free(resolved) }
-        return String(cString: resolved)
+        defer { unsafe free(resolved) }
+        return unsafe String(cString: resolved)
     }
 
     public static func entryKind(_ path: String) throws -> EntryKind {
         var info = stat()
-        if lstat(path, &info) != 0 {
+        if unsafe lstat(path, &info) != 0 {
             if errno == ENOENT { return .absent }
             throw RepackError.fileStatFailed(path: path, errno: errno)
         }
@@ -187,7 +187,7 @@ public enum Posix {
         case .absent:
             break
         case .regular:
-            if unlink(temporary) != 0 {
+            if unsafe unlink(temporary) != 0 {
                 throw RepackError.fileOpenFailed(path: temporary, errno: errno)
             }
             try fsyncDirectory(directory)
@@ -196,13 +196,13 @@ public enum Posix {
                 path: temporary,
                 detail: "atomic-write temporary has the wrong type")
         }
-        let fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        let fd = unsafe open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         if fd < 0 { throw RepackError.fileOpenFailed(path: temporary, errno: errno) }
         defer { close(fd) }
         do {
-            try data.withUnsafeBytes { raw in
+            try unsafe data.withUnsafeBytes { raw in
                 guard let base = raw.baseAddress else { return }
-                try pwriteAll(fd: fd, path: temporary,
+                try unsafe pwriteAll(fd: fd, path: temporary,
                               buf: base, count: raw.count, offset: 0)
             }
             try fsync(fd, path: temporary)
@@ -210,7 +210,7 @@ public enum Posix {
             try afterRename?()
             try fsyncDirectory(directory)
         } catch {
-            _ = unlink(temporary)
+            _ = unsafe unlink(temporary)
             throw error
         }
     }
@@ -225,11 +225,11 @@ public enum Posix {
                                         maximumBytes: UInt64,
                                         followCallerSymlink: Bool) throws -> Data {
         let noFollow = followCallerSymlink ? 0 : O_NOFOLLOW
-        let fd = open(path, O_RDONLY | O_NONBLOCK | noFollow | O_CLOEXEC)
+        let fd = unsafe open(path, O_RDONLY | O_NONBLOCK | noFollow | O_CLOEXEC)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
         defer { close(fd) }
         var info = stat()
-        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+        guard unsafe fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
             throw RepackError.fileStatFailed(path: path, errno: errno == 0 ? EINVAL : errno)
         }
         let size = try fileSize(fd: fd, path: path)
@@ -239,16 +239,16 @@ public enum Posix {
                 detail: "size \(size) exceeds \(maximumBytes)-byte cap")
         }
         var data = Data(count: Int(size))
-        try data.withUnsafeMutableBytes { raw in
-            guard let base = raw.baseAddress, !raw.isEmpty else { return }
-            try preadAll(fd: fd, path: path, buf: base, count: raw.count, offset: 0)
+        try unsafe data.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress, unsafe !raw.isEmpty else { return }
+            try unsafe preadAll(fd: fd, path: path, buf: base, count: raw.count, offset: 0)
         }
         return data
     }
 
     public static func fileSize(fd: Int32, path: String) throws -> UInt64 {
         var st = stat()
-        if fstat(fd, &st) != 0 {
+        if unsafe fstat(fd, &st) != 0 {
             throw RepackError.fileStatFailed(path: path, errno: errno)
         }
         guard st.st_size >= 0 else {
@@ -259,11 +259,11 @@ public enum Posix {
 
     public static func descriptorMatchesPath(_ fd: Int32, path: String) throws -> Bool {
         var descriptorInfo = stat()
-        guard fstat(fd, &descriptorInfo) == 0 else {
+        guard unsafe fstat(fd, &descriptorInfo) == 0 else {
             throw RepackError.fileStatFailed(path: path, errno: errno)
         }
         var pathInfo = stat()
-        guard lstat(path, &pathInfo) == 0 else {
+        guard unsafe lstat(path, &pathInfo) == 0 else {
             throw RepackError.fileStatFailed(path: path, errno: errno)
         }
         return descriptorInfo.st_dev == pathInfo.st_dev
@@ -282,38 +282,43 @@ public enum Posix {
 
 /// Owns one MAP_PRIVATE, PROT_READ mapping of a file. Pages fault in on access
 /// and can be evicted via `adviseDontNeed`. Designed for one shard at a time.
+///
+/// `@safe`: the handle owns its mapping and unmaps it once, in `deinit`.
+/// `base` and `slice` are `@unsafe`: their views are valid only while this
+/// handle is alive.
+@safe
 public final class MmapHandle {
     public let path: String
     public let fd: Int32
-    public let base: UnsafeRawPointer
+    @unsafe public let base: UnsafeRawPointer
     public let length: Int
 
     public init(path: String) throws {
         self.path = path
         self.fd = try Posix.openRead(path)
         var st = stat()
-        if fstat(fd, &st) != 0 {
+        if unsafe fstat(fd, &st) != 0 {
             close(fd)
             throw RepackError.fileStatFailed(path: path, errno: errno)
         }
         let len = Int(st.st_size)
-        guard let raw = mmap(nil, len, PROT_READ, MAP_PRIVATE, fd, 0),
-              raw != MAP_FAILED else {
+        guard let raw = unsafe mmap(nil, len, PROT_READ, MAP_PRIVATE, fd, 0),
+              unsafe raw != MAP_FAILED else {
             close(fd)
             throw RepackError.mmapFailed(path: path, errno: errno)
         }
-        self.base = UnsafeRawPointer(raw)
+        unsafe self.base = UnsafeRawPointer(raw)
         self.length = len
-        _ = posix_madvise(raw, len, POSIX_MADV_SEQUENTIAL)
+        _ = unsafe posix_madvise(raw, len, POSIX_MADV_SEQUENTIAL)
     }
 
     deinit {
-        munmap(UnsafeMutableRawPointer(mutating: base), length)
+        unsafe munmap(UnsafeMutableRawPointer(mutating: base), length)
         close(fd)
     }
 
-    public func slice(at offset: UInt64, count: Int) -> UnsafeRawBufferPointer {
-        UnsafeRawBufferPointer(start: base.advanced(by: Int(offset)), count: count)
+    @unsafe public func slice(at offset: UInt64, count: Int) -> UnsafeRawBufferPointer {
+        unsafe UnsafeRawBufferPointer(start: base.advanced(by: Int(offset)), count: count)
     }
 
     /// madvise(MADV_DONTNEED) on a region. Alignment is rounded outward so we
@@ -325,7 +330,7 @@ public final class MmapHandle {
         let end = ((endRaw + page - 1) / page) * page
         if end <= start { return }
         let len = Int(end - start)
-        let addr = UnsafeMutableRawPointer(mutating: base.advanced(by: Int(start)))
-        _ = posix_madvise(addr, len, POSIX_MADV_DONTNEED)
+        let addr = unsafe UnsafeMutableRawPointer(mutating: base.advanced(by: Int(start)))
+        _ = unsafe posix_madvise(addr, len, POSIX_MADV_DONTNEED)
     }
 }

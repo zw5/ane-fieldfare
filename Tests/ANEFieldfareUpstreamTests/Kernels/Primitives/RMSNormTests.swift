@@ -38,8 +38,8 @@ import ANEFieldfareValidationSupport
                                                 options: .storageModeShared) else {
             Issue.record("alloc failed"); return
         }
-        let wPtr = wBuf.contents().bindMemory(to: UInt16.self, capacity: wBits.count)
-        for i in 0..<wBits.count { wPtr[i] = wBits[i] }
+        let wPtr = unsafe wBuf.contents().bindMemory(to: UInt16.self, capacity: wBits.count)
+        for i in 0..<wBits.count { unsafe wPtr[i] = wBits[i] }
 
         let cb = ctx.queue.makeCommandBuffer()!
         kernel.encodeBF16W(commandBuffer: cb, x: xBuf, weight: wBuf, out: yBuf,
@@ -139,8 +139,8 @@ import ANEFieldfareValidationSupport
                                                options: .storageModeShared) else {
             Issue.record("alloc failed"); return
         }
-        let wPtr = wBuf.contents().bindMemory(to: UInt16.self, capacity: wBits.count)
-        for i in 0..<wBits.count { wPtr[i] = wBits[i] }
+        let wPtr = unsafe wBuf.contents().bindMemory(to: UInt16.self, capacity: wBits.count)
+        for i in 0..<wBits.count { unsafe wPtr[i] = wBits[i] }
 
         // Mirror the runner's per-head dispatch loop literally.
         let headBytes = headDim * MemoryLayout<Float16>.size
@@ -222,8 +222,8 @@ import ANEFieldfareValidationSupport
               let batchOut = Fp16Buffer.make(ctx.device, halves: x) else {
             Issue.record("alloc failed"); return
         }
-        let wPtr = wBuf.contents().bindMemory(to: UInt16.self, capacity: headDim)
-        for i in 0..<headDim { wPtr[i] = wBits[i] }
+        let wPtr = unsafe wBuf.contents().bindMemory(to: UInt16.self, capacity: headDim)
+        for i in 0..<headDim { unsafe wPtr[i] = wBits[i] }
         let headBytes = headDim * MemoryLayout<Float16>.size
 
         let cb = ctx.queue.makeCommandBuffer()!

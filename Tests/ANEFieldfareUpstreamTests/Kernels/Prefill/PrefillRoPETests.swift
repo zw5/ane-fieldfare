@@ -25,10 +25,10 @@ import ANEFieldfareValidationSupport
                                                rows: Int,
                                                rowStride: Int,
                                                usedPerRow: Int) {
-        let ptr = buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
+        let ptr = unsafe buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
         for row in 0..<rows {
             for i in usedPerRow..<rowStride {
-                #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
+                unsafe #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
                         "padding changed at row=\(row) i=\(i)")
             }
         }

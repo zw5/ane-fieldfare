@@ -30,28 +30,28 @@ import ANEFieldfareValidationSupport
         let gemv = try DequantInt4GEMV(context: ctx)
         let fused = try FusedQKVGEMV(context: ctx)
         guard
-            let qW = ctx.device.makeBuffer(bytes: q.weights, length: q.weights.count,
+            let qW = unsafe ctx.device.makeBuffer(bytes: q.weights, length: q.weights.count,
                                            options: .storageModeShared),
-            let qS = ctx.device.makeBuffer(bytes: q.scales,
+            let qS = unsafe ctx.device.makeBuffer(bytes: q.scales,
                                            length: q.scales.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared),
-            let qB = ctx.device.makeBuffer(bytes: q.biases,
+            let qB = unsafe ctx.device.makeBuffer(bytes: q.biases,
                                            length: q.biases.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared),
-            let kW = ctx.device.makeBuffer(bytes: k.weights, length: k.weights.count,
+            let kW = unsafe ctx.device.makeBuffer(bytes: k.weights, length: k.weights.count,
                                            options: .storageModeShared),
-            let kS = ctx.device.makeBuffer(bytes: k.scales,
+            let kS = unsafe ctx.device.makeBuffer(bytes: k.scales,
                                            length: k.scales.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared),
-            let kB = ctx.device.makeBuffer(bytes: k.biases,
+            let kB = unsafe ctx.device.makeBuffer(bytes: k.biases,
                                            length: k.biases.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared),
-            let vW = ctx.device.makeBuffer(bytes: v.weights, length: v.weights.count,
+            let vW = unsafe ctx.device.makeBuffer(bytes: v.weights, length: v.weights.count,
                                            options: .storageModeShared),
-            let vS = ctx.device.makeBuffer(bytes: v.scales,
+            let vS = unsafe ctx.device.makeBuffer(bytes: v.scales,
                                            length: v.scales.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared),
-            let vB = ctx.device.makeBuffer(bytes: v.biases,
+            let vB = unsafe ctx.device.makeBuffer(bytes: v.biases,
                                            length: v.biases.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared),
             let xBuf = Fp16Buffer.make(ctx.device, halves: x),
@@ -133,7 +133,7 @@ import ANEFieldfareValidationSupport
     }
 
     private static func bytes(_ buffer: any MTLBuffer, count: Int) -> [UInt8] {
-        Array(UnsafeBufferPointer(start: buffer.contents().assumingMemoryBound(to: UInt8.self),
+        unsafe Array(UnsafeBufferPointer(start: buffer.contents().assumingMemoryBound(to: UInt8.self),
                                   count: count * MemoryLayout<Float16>.size))
     }
 }

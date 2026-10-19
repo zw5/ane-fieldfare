@@ -176,13 +176,13 @@ final class Sampler {
     private func applyRepetitionPenaltyInPlace(logits: any MTLBuffer,
                                                history: [Int32],
                                                penalty: Float) {
-        let ptr = logits.contents().bindMemory(to: Float16.self, capacity: vocab)
+        let ptr = unsafe logits.contents().bindMemory(to: Float16.self, capacity: vocab)
         var seen = Set<Int32>()
         seen.reserveCapacity(history.count)
         for id in history {
             guard id >= 0 && Int(id) < vocab, seen.insert(id).inserted else { continue }
             let i = Int(id)
-            let z = Float(ptr[i])
+            let z = unsafe Float(ptr[i])
             let penalized: Float
             if logitSoftcap > 0 {
                 let capped = logitSoftcap * tanhf(z / logitSoftcap)
@@ -196,7 +196,7 @@ final class Sampler {
             } else {
                 penalized = z > 0 ? z / penalty : z * penalty
             }
-            ptr[i] = Float16(penalized)
+            unsafe ptr[i] = Float16(penalized)
         }
     }
 
@@ -211,7 +211,7 @@ final class Sampler {
             return mixed == 0 ? 0x9E3779B97F4A7C15 : mixed
         }
         var t = timespec()
-        clock_gettime(CLOCK_MONOTONIC, &t)
+        unsafe clock_gettime(CLOCK_MONOTONIC, &t)
         let raw = UInt64(bitPattern: Int64(t.tv_nsec)) &* 0x9E3779B97F4A7C15
             &+ UInt64(bitPattern: Int64(t.tv_sec))
         return raw == 0 ? 0x9E3779B97F4A7C15 : raw

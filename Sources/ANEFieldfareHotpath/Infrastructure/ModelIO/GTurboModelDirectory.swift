@@ -8,7 +8,7 @@ package final class GTurboModelDirectory: Sendable {
 
     package init(rootURL: URL) throws {
         let standardized = rootURL.standardizedFileURL
-        let fd = open(standardized.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        let fd = unsafe open(standardized.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard fd >= 0 else {
             throw ModelError.posixFailed(call: "open(\(standardized.path))", errno: errno)
         }
@@ -34,7 +34,7 @@ package final class GTurboModelDirectory: Sendable {
             throw ModelError.posixFailed(call: "fcntl(F_DUPFD_CLOEXEC, model root)", errno: errno)
         }
         for component in components.dropLast() {
-            let next = openat(directoryFD, component,
+            let next = unsafe openat(directoryFD, component,
                               O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             let savedErrno = errno
             close(directoryFD)
@@ -43,13 +43,13 @@ package final class GTurboModelDirectory: Sendable {
             }
             directoryFD = next
         }
-        let fd = openat(directoryFD, leaf,
+        let fd = unsafe openat(directoryFD, leaf,
                         O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         let savedErrno = errno
         close(directoryFD)
         guard fd >= 0 else { throw openError(relativePath: relativePath, errno: savedErrno) }
         var st = stat()
-        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+        guard unsafe fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
             let statErrno = errno
             close(fd)
             throw ModelError.posixFailed(call: "fstat(\(relativePath))", errno: statErrno)
@@ -77,8 +77,8 @@ package final class GTurboModelDirectory: Sendable {
         var total = 0
         while total < data.count {
             let remaining = data.count - total
-            let got = data.withUnsafeMutableBytes { raw in
-                pread(fd, raw.baseAddress?.advanced(by: total), remaining, off_t(total))
+            let got = unsafe data.withUnsafeMutableBytes { raw in
+                unsafe pread(fd, raw.baseAddress?.advanced(by: total), remaining, off_t(total))
             }
             if got < 0, errno == EINTR { continue }
             guard got > 0 else {
@@ -99,7 +99,7 @@ package final class GTurboModelDirectory: Sendable {
     package func fileSize(fileDescriptor fd: Int32,
                           relativePath: String) throws -> UInt64 {
         var st = stat()
-        guard fstat(fd, &st) == 0, st.st_size >= 0 else {
+        guard unsafe fstat(fd, &st) == 0, st.st_size >= 0 else {
             throw ModelError.posixFailed(call: "fstat(\(relativePath))", errno: errno)
         }
         return UInt64(st.st_size)
@@ -117,27 +117,27 @@ package final class GTurboModelDirectory: Sendable {
         guard duplicate >= 0 else {
             throw ModelError.posixFailed(call: "fcntl(F_DUPFD_CLOEXEC, model root)", errno: errno)
         }
-        guard let directory = fdopendir(duplicate) else {
+        guard let directory = unsafe fdopendir(duplicate) else {
             let savedErrno = errno
             close(duplicate)
             throw ModelError.posixFailed(call: "fdopendir(model root)", errno: savedErrno)
         }
-        defer { closedir(directory) }
+        defer { unsafe closedir(directory) }
         var names = Set<String>()
         // The duplicate shares its offset with the retained descriptor, and the
         // previous enumeration consumed it, so without this a second call
         // returns nothing and a valid directory reads as having no entries.
-        rewinddir(directory)
+        unsafe rewinddir(directory)
         // Cleared immediately before each `readdir`, not once before the loop:
         // POSIX only promises `errno` is meaningful after a failure, and both
         // `rewinddir` and the allocation inside the loop may set it on success.
         // A stray value made an intact directory throw, which the vision pack
         // reader turns into "image support is unavailable".
         errno = 0
-        while let entry = readdir(directory) {
-            let name = withUnsafePointer(to: &entry.pointee.d_name) {
-                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
-                    String(cString: $0)
+        while let entry = unsafe readdir(directory) {
+            let name = unsafe withUnsafePointer(to: &entry.pointee.d_name) {
+                unsafe $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                    unsafe String(cString: $0)
                 }
             }
             if name != "." && name != ".." { names.insert(name) }

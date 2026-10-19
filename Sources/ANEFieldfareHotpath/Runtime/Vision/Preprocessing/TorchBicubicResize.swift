@@ -53,7 +53,7 @@ package enum TorchBicubicResize {
     ) -> Int {
         if sourceWidth == destinationWidth && sourceHeight == destinationHeight {
             for row in 0..<sourceHeight {
-                memcpy(
+                unsafe memcpy(
                     destination.advanced(by: row * destinationRowBytes),
                     source.advanced(by: row * sourceRowBytes),
                     sourceWidth * 4)
@@ -63,7 +63,7 @@ package enum TorchBicubicResize {
 
         if sourceWidth == destinationWidth {
             let vertical = axis(input: sourceHeight, output: destinationHeight)
-            resizeVertical(
+            unsafe resizeVertical(
                 source: source,
                 sourceWidth: sourceWidth,
                 sourceRowBytes: sourceRowBytes,
@@ -75,7 +75,7 @@ package enum TorchBicubicResize {
         }
         let horizontal = axis(input: sourceWidth, output: destinationWidth)
         if sourceHeight == destinationHeight {
-            resizeHorizontal(
+            unsafe resizeHorizontal(
                 source: source,
                 sourceHeight: sourceHeight,
                 sourceRowBytes: sourceRowBytes,
@@ -89,8 +89,8 @@ package enum TorchBicubicResize {
         let temporaryRowBytes = destinationWidth * 4
         let temporaryBytes = temporaryRowBytes * sourceHeight
         let temporary = UnsafeMutablePointer<UInt8>.allocate(capacity: temporaryBytes)
-        defer { temporary.deallocate() }
-        resizeHorizontal(
+        defer { unsafe temporary.deallocate() }
+        unsafe resizeHorizontal(
             source: source,
             sourceHeight: sourceHeight,
             sourceRowBytes: sourceRowBytes,
@@ -99,7 +99,7 @@ package enum TorchBicubicResize {
             destinationRowBytes: temporaryRowBytes,
             axis: horizontal)
         let vertical = axis(input: sourceHeight, output: destinationHeight)
-        resizeVertical(
+        unsafe resizeVertical(
             source: UnsafePointer(temporary),
             sourceWidth: destinationWidth,
             sourceRowBytes: temporaryRowBytes,
@@ -181,17 +181,17 @@ package enum TorchBicubicResize {
     ) {
         let rounding = 1 << (axis.precision - 1)
         for row in 0..<sourceHeight {
-            let inputRow = source.advanced(by: row * sourceRowBytes)
-            let outputRow = destination.advanced(by: row * destinationRowBytes)
+            let inputRow = unsafe source.advanced(by: row * sourceRowBytes)
+            let outputRow = unsafe destination.advanced(by: row * destinationRowBytes)
             for x in 0..<destinationWidth {
                 let sample = axis.samples[x]
                 for channel in 0..<4 {
                     var value = rounding
                     for index in sample.weights.indices {
-                        value += Int(inputRow[(sample.start + index) * 4 + channel])
+                        unsafe value += Int(inputRow[(sample.start + index) * 4 + channel])
                             * Int(sample.weights[index])
                     }
-                    outputRow[x * 4 + channel] = UInt8(clamping: value >> axis.precision)
+                    unsafe outputRow[x * 4 + channel] = UInt8(clamping: value >> axis.precision)
                 }
             }
         }
@@ -209,14 +209,14 @@ package enum TorchBicubicResize {
         let rounding = 1 << (axis.precision - 1)
         for y in 0..<destinationHeight {
             let sample = axis.samples[y]
-            let outputRow = destination.advanced(by: y * destinationRowBytes)
+            let outputRow = unsafe destination.advanced(by: y * destinationRowBytes)
             for x in 0..<(sourceWidth * 4) {
                 var value = rounding
                 for index in sample.weights.indices {
-                    value += Int(source[(sample.start + index) * sourceRowBytes + x])
+                    unsafe value += Int(source[(sample.start + index) * sourceRowBytes + x])
                         * Int(sample.weights[index])
                 }
-                outputRow[x] = UInt8(clamping: value >> axis.precision)
+                unsafe outputRow[x] = UInt8(clamping: value >> axis.precision)
             }
         }
     }

@@ -83,18 +83,18 @@ import UniformTypeIdentifiers
                     == result.geometry.patchCount * 2 * MemoryLayout<Int32>.stride)
             #expect(result.allocatedBytes < 12 * 1_024 * 1_024)
 
-            let positions = result.positionsInt32x2.contents().bindMemory(
+            let positions = unsafe result.positionsInt32x2.contents().bindMemory(
                 to: Int32.self, capacity: result.geometry.patchCount * 2)
             for row in 0..<result.geometry.patchCount {
-                #expect(positions[row * 2] == Int32(row % fixture.gridWidth))
-                #expect(positions[row * 2 + 1] == Int32(row / fixture.gridWidth))
+                unsafe #expect(positions[row * 2] == Int32(row % fixture.gridWidth))
+                unsafe #expect(positions[row * 2 + 1] == Int32(row / fixture.gridWidth))
             }
-            let patches = result.patchesBF16.contents().bindMemory(
+            let patches = unsafe result.patchesBF16.contents().bindMemory(
                 to: UInt16.self,
                 capacity: result.geometry.patchCount * VisionConfig().patchDimension)
             let count = result.geometry.patchCount * VisionConfig().patchDimension
             for index in stride(from: 0, to: count, by: 251) {
-                let value = Quantization.bf16ToFloat(patches[index])
+                let value = unsafe Quantization.bf16ToFloat(patches[index])
                 #expect(value.isFinite && value >= 0 && value <= 1)
             }
         }
@@ -165,7 +165,7 @@ import UniformTypeIdentifiers
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("vision-multiframe-\(UUID().uuidString).gif")
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
+              let context = unsafe CGContext(
                 data: nil, width: 1, height: 1, bitsPerComponent: 8,
                 bytesPerRow: 4, space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
@@ -249,10 +249,10 @@ import UniformTypeIdentifiers
 
     private func assertFiniteUnitPatches(_ result: VisionPixelBuffer) {
         let count = result.geometry.patchCount * VisionConfig().patchDimension
-        let patches = result.patchesBF16.contents().bindMemory(
+        let patches = unsafe result.patchesBF16.contents().bindMemory(
             to: UInt16.self, capacity: count)
         for index in stride(from: 0, to: count, by: 251) {
-            let value = Quantization.bf16ToFloat(patches[index])
+            let value = unsafe Quantization.bf16ToFloat(patches[index])
             #expect(value.isFinite && value >= 0 && value <= 1)
         }
     }
@@ -268,7 +268,7 @@ import UniformTypeIdentifiers
     ) throws {
         let data = Data(bytes)
         let provider = try #require(CGDataProvider(data: data as CFData))
-        let image = try #require(CGImage(
+        let image = unsafe try #require(CGImage(
             width: 1,
             height: 1,
             bitsPerComponent: bitsPerComponent,

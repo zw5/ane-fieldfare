@@ -57,7 +57,9 @@ public enum DFlashGeneration {
         runner.prefillCapture = PrefillCapture(hiddenLayers: layers) { chunk in
             let started = Date()
             do {
-                try drafter.appendContext(captured: chunk.hidden, stride: chunk.tokenCount, rows: chunk.tokenCount)
+                try chunk.withHidden {
+                    try drafter.appendContext(captured: $0, stride: chunk.tokenCount, rows: chunk.tokenCount)
+                }
             } catch { captureError = error }
             stats.contextSeconds += Date().timeIntervalSince(started)
         }
@@ -82,7 +84,7 @@ public enum DFlashGeneration {
 
         var verifyHidden = [Float16]()
         runner.prefillCapture = PrefillCapture(hiddenLayers: layers) { chunk in
-            verifyHidden = Array(chunk.hidden)
+            verifyHidden = chunk.hiddenValues
         }
         var position = prompt.count
         let decodeStart = Date()
@@ -109,9 +111,7 @@ public enum DFlashGeneration {
             // Rows [0, accepted] (anchor and accepted drafts) are now context.
             if accepted + 1 < count { try runner.rewind(to: position + accepted + 1) }
             started = Date()
-            try verifyHidden.withUnsafeBufferPointer {
-                try drafter.appendContext(captured: $0, stride: count, rows: accepted + 1)
-            }
+            try drafter.appendContext(captured: verifyHidden.span, stride: count, rows: accepted + 1)
             stats.contextSeconds += Date().timeIntervalSince(started)
             position += accepted + 1
 

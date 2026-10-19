@@ -244,7 +244,7 @@ public func run(args: Args,
                 let seconds = Double(duration.components.seconds)
                     + Double(duration.components.attoseconds) / 1e18
                 stderr.write(Data(
-                    "[vision images=\(imageURLs.count) encode=\(String(format: "%.3f", seconds))s]\n".utf8))
+                    unsafe "[vision images=\(imageURLs.count) encode=\(String(format: "%.3f", seconds))s]\n".utf8))
             }
             let rendered = try MultimodalPromptRenderer.render(
                 messages: multimodalMessages,
@@ -299,11 +299,12 @@ public func run(args: Args,
             let tokensPerSecond = stats.decodeSeconds > 0
                 ? Double(stats.newTokens) / stats.decodeSeconds
                 : 0
-            let footer = "\n[stop=\(String(describing: stats.reason)) prefill=\(stats.prefillTokens)tok new=\(stats.newTokens)tok decode=\(String(format: "%.2f", stats.decodeSeconds))s tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
+            let footer = unsafe "\n[stop=\(String(describing: stats.reason)) prefill=\(stats.prefillTokens)tok new=\(stats.newTokens)tok decode=\(String(format: "%.2f", stats.decodeSeconds))s tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
             stderr.write(Data(footer.utf8))
         }
         if ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOTPATH_PROFILE"] == "1" {
             let nanosPerSecond = 1_000_000_000.0
+            let routeDigest = unsafe String(format: "%016llx", runner.exactRouteDigest)
             let profile: [String: Any] = [
                 "schema": "ane-fieldfare.hotpath-profile.v1",
                 "requested_backend": args.backend.rawValue,
@@ -347,7 +348,7 @@ public func run(args: Args,
                 "exact_route_oracle": [
                     "passed": runner.exactRouteSamples > 0 && runner.allRouteValuesFinite,
                     "samples": runner.exactRouteSamples,
-                    "digest": String(format: "%016llx", runner.exactRouteDigest),
+                    "digest": routeDigest,
                 ],
                 "all_values_finite": runner.allRouteValuesFinite,
                 "fused_head": runner.usesFusedGreedyHead,

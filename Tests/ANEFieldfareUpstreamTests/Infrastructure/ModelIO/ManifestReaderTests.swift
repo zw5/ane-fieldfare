@@ -10,7 +10,7 @@ import Darwin
         defer { try? FileManager.default.removeItem(at: dir) }
         let manifest = dir.appendingPathComponent("manifest.json")
         try FileManager.default.removeItem(at: manifest)
-        #expect(mkfifo(manifest.path, 0o600) == 0)
+        unsafe #expect(mkfifo(manifest.path, 0o600) == 0)
 
         #expect(throws: ModelError.self) {
             try ManifestReader.load(directoryURL: dir, expecting: toy)

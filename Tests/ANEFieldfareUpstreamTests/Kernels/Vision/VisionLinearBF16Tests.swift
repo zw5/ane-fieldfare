@@ -14,7 +14,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         let m = 128, n = 256, k = 1_152
         func buffer(count: Int, value: Float) throws -> any MTLBuffer {
             let bits = [UInt16](repeating: Quantization.bf16Bits(value), count: count)
-            return try #require(context.device.makeBuffer(
+            return try #require(unsafe context.device.makeBuffer(
                 bytes: bits, length: bits.count * MemoryLayout<UInt16>.stride,
                 options: .storageModeShared))
         }
@@ -31,10 +31,10 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)
-        let values = output.contents().bindMemory(to: UInt16.self, capacity: m * n)
+        let values = unsafe output.contents().bindMemory(to: UInt16.self, capacity: m * n)
         var maximumError: Float = 0
         for index in 0..<(m * n) {
-            maximumError = max(
+            maximumError = unsafe max(
                 maximumError,
                 abs(Quantization.bf16ToFloat(values[index]) - 36))
         }
@@ -54,11 +54,11 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         }
         let inputValues = inputBits.map(Quantization.bf16ToFloat)
         let weightValues = weightBits.map(Quantization.bf16ToFloat)
-        let input = try #require(context.device.makeBuffer(
+        let input = try #require(unsafe context.device.makeBuffer(
             bytes: inputBits,
             length: inputBits.count * MemoryLayout<UInt16>.stride,
             options: .storageModeShared))
-        let weights = try #require(context.device.makeBuffer(
+        let weights = try #require(unsafe context.device.makeBuffer(
             bytes: weightBits,
             length: weightBits.count * MemoryLayout<UInt16>.stride,
             options: .storageModeShared))
@@ -74,7 +74,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)
 
-        let actual = output.contents().bindMemory(to: UInt16.self, capacity: m * n)
+        let actual = unsafe output.contents().bindMemory(to: UInt16.self, capacity: m * n)
         var maximumWideError: Float = 0
         var maximumTailError: Float = 0
         for row in 0..<m {
@@ -83,7 +83,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
                 for inner in 0..<k {
                     expected += inputValues[row * k + inner] * weightValues[column * k + inner]
                 }
-                let error = abs(
+                let error = unsafe abs(
                     Quantization.bf16ToFloat(actual[row * n + column]) - expected)
                 if column < 256 {
                     maximumWideError = max(maximumWideError, error)

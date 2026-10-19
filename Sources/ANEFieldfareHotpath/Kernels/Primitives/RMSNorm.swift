@@ -74,10 +74,10 @@ final class RMSNorm {
         enc.setComputePipelineState(pso)
         enc.setBuffer(x,   offset: xOffset,   index: 0)
         enc.setBuffer(out, offset: outOffset, index: 1)
-        var dVar   = d
-        var epsVar = eps
-        enc.setBytes(&dVar,   length: MemoryLayout<UInt32>.size, index: 2)
-        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size,  index: 3)
+        let dVar   = d
+        let epsVar = eps
+        enc.setValue(dVar, index: 2)
+        enc.setValue(epsVar, index: 3)
         dispatchOneRow(enc: enc, pso: pso)
         enc.endEncoding()
     }
@@ -101,10 +101,10 @@ final class RMSNorm {
         enc.setBuffer(x,      offset: xOffset,      index: 0)
         enc.setBuffer(weight, offset: weightOffset, index: 1)
         enc.setBuffer(out,    offset: outOffset,    index: 2)
-        var hd = headDim
-        var epsVar = eps
-        enc.setBytes(&hd,     length: MemoryLayout<UInt32>.size, index: 3)
-        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size,  index: 4)
+        let hd = headDim
+        let epsVar = eps
+        enc.setValue(hd, index: 3)
+        enc.setValue(epsVar, index: 4)
         let w = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreadgroups(MTLSize(width: numHeads, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: w, height: 1, depth: 1))
@@ -125,10 +125,10 @@ final class RMSNorm {
         enc.setComputePipelineState(pso)
         enc.setBuffer(x,   offset: xOffset,   index: 0)
         enc.setBuffer(out, offset: outOffset, index: 1)
-        var hd = headDim
-        var epsVar = eps
-        enc.setBytes(&hd,     length: MemoryLayout<UInt32>.size, index: 2)
-        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size,  index: 3)
+        let hd = headDim
+        let epsVar = eps
+        enc.setValue(hd, index: 2)
+        enc.setValue(epsVar, index: 3)
         let w = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreadgroups(MTLSize(width: numHeads, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: w, height: 1, depth: 1))
@@ -147,10 +147,10 @@ final class RMSNorm {
         enc.setBuffer(x,      offset: xOffset,      index: 0)
         enc.setBuffer(weight, offset: weightOffset, index: 1)
         enc.setBuffer(out,    offset: outOffset,    index: 2)
-        var dVar   = d
-        var epsVar = eps
-        enc.setBytes(&dVar,   length: MemoryLayout<UInt32>.size, index: 3)
-        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size,  index: 4)
+        let dVar   = d
+        let epsVar = eps
+        enc.setValue(dVar, index: 3)
+        enc.setValue(epsVar, index: 4)
         dispatchOneRow(enc: enc, pso: pso)
         enc.endEncoding()
     }

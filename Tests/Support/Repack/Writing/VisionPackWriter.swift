@@ -205,7 +205,7 @@ public enum VisionPackWriter {
 private extension Sha256Stream {
     static func hash(data: Data) -> String {
         var hasher = Sha256Stream()
-        data.withUnsafeBytes { hasher.update($0) }
+        unsafe data.withUnsafeBytes { unsafe hasher.update($0) }
         return hasher.finalizeHexString()
     }
 }

@@ -44,11 +44,11 @@ import ANEFieldfareValidationSupport
         let gemv = try DequantInt4GEMV(context: ctx)
         let qmm = try PrefillInt4QMM(context: ctx)
 
-        guard let wBuf = ctx.device.makeBuffer(bytes: packed, length: packed.count, options: .storageModeShared),
-              let sBuf = ctx.device.makeBuffer(bytes: scales,
+        guard let wBuf = unsafe ctx.device.makeBuffer(bytes: packed, length: packed.count, options: .storageModeShared),
+              let sBuf = unsafe ctx.device.makeBuffer(bytes: scales,
                                                length: scales.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
-              let bBuf = ctx.device.makeBuffer(bytes: biases,
+              let bBuf = unsafe ctx.device.makeBuffer(bytes: biases,
                                                length: biases.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
               let xBuf = Fp16Buffer.make(ctx.device, halves: x),
@@ -124,11 +124,11 @@ import ANEFieldfareValidationSupport
         let gemv = try DequantInt4GEMV(context: ctx)
         let qmm = try PrefillInt4QMM(context: ctx)
 
-        guard let wBuf = ctx.device.makeBuffer(bytes: packed, length: packed.count, options: .storageModeShared),
-              let sBuf = ctx.device.makeBuffer(bytes: scales,
+        guard let wBuf = unsafe ctx.device.makeBuffer(bytes: packed, length: packed.count, options: .storageModeShared),
+              let sBuf = unsafe ctx.device.makeBuffer(bytes: scales,
                                                length: scales.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
-              let bBuf = ctx.device.makeBuffer(bytes: biases,
+              let bBuf = unsafe ctx.device.makeBuffer(bytes: biases,
                                                length: biases.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
               let xBuf = Fp16Buffer.make(ctx.device, halves: x),

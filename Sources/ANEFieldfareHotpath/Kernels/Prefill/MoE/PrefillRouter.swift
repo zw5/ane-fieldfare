@@ -72,16 +72,16 @@ final class PrefillRouter {
         enc.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 5)
         enc.setBuffer(outIndices, offset: outIndicesOffset, index: 6)
         enc.setBuffer(outWeights, offset: outWeightsOffset, index: 7)
-        var tVar = queryCount
-        var neVar = numExperts
-        var dVar = d
-        var topKVar = topK
-        var strideVar = hiddenStrideElements
-        enc.setBytes(&tVar, length: MemoryLayout<UInt32>.size, index: 8)
-        enc.setBytes(&neVar, length: MemoryLayout<UInt32>.size, index: 9)
-        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 10)
-        enc.setBytes(&topKVar, length: MemoryLayout<UInt32>.size, index: 11)
-        enc.setBytes(&strideVar, length: MemoryLayout<UInt32>.size, index: 12)
+        let tVar = queryCount
+        let neVar = numExperts
+        let dVar = d
+        let topKVar = topK
+        let strideVar = hiddenStrideElements
+        enc.setValue(tVar, index: 8)
+        enc.setValue(neVar, index: 9)
+        enc.setValue(dVar, index: 10)
+        enc.setValue(topKVar, index: 11)
+        enc.setValue(strideVar, index: 12)
         let tgWidth = min(max(Int(numExperts), 32), pso.maxTotalThreadsPerThreadgroup)
         enc.dispatchThreadgroups(MTLSize(width: Int(queryCount), height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: tgWidth, height: 1, depth: 1))

@@ -21,10 +21,14 @@ private final class SharedSurfaceOwner: @unchecked Sendable {
 
 /// The compiled carrier program. Destroyed when the backend and every
 /// in-flight evaluation have let go of it.
+///
+/// `@safe`: the class is the handle's sole owner; the handle is never exposed
+/// beyond this file's carrier calls and is destroyed exactly once, in `deinit`.
+@safe
 private final class ANECarrierProgram {
     let handle: OpaquePointer
-    init(_ handle: OpaquePointer) { self.handle = handle }
-    deinit { ANEExpertCarrierDestroy(handle) }
+    init(_ handle: OpaquePointer) { unsafe self.handle = unsafe handle }
+    deinit { unsafe ANEExpertCarrierDestroy(handle) }
 }
 
 /// How one bank's evaluation ended, signalled once by the submission queue.
@@ -65,17 +69,17 @@ private struct ANEEvaluation: @unchecked Sendable {
     func run() {
         producer.waitUntilCompleted()
         var error: UnsafePointer<CChar>?
-        let valid = producer.error == nil
+        let valid = unsafe producer.error == nil
             && validation.contents().load(as: UInt32.self) == 0
             && ANEExpertCarrierEvaluate(program.handle, UInt32(bank), &error)
         var failure: String?
         if !valid {
-            failure = producer.error.map(String.init(describing:))
-                ?? error.map { String(cString: $0) }
+            failure = unsafe producer.error.map(String.init(describing:))
+                ?? error.map { unsafe String(cString: $0) }
                 ?? "non-finite ANE input or failed evaluation"
             event.signaledValue = generation
         }
-        free(UnsafeMutableRawPointer(mutating: error))
+        unsafe free(UnsafeMutableRawPointer(mutating: error))
         outcome.settle(failure: failure)
     }
 }
@@ -148,7 +152,7 @@ final class ANERoutedPrefillBackend {
         let library = try MetalContext.privateLibrary(device: context.device, module: "ane_prefill")
         let constants = MTLFunctionConstantValues()
         var laneCount = UInt32(lanes)
-        constants.setConstantValue(&laneCount, type: .uint, index: 80)
+        unsafe constants.setConstantValue(&laneCount, type: .uint, index: 80)
         func function(_ name: String) throws -> any MTLFunction {
             try library.makeFunction(name: name, constantValues: constants)
         }
@@ -160,25 +164,25 @@ final class ANERoutedPrefillBackend {
         inputsPipeline = try pipeline("ane_expert_inputs")
         outputsPipeline = try pipeline("ane_expert_outputs")
         var error: UnsafePointer<CChar>?
-        guard let handle = ANEExpertCarrierCreate(UInt32(lanes), &error) else {
-            let message = error.map { String(cString: $0) } ?? "device carrier construction failed"
-            free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
+        guard let handle = unsafe ANEExpertCarrierCreate(UInt32(lanes), &error) else {
+            let message = unsafe error.map { unsafe String(cString: $0) } ?? "device carrier construction failed"
+            unsafe free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
         }
         func wrap(_ raw: Unmanaged<IOSurfaceRef>?, minimum: Int) throws -> any MTLBuffer {
-            guard let surface = raw?.takeUnretainedValue() else { throw ModelError.residentBufferWrapFailed }
-            let base = IOSurfaceGetBaseAddress(surface), bytes = IOSurfaceGetAllocSize(surface)
+            guard let surface = unsafe raw?.takeUnretainedValue() else { throw ModelError.residentBufferWrapFailed }
+            let base = unsafe IOSurfaceGetBaseAddress(surface), bytes = IOSurfaceGetAllocSize(surface)
             guard bytes >= minimum, bytes % Int(getpagesize()) == 0,
                   Int(bitPattern: base) % Int(getpagesize()) == 0 else { throw ModelError.residentBufferWrapFailed }
             let owner = SharedSurfaceOwner(surface)
-            guard let buffer = context.device.makeBuffer(bytesNoCopy: base, length: bytes, options: .storageModeShared,
+            guard let buffer = unsafe context.device.makeBuffer(bytesNoCopy: base, length: bytes, options: .storageModeShared,
                 deallocator: { [owner] _, _ in _ = owner }) else { throw ModelError.residentBufferWrapFailed }
             return buffer
         }
         var built: [Bank] = []
         do {
             for index in 0..<2 {
-                let input = try wrap(ANEExpertCarrierInput(handle, UInt32(index)), minimum: batchExperts * 2816 * (lanes + 2112) * 2)
-                let output = try wrap(ANEExpertCarrierOutput(handle, UInt32(index)), minimum: batchExperts * 2816 * lanes * 4)
+                let input = try unsafe wrap(ANEExpertCarrierInput(handle, UInt32(index)), minimum: batchExperts * 2816 * (lanes + 2112) * 2)
+                let output = try unsafe wrap(ANEExpertCarrierOutput(handle, UInt32(index)), minimum: batchExperts * 2816 * lanes * 4)
                 guard let event = context.device.makeSharedEvent() else { throw ModelError.residentBufferWrapFailed }
                 guard let arguments = context.device.makeBuffer(length: argumentEncoder.encodedLength, options: .storageModeShared),
                       let metadata = context.device.makeBuffer(length: 4 * 8, options: .storageModeShared),
@@ -187,17 +191,17 @@ final class ANERoutedPrefillBackend {
                 }
                 built.append(Bank(input: input, output: output, event: event, arguments: arguments, metadata: metadata, validation: validation))
             }
-        } catch { ANEExpertCarrierDestroy(handle); throw error }
+        } catch { unsafe ANEExpertCarrierDestroy(handle); throw error }
         guard let carrierQueue = context.device.makeCommandQueue() else {
-            ANEExpertCarrierDestroy(handle); throw ModelError.residentBufferWrapFailed
+            unsafe ANEExpertCarrierDestroy(handle); throw ModelError.residentBufferWrapFailed
         }
         carrierQueue.label = "ane-fieldfare.routed-prefill.carrier"
         self.carrierQueue = carrierQueue
-        self.program = ANECarrierProgram(handle); self.banks = built; self.context = context; self.layerCount = layers
+        self.program = unsafe ANECarrierProgram(handle); self.banks = built; self.context = context; self.layerCount = layers
     }
 
     var profile: [String: Any] {
-        let info = ANEExpertCarrierGetInfo(program.handle)
+        let info = unsafe ANEExpertCarrierGetInfo(program.handle)
         return ["layers": layerCount, "compile_count": 1, "load_count": 1,
             "compile_ms": info.compileMilliseconds, "load_ms": info.loadMilliseconds,
             "evaluations": info.evaluations, "useful_rows": evaluatedRows,
@@ -219,7 +223,7 @@ final class ANERoutedPrefillBackend {
         let offsetsArray = [offsets.gateWOff, offsets.gateSOff, offsets.gateBOff,
                             offsets.upWOff, offsets.upSOff, offsets.upBOff,
                             offsets.downWOff, offsets.downSOff, offsets.downBOff]
-        let pairValues = pairs.contents().assumingMemoryBound(to: PrefillTokenExpertPair.self)
+        let pairValues = unsafe pairs.contents().assumingMemoryBound(to: PrefillTokenExpertPair.self)
         var destinations = Set<UInt64>()
         for job in jobs {
             guard (1...lanes).contains(job.count), job.start >= 0,
@@ -230,21 +234,21 @@ final class ANERoutedPrefillBackend {
                 throw ANEExecutionError.rejected("invalid routed carrier spans")
             }
             for p in job.start..<(job.start + job.count) {
-                guard (UInt64(pairValues[p].token) + 1) * 2816 * 2 <= hidden.length, pairValues[p].rank < 8 else {
+                guard unsafe (UInt64(pairValues[p].token) + 1) * 2816 * 2 <= hidden.length, unsafe pairValues[p].rank < 8 else {
                     throw ANEExecutionError.rejected("invalid routed input row")
                 }
-                guard destinations.insert(UInt64(pairValues[p].token) * 8 + UInt64(pairValues[p].rank)).inserted else {
+                guard unsafe destinations.insert(UInt64(pairValues[p].token) * 8 + UInt64(pairValues[p].rank)).inserted else {
                     throw ANEExecutionError.rejected("duplicate routed output row")
                 }
             }
         }
         let bank = banks[index]
-        bank.validation.contents().storeBytes(of: UInt32(0), as: UInt32.self)
-        let metadata = bank.metadata.contents().assumingMemoryBound(to: UInt32.self)
+        unsafe bank.validation.contents().storeBytes(of: UInt32(0), as: UInt32.self)
+        let metadata = unsafe bank.metadata.contents().assumingMemoryBound(to: UInt32.self)
         argumentEncoder.setArgumentBuffer(bank.arguments, offset: 0)
         for slot in 0..<4 {
             let job = slot < jobs.count ? jobs[slot] : nil
-            metadata[slot * 2] = UInt32(job?.start ?? 0); metadata[slot * 2 + 1] = UInt32(job?.count ?? 0)
+            unsafe metadata[slot * 2] = UInt32(job?.start ?? 0); unsafe metadata[slot * 2 + 1] = UInt32(job?.count ?? 0)
             argumentEncoder.setBuffer(job?.view.buffer, offset: Int(job?.view.offset ?? 0), index: slot)
         }
         guard let cb = carrierQueue.makeCommandBuffer(), let enc = cb.makeComputeCommandEncoder() else {
@@ -252,7 +256,7 @@ final class ANERoutedPrefillBackend {
         }
         enc.setComputePipelineState(weightsPipeline)
         enc.setBuffer(bank.arguments, offset: 0, index: 0); enc.setBuffer(bank.input, offset: 0, index: 1)
-        enc.setBytes(offsetsArray, length: offsetsArray.count * MemoryLayout<UInt32>.stride, index: 2)
+        enc.setValues(offsetsArray, index: 2)
         enc.setBuffer(bank.metadata, offset: 0, index: 3)
         for job in jobs { enc.useResource(job.view.buffer, usage: .read) }
         enc.dispatchThreadgroups(MTLSize(width: 88, height: 22, depth: batchExperts),
@@ -282,11 +286,11 @@ final class ANERoutedPrefillBackend {
                 bank.producer = nil; bank.pairs = nil
             }
         }
-        let metadata = bank.metadata.contents().assumingMemoryBound(to: UInt32.self)
-        let pairValues = pairs.contents().assumingMemoryBound(to: PrefillTokenExpertPair.self)
+        let metadata = unsafe bank.metadata.contents().assumingMemoryBound(to: UInt32.self)
+        let pairValues = unsafe pairs.contents().assumingMemoryBound(to: PrefillTokenExpertPair.self)
         for slot in 0..<batchExperts {
-            for p in Int(metadata[slot * 2])..<(Int(metadata[slot * 2]) + Int(metadata[slot * 2 + 1])) {
-                let pair = pairValues[p]
+            for p in unsafe Int(metadata[slot * 2])..<(Int(metadata[slot * 2]) + Int(metadata[slot * 2 + 1])) {
+                let pair = unsafe pairValues[p]
                 guard pair.rank < 8,
                       ((UInt64(pair.token) * 8 + UInt64(pair.rank)) + 1) * 2816 * 2 <= partials.length else {
                     throw ANEExecutionError.rejected("invalid routed output row")
@@ -295,10 +299,10 @@ final class ANERoutedPrefillBackend {
         }
         bank.generation += 1
         var error: UnsafePointer<CChar>?
-        guard ANEExpertCarrierSetOutputEvent(program.handle, UInt32(index), bank.event as CFTypeRef,
+        guard unsafe ANEExpertCarrierSetOutputEvent(program.handle, UInt32(index), bank.event as CFTypeRef,
                                                            bank.generation, &error) else {
-            let message = error.map { String(cString: $0) } ?? "output signal failed"
-            free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
+            let message = unsafe error.map { unsafe String(cString: $0) } ?? "output signal failed"
+            unsafe free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
         }
         guard let cb = carrierQueue.makeCommandBuffer() else { throw ModelError.residentBufferWrapFailed }
         cb.encodeWaitForEvent(bank.event, value: bank.generation)
@@ -331,7 +335,7 @@ final class ANERoutedPrefillBackend {
         defer { bank.producer = nil; bank.consumer = nil; bank.pairs = nil }
         if let failure { terminalFailure = failure; throw ANEExecutionError.rejected(failure) }
         if let error = consumer.error { terminalFailure = String(describing: error); throw error }
-        guard bank.validation.contents().load(as: UInt32.self) == 0 else {
+        guard unsafe bank.validation.contents().load(as: UInt32.self) == 0 else {
             terminalFailure = "non-finite ANE routed output"
             throw ANEExecutionError.rejected("non-finite ANE routed output")
         }

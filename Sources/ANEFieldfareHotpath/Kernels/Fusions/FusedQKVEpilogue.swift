@@ -73,15 +73,15 @@ final class FusedQKVEpilogue {
         enc.setBuffer(v, offset: 0, index: 2)
         enc.setBuffer(qWeight, offset: qWeightOffset, index: 3)
         enc.setBuffer(kWeight, offset: kWeightOffset, index: 4)
-        var values: [UInt32] = [headDim, numQHeads, numKVHeads, position]
-        for i in values.indices { enc.setBytes(&values[i], length: 4, index: 5 + i) }
-        var thetaVar = theta, rotatedVar = rotatedPairs, epsVar = eps
-        var qStride = qStrideElements, kvStride = kvStrideElements
-        enc.setBytes(&thetaVar, length: 4, index: 9)
-        enc.setBytes(&rotatedVar, length: 4, index: 10)
-        enc.setBytes(&epsVar, length: 4, index: 11)
-        enc.setBytes(&qStride, length: 4, index: 12)
-        enc.setBytes(&kvStride, length: 4, index: 13)
+        let values: [UInt32] = [headDim, numQHeads, numKVHeads, position]
+        for i in values.indices { enc.setValue(values[i], index: 5 + i) }
+        let thetaVar = theta, rotatedVar = rotatedPairs, epsVar = eps
+        let qStride = qStrideElements, kvStride = kvStrideElements
+        enc.setValue(thetaVar, index: 9)
+        enc.setValue(rotatedVar, index: 10)
+        enc.setValue(epsVar, index: 11)
+        enc.setValue(qStride, index: 12)
+        enc.setValue(kvStride, index: 13)
         let threads = min(Int(pipeline.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreadgroups(MTLSize(width: Int(numQHeads + 2 * numKVHeads), height: rows, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
@@ -122,20 +122,20 @@ final class FusedQKVEpilogue {
         enc.setBuffer(v,       offset: vOffset,       index: 2)
         enc.setBuffer(qWeight, offset: qWeightOffset, index: 3)
         enc.setBuffer(kWeight, offset: kWeightOffset, index: 4)
-        var headDimVar = headDim
-        var numQVar = numQHeads
-        var numKVVar = numKVHeads
-        var posVar = position
-        var thetaVar = theta
-        var rotatedVar = rotatedPairs
-        var epsVar = eps
-        enc.setBytes(&headDimVar, length: MemoryLayout<UInt32>.size, index: 5)
-        enc.setBytes(&numQVar,    length: MemoryLayout<UInt32>.size, index: 6)
-        enc.setBytes(&numKVVar,   length: MemoryLayout<UInt32>.size, index: 7)
-        enc.setBytes(&posVar,     length: MemoryLayout<UInt32>.size, index: 8)
-        enc.setBytes(&thetaVar,   length: MemoryLayout<Float>.size,  index: 9)
-        enc.setBytes(&rotatedVar, length: MemoryLayout<UInt32>.size, index: 10)
-        enc.setBytes(&epsVar,     length: MemoryLayout<Float>.size,  index: 11)
+        let headDimVar = headDim
+        let numQVar = numQHeads
+        let numKVVar = numKVHeads
+        let posVar = position
+        let thetaVar = theta
+        let rotatedVar = rotatedPairs
+        let epsVar = eps
+        enc.setValue(headDimVar, index: 5)
+        enc.setValue(numQVar, index: 6)
+        enc.setValue(numKVVar, index: 7)
+        enc.setValue(posVar, index: 8)
+        enc.setValue(thetaVar, index: 9)
+        enc.setValue(rotatedVar, index: 10)
+        enc.setValue(epsVar, index: 11)
 
         let threads = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         let groups = Int(numQHeads + 2 * numKVHeads)

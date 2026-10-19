@@ -162,12 +162,12 @@ public final class MPPPrefillInt4QMM {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        var mValue = UInt32(m)
-        var nValue = UInt32(n)
-        var kValue = UInt32(k)
-        encoder.setBytes(&mValue, length: MemoryLayout<UInt32>.size, index: 5)
-        encoder.setBytes(&nValue, length: MemoryLayout<UInt32>.size, index: 6)
-        encoder.setBytes(&kValue, length: MemoryLayout<UInt32>.size, index: 7)
+        let mValue = UInt32(m)
+        let nValue = UInt32(n)
+        let kValue = UInt32(k)
+        encoder.setValue(mValue, index: 5)
+        encoder.setValue(nValue, index: 6)
+        encoder.setValue(kValue, index: 7)
         encoder.dispatchThreadgroups(
             MTLSize(width: (n + (useApple10 ? 64 : Self.tileN) - 1)
                         / (useApple10 ? 64 : Self.tileN),

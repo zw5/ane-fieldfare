@@ -10,7 +10,7 @@ extension ModelLoaderTests {
     let dir = try Self.writeToySynthetic()
     defer { try? FileManager.default.removeItem(at: dir) }
     let receipt = dir.appendingPathComponent(VerifiedInstallReceiptReader.fileName)
-    #expect(mkfifo(receipt.path, 0o600) == 0)
+    unsafe #expect(mkfifo(receipt.path, 0o600) == 0)
 
     #expect(throws: ModelError.self) {
       _ = try VerifiedInstallReceiptReader.load(directoryURL: dir)

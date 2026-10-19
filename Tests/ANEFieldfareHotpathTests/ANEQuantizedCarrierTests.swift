@@ -16,21 +16,21 @@ final class ANEQuantizedCarrierTests: XCTestCase {
         var referenceWeights: [[Double]] = []
         for slot in 0..<rows {
             let blob = try XCTUnwrap(context.device.makeBuffer(length: 3_358_720 + 128, options: .storageModeShared))
-            memset(blob.contents(), 0, blob.length)
-            let bytes = blob.contents().advanced(by: 64).assumingMemoryBound(to: UInt8.self)
+            unsafe memset(blob.contents(), 0, blob.length)
+            let bytes = unsafe blob.contents().advanced(by: 64).assumingMemoryBound(to: UInt8.self)
             var expanded = [Double](repeating: 0, count: 3 * d * f)
             for m in 0..<3 {
                 for g in 0..<(d * f / 64) {
                     let scale = Float(1 + (g + slot) % 3) / 512
                     let bias = scale * (-7 + Float((g + m) % 5) / 4)
                     let sh = UInt16(scale.bitPattern >> 16), bh = UInt16(bias.bitPattern >> 16)
-                    bytes[s[m] + g * 2] = UInt8(truncatingIfNeeded: sh)
-                    bytes[s[m] + g * 2 + 1] = UInt8(sh >> 8)
-                    bytes[b[m] + g * 2] = UInt8(truncatingIfNeeded: bh)
-                    bytes[b[m] + g * 2 + 1] = UInt8(bh >> 8)
+                    unsafe bytes[s[m] + g * 2] = UInt8(truncatingIfNeeded: sh)
+                    unsafe bytes[s[m] + g * 2 + 1] = UInt8(sh >> 8)
+                    unsafe bytes[b[m] + g * 2] = UInt8(truncatingIfNeeded: bh)
+                    unsafe bytes[b[m] + g * 2 + 1] = UInt8(bh >> 8)
                     for k in 0..<64 {
                         let i = g * 64 + k, code = (i / 17 + i * 7 + slot * 3 + m * 5) % 16
-                        bytes[w[m] + i / 2] |= UInt8(code << ((i % 2) * 4))
+                        unsafe bytes[w[m] + i / 2] |= UInt8(code << ((i % 2) * 4))
                         expanded[m * d * f + i] = Double(Float16(Float(code) * scale + bias))
                     }
                 }
@@ -40,14 +40,14 @@ final class ANEQuantizedCarrierTests: XCTestCase {
                 scaleOffset: 0, scaleLength: 0, biasOffset: 0, biasLength: 0, shape: (0,0,0,0), dtype: 0))
         }
         let hidden = try XCTUnwrap(context.device.makeBuffer(length: rows * d * 2, options: .storageModeShared))
-        let inputs = hidden.contents().assumingMemoryBound(to: Float16.self)
-        for r in 0..<rows { for c in 0..<d { inputs[r * d + c] = Float16(Float((c * 13 + r * 17) % 31 - 15) / 50) } }
+        let inputs = unsafe hidden.contents().assumingMemoryBound(to: Float16.self)
+        for r in 0..<rows { for c in 0..<d { unsafe inputs[r * d + c] = Float16(Float((c * 13 + r * 17) % 31 - 15) / 50) } }
         let pairs = (0..<rows).map { PrefillTokenExpertPair(token: UInt32(rows - 1 - $0), expert: UInt32($0), rank: UInt32($0 + 2), weight: 1) }
         let pairBuffer = try pairs.withUnsafeBytes {
-            try XCTUnwrap(context.device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared))
+            unsafe try XCTUnwrap(context.device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared))
         }
         let partials = try XCTUnwrap(context.device.makeBuffer(length: rows * 8 * d * 2, options: .storageModeShared))
-        memset(partials.contents(), 0x7e, partials.length)
+        unsafe memset(partials.contents(), 0x7e, partials.length)
         let jobs = views.enumerated().map { ANERoutedPrefillBackend.Job(view: $0.element, start: $0.offset, count: 1) }
         let badOutput = try XCTUnwrap(context.device.makeBuffer(length: 16, options: .storageModeShared))
         let rejected = try backend.prepareBatch(bank: 0, jobs: jobs, offsets: offsets, hidden: hidden, pairs: pairBuffer)
@@ -55,13 +55,13 @@ final class ANEQuantizedCarrierTests: XCTestCase {
         XCTAssertThrowsError(try backend.submit(bank: 0, producer: rejected, partials: badOutput, pairs: pairBuffer))
         let producer = try backend.prepareBatch(bank: 0, jobs: jobs, offsets: offsets, hidden: hidden, pairs: pairBuffer)
         producer.waitUntilCompleted()
-        let packed = backend.banks[0].input.contents().assumingMemoryBound(to: Float16.self)
+        let packed = unsafe backend.banks[0].input.contents().assumingMemoryBound(to: Float16.self)
         var packErrors = 0
         for slot in 0..<rows { for column in 0..<d { for middle in 0..<f {
             let lanes = backend.lanes
             let base = (slot * d + column) * (lanes + 3 * f)
             for (lane, source) in [(lanes, middle * d + column), (lanes + f, d * f + middle * d + column), (lanes + 2 * f, 2 * d * f + column * f + middle)] {
-                if Double(packed[base + lane + middle]) != referenceWeights[slot][source] { packErrors += 1 }
+                if unsafe Double(packed[base + lane + middle]) != referenceWeights[slot][source] { packErrors += 1 }
             }
         } } }
         XCTAssertEqual(packErrors, 0, "Metal expansion must exactly match all BF16-affine CPU weights")
@@ -72,14 +72,14 @@ final class ANEQuantizedCarrierTests: XCTestCase {
         consumer.commit(); try backend.finish(bank: 0, consumer: consumer)
         XCTAssertThrowsError(try backend.finish(bank: 0, consumer: consumer))
         var errorSquared = 0.0, referenceSquared = 0.0, maxError = 0.0
-        let output = partials.contents().assumingMemoryBound(to: Float16.self)
+        let output = unsafe partials.contents().assumingMemoryBound(to: Float16.self)
         for slot in 0..<rows {
             let weights = referenceWeights[slot], token = Int(pairs[slot].token), rank = Int(pairs[slot].rank)
             var act = [Double](repeating: 0, count: f)
             for r in 0..<f {
                 var gate = 0.0, up = 0.0
                 for c in 0..<d {
-                    let x = Double(inputs[token * d + c])
+                    let x = unsafe Double(inputs[token * d + c])
                     gate += weights[r * d + c] * x
                     up += weights[d * f + r * d + c] * x
                 }
@@ -88,7 +88,7 @@ final class ANEQuantizedCarrierTests: XCTestCase {
             for r in 0..<d {
                 var expected = 0.0
                 for c in 0..<f { expected += weights[2 * d * f + r * f + c] * act[c] }
-                let actual = Double(output[(token * 8 + rank) * d + r])
+                let actual = unsafe Double(output[(token * 8 + rank) * d + r])
                 XCTAssertTrue(actual.isFinite)
                 let error = actual - expected
                 errorSquared += error * error; referenceSquared += expected * expected
@@ -101,7 +101,7 @@ final class ANEQuantizedCarrierTests: XCTestCase {
         XCTAssertLessThan(sqrt(errorSquared / referenceSquared), 0.02)
         XCTAssertEqual(backend.evaluatedRows, 3)
         print("ANE affine oracle: 8448 outputs, max_abs=\(maxError), relative_l2=\(sqrt(errorSquared / referenceSquared))")
-        inputs[0] = .nan
+        unsafe inputs[0] = .nan
         let invalidProducer = try backend.prepareBatch(bank: 1, jobs: jobs, offsets: offsets, hidden: hidden, pairs: pairBuffer)
         let invalidConsumer = try backend.submit(bank: 1, producer: invalidProducer, partials: partials, pairs: pairBuffer)
         invalidConsumer.commit()

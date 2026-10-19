@@ -46,7 +46,9 @@ public struct Model {
          packedExpertsLayout: PackedExpertsLayout,
          manifest: Manifest,
          directoryURL: URL,
-         modelDirectory: GTurboModelDirectory) throws {
+         modelDirectory: GTurboModelDirectory,
+         loadStats: ModelLoadStats) throws {
+        self.loadStats = loadStats
         self.embedding = try Self.resident(
             name: "language_model.model.embed_tokens.weight",
             index: residentIndex, buffer: residentBuffer)
@@ -114,6 +116,8 @@ public struct Model {
         try resident(name: "language_model.model.layers.\(L).post_attention_layernorm.weight")
     }
     public let finalNorm: TensorView
+    /// Integrity-check timings from `load`.
+    public let loadStats: ModelLoadStats
 
     // MARK: - Per-head attention norms (Q/K only)
     //
@@ -267,12 +271,8 @@ extension Model {
     public static func load(directoryURL: URL,
                             device: any MTLDevice,
                             expecting: ArchConfig = .gemma4_26B_A4B,
-                            integrityPolicy: ModelIntegrityPolicy? = nil,
-                            loadStats: UnsafeMutablePointer<ModelLoadStats>? = nil) throws -> Model {
+                            integrityPolicy: ModelIntegrityPolicy? = nil) throws -> Model {
         var stats = ModelLoadStats()
-        defer {
-            loadStats?.pointee = stats
-        }
         let resolvedIntegrityPolicy = integrityPolicy ?? .fullSha256
         let modelDirectory = try GTurboModelDirectory(rootURL: directoryURL)
         let manifestFD: Int32
@@ -408,7 +408,8 @@ extension Model {
             packedExpertsLayout: layout,
             manifest: manifest,
             directoryURL: directoryURL,
-            modelDirectory: modelDirectory)
+            modelDirectory: modelDirectory,
+            loadStats: stats)
     }
 
     private static func validateTrustedReceiptLayerLayout(modelDirectory: GTurboModelDirectory,

@@ -24,16 +24,16 @@ struct PrefillSharedExpertBatchedTests {
     }
 
     static func rows(_ view: TensorView, rows: Int, cols: Int) -> [Quantization.Int4AffineRow] {
-        let base = view.buffer.contents()
+        let base = unsafe view.buffer.contents()
         let groups = cols / Quantization.groupSize
         return (0..<rows).map { row in
-            let packed = base.advanced(by: Int(view.offset) + row * cols / 2)
+            let packed = unsafe base.advanced(by: Int(view.offset) + row * cols / 2)
                 .bindMemory(to: UInt8.self, capacity: cols / 2)
-            let scales = base.advanced(by: Int(view.scaleOffset) + row * groups * 2)
+            let scales = unsafe base.advanced(by: Int(view.scaleOffset) + row * groups * 2)
                 .bindMemory(to: UInt16.self, capacity: groups)
-            let biases = base.advanced(by: Int(view.biasOffset) + row * groups * 2)
+            let biases = unsafe base.advanced(by: Int(view.biasOffset) + row * groups * 2)
                 .bindMemory(to: UInt16.self, capacity: groups)
-            return Quantization.Int4AffineRow(
+            return unsafe Quantization.Int4AffineRow(
                 packed: Array(UnsafeBufferPointer(start: packed, count: cols / 2)),
                 scales: Array(UnsafeBufferPointer(start: scales, count: groups)),
                 biases: Array(UnsafeBufferPointer(start: biases, count: groups)))
@@ -60,7 +60,8 @@ struct PrefillSharedExpertBatchedTests {
             let kernel = try PrefillSharedExpert(context: context, weightBits: model.sharedExpertWeightBits,
                                                  batched: batched)
             #expect(kernel.usesBatchedGEMM == batched)
-            let xBuffer = try #require(context.device.makeBuffer(bytes: x, length: x.count * 2, options: .storageModeShared))
+            let madeX = unsafe context.device.makeBuffer(bytes: x, length: x.count * 2, options: .storageModeShared)
+            let xBuffer = try #require(madeX)
             let y = try #require(context.device.makeBuffer(length: t * d * 2, options: .storageModeShared))
             let scratch = try (0..<3).map { _ in try #require(context.device.makeBuffer(length: f * 2, options: .storageModePrivate)) }
             let cb = try #require(context.queue.makeCommandBuffer())
@@ -72,8 +73,8 @@ struct PrefillSharedExpertBatchedTests {
                                    queryCount: t, d: d, intermediate: f, xStrideElements: d, yStrideElements: d)
             cb.commit(); cb.waitUntilCompleted()
             #expect(cb.error == nil)
-            let out = y.contents().bindMemory(to: Float16.self, capacity: t * d)
-            return (0..<(t * d)).map { Float(out[$0]) }
+            let out = unsafe y.contents().bindMemory(to: Float16.self, capacity: t * d)
+            return (0..<(t * d)).map { unsafe Float(out[$0]) }
         }
         let perToken = try run(batched: false)
         let batched = try run(batched: true)

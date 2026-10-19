@@ -62,10 +62,10 @@ extension ModelLoaderTests {
     let model = try Model.load(
       directoryURL: dir, device: device, expecting: .gemma4Toy())
     let expert = try model.routedExpert(layer: 1, expert: 2)
-    let bytes = expert.buffer.contents().advanced(by: Int(expert.offset))
+    let bytes = unsafe expert.buffer.contents().advanced(by: Int(expert.offset))
       .assumingMemoryBound(to: UInt8.self)
-    #expect(bytes[0] == 1)
-    #expect(bytes[1] == 2)
+    unsafe #expect(bytes[0] == 1)
+    unsafe #expect(bytes[1] == 2)
   }
 
   @Test func residentBytesAreReadableFromBuffer() throws {
@@ -76,10 +76,10 @@ extension ModelLoaderTests {
       directoryURL: dir, device: device,
       expecting: .gemma4Toy())
     let norm = model.finalNorm
-    let contents = norm.buffer.contents()
+    let contents = unsafe norm.buffer.contents()
     // Norm region was patterned 0xC0 | (i & 0x3F).
     for i in 0..<Int(norm.length) {
-      let got = contents.load(fromByteOffset: Int(norm.offset) + i, as: UInt8.self)
+      let got = unsafe contents.load(fromByteOffset: Int(norm.offset) + i, as: UInt8.self)
       #expect(got == UInt8(0xC0 | (i & 0x3F)), "norm byte \(i)")
     }
   }
@@ -167,17 +167,17 @@ extension ModelLoaderTests {
       integrityPolicy: .sizeCheckTrustedReceipt)
 
     #expect(full.embedding.length == trusted.embedding.length)
-    let fullEmbedding = full.embedding.buffer.contents().advanced(by: Int(full.embedding.offset))
-    let trustedEmbedding = trusted.embedding.buffer.contents().advanced(
+    let fullEmbedding = unsafe full.embedding.buffer.contents().advanced(by: Int(full.embedding.offset))
+    let trustedEmbedding = unsafe trusted.embedding.buffer.contents().advanced(
       by: Int(trusted.embedding.offset))
-    #expect(memcmp(fullEmbedding, trustedEmbedding, Int(full.embedding.length)) == 0)
+    unsafe #expect(memcmp(fullEmbedding, trustedEmbedding, Int(full.embedding.length)) == 0)
 
     let fullExpert = try full.routedExpert(layer: 0, expert: 0)
     let trustedExpert = try trusted.routedExpert(layer: 0, expert: 0)
     #expect(fullExpert.length == trustedExpert.length)
-    let fullExpertBytes = fullExpert.buffer.contents().advanced(by: Int(fullExpert.offset))
-    let trustedExpertBytes = trustedExpert.buffer.contents().advanced(by: Int(trustedExpert.offset))
-    #expect(memcmp(fullExpertBytes, trustedExpertBytes, Int(fullExpert.length)) == 0)
+    let fullExpertBytes = unsafe fullExpert.buffer.contents().advanced(by: Int(fullExpert.offset))
+    let trustedExpertBytes = unsafe trustedExpert.buffer.contents().advanced(by: Int(trustedExpert.offset))
+    unsafe #expect(memcmp(fullExpertBytes, trustedExpertBytes, Int(fullExpert.length)) == 0)
   }
 
   @Test func nonPageAlignedExpertStrideFailsAtManifest() throws {

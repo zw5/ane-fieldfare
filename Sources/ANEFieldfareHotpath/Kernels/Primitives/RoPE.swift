@@ -37,14 +37,14 @@ final class RoPE {
         let pipeline = defaultPipeline(headDim: headDim, numHeads: numHeads)
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(data, offset: dataOffset, index: 0)
-        var positionValue = position
-        var headDimValue = headDim
-        var numHeadsValue = numHeads
-        var thetaValue = theta
-        encoder.setBytes(&positionValue, length: MemoryLayout<UInt32>.size, index: 1)
-        encoder.setBytes(&headDimValue, length: MemoryLayout<UInt32>.size, index: 2)
-        encoder.setBytes(&numHeadsValue, length: MemoryLayout<UInt32>.size, index: 3)
-        encoder.setBytes(&thetaValue, length: MemoryLayout<Float>.size, index: 4)
+        let positionValue = position
+        let headDimValue = headDim
+        let numHeadsValue = numHeads
+        let thetaValue = theta
+        encoder.setValue(positionValue, index: 1)
+        encoder.setValue(headDimValue, index: 2)
+        encoder.setValue(numHeadsValue, index: 3)
+        encoder.setValue(thetaValue, index: 4)
         dispatch(encoder: encoder,
                  pipeline: pipeline,
                  pairs: Int(headDim) / 2,
@@ -72,16 +72,16 @@ final class RoPE {
             rotatedPairs: rotatedPairs)
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(data, offset: dataOffset, index: 0)
-        var positionValue = position
-        var headDimValue = headDim
-        var numHeadsValue = numHeads
-        var thetaValue = theta
-        var rotatedPairsValue = rotatedPairs
-        encoder.setBytes(&positionValue, length: MemoryLayout<UInt32>.size, index: 1)
-        encoder.setBytes(&headDimValue, length: MemoryLayout<UInt32>.size, index: 2)
-        encoder.setBytes(&numHeadsValue, length: MemoryLayout<UInt32>.size, index: 3)
-        encoder.setBytes(&thetaValue, length: MemoryLayout<Float>.size, index: 4)
-        encoder.setBytes(&rotatedPairsValue, length: MemoryLayout<UInt32>.size, index: 5)
+        let positionValue = position
+        let headDimValue = headDim
+        let numHeadsValue = numHeads
+        let thetaValue = theta
+        let rotatedPairsValue = rotatedPairs
+        encoder.setValue(positionValue, index: 1)
+        encoder.setValue(headDimValue, index: 2)
+        encoder.setValue(numHeadsValue, index: 3)
+        encoder.setValue(thetaValue, index: 4)
+        encoder.setValue(rotatedPairsValue, index: 5)
         dispatch(encoder: encoder,
                  pipeline: pipeline,
                  pairs: Int(headDim) / 2,

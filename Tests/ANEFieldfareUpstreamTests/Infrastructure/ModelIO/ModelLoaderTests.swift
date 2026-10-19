@@ -310,40 +310,40 @@ import Metal
         var fileBuf = [UInt8](repeating: 0, count: totalBytes)
         fileBuf.withUnsafeMutableBytes { raw in
             let base = raw.baseAddress!
-            GTurboBinary.writeIndexHeader(into: base,
+            unsafe GTurboBinary.writeIndexHeader(into: base,
                                           indexSize: indexBytes,
                                           residentSize: residentSize,
                                           entryCount: UInt64(entries.count))
             for (i, e) in entries.enumerated() {
-                let dst = base.advanced(by: entriesBase + i * entryBytes)
-                GTurboBinary.writeIndexEntry(into: dst, entry: e,
+                let dst = unsafe base.advanced(by: entriesBase + i * entryBytes)
+                unsafe GTurboBinary.writeIndexEntry(into: dst, entry: e,
                                              nameOffset: nameAbsOffsets[i])
             }
-            _ = stringTable.withUnsafeBytes { sb in
-                memcpy(base.advanced(by: stringTableBase), sb.baseAddress!, stringTable.count)
+            _ = unsafe stringTable.withUnsafeBytes { sb in
+                unsafe memcpy(base.advanced(by: stringTableBase), sb.baseAddress!, stringTable.count)
             }
             // Recognizable resident payload pattern in the norm region only;
             // other payload bytes stay zero except router.scale unit BF16s.
             let normStart = Int(entries[1].fileOffset)
             for i in 0..<Int(entries[1].sizeBytes) {
-                base.advanced(by: normStart + i)
+                unsafe base.advanced(by: normStart + i)
                     .assumingMemoryBound(to: UInt8.self)[0] = UInt8(0xC0 | (i & 0x3F))
             }
             for entry in entries where entry.dtype == 0 {
-                memset(base.advanced(by: Int(entry.fileOffset)), 0x11, Int(entry.sizeBytes))
+                unsafe memset(base.advanced(by: Int(entry.fileOffset)), 0x11, Int(entry.sizeBytes))
                 if entry.scaleSize > 0 {
-                    let scales = base.advanced(by: Int(entry.scaleOffset))
+                    let scales = unsafe base.advanced(by: Int(entry.scaleOffset))
                         .assumingMemoryBound(to: UInt16.self)
                     for i in 0..<(Int(entry.scaleSize) / MemoryLayout<UInt16>.stride) {
-                        scales[i] = Quantization.bf16Bits(0.01)
+                        unsafe scales[i] = Quantization.bf16Bits(0.01)
                     }
                 }
             }
             for entry in entries where entry.dtype == 1 && entry.name != "language_model.model.norm.weight" {
-                let dst = base.advanced(by: Int(entry.fileOffset))
+                let dst = unsafe base.advanced(by: Int(entry.fileOffset))
                     .assumingMemoryBound(to: UInt16.self)
                 for i in 0..<(Int(entry.sizeBytes) / MemoryLayout<UInt16>.stride) {
-                    dst[i] = Quantization.bf16Bits(1.0)
+                    unsafe dst[i] = Quantization.bf16Bits(1.0)
                 }
             }
         }
@@ -372,12 +372,12 @@ import Metal
                 payload[baseB + 2] = 0xC1
                 payload[baseB + 3] = 0xC2
             }
-            let url = exp.appendingPathComponent(String(format: "layer_%02d.bin", L))
+            let url = unsafe exp.appendingPathComponent(String(format: "layer_%02d.bin", L))
             try payload.write(to: url)
         }
         var layerShaByName: [String: String] = [:]
         for L in 0..<toy.numLayers {
-            let basename = String(format: "layer_%02d.bin", L)
+            let basename = unsafe String(format: "layer_%02d.bin", L)
             let url = exp.appendingPathComponent(basename)
             layerShaByName["packed_experts/\(basename)"] = try Sha256Verifier.hashFile(at: url)
         }
@@ -395,7 +395,7 @@ import Metal
                     "tensors": blob.tensors,
                 ])
             }
-            layersArr.append([
+            unsafe layersArr.append([
                 "layer": L,
                 "file": String(format: "layer_%02d.bin", L),
                 "experts": experts,

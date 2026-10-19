@@ -25,7 +25,7 @@ import Testing
 
         // A real JPEG, encoded by ImageIO so the entropy-coded stream is valid.
         let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
-        let bitmap = try #require(CGContext(
+        let bitmap = unsafe try #require(CGContext(
             data: nil, width: 640, height: 480, bitsPerComponent: 8,
             bytesPerRow: 640 * 4, space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
@@ -77,7 +77,7 @@ import Testing
         defer { try? manager.removeItem(at: directory) }
 
         let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
-        let bitmap = try #require(CGContext(
+        let bitmap = unsafe try #require(CGContext(
             data: nil, width: 320, height: 240, bitsPerComponent: 8,
             bytesPerRow: 320 * 4, space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
@@ -130,7 +130,7 @@ import Testing
         defer { try? manager.removeItem(at: directory) }
 
         let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
-        let bitmap = try #require(CGContext(
+        let bitmap = unsafe try #require(CGContext(
             data: nil, width: 320, height: 240, bitsPerComponent: 8,
             bytesPerRow: 320 * 4, space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))

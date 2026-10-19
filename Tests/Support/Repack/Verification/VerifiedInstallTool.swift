@@ -104,7 +104,7 @@ public enum VerifiedInstallTool {
 
     private static func hashMetadata(_ data: Data) -> String {
         var hasher = Sha256Stream()
-        data.withUnsafeBytes { hasher.update($0) }
+        unsafe data.withUnsafeBytes { unsafe hasher.update($0) }
         return hasher.finalizeHexString()
     }
 

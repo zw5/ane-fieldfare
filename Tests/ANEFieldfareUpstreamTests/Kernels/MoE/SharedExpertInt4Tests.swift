@@ -67,7 +67,7 @@ import ANEFieldfareValidationSupport
         rows: Int,
         cols: Int
     ) -> SharedExpertProjection {
-        SharedExpertProjection(
+        unsafe SharedExpertProjection(
             weights: context.device.makeBuffer(bytes: packed.packed,
                                                 length: packed.packed.count,
                                                 options: .storageModeShared)!,

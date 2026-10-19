@@ -26,13 +26,13 @@ public final class ScriptedLogitProducer: LogitProducer {
     public func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
         let spec = step(token, calls)
         calls += 1
-        let ptr = logits.contents().bindMemory(to: Float16.self, capacity: vocabSize)
+        let ptr = unsafe logits.contents().bindMemory(to: Float16.self, capacity: vocabSize)
         switch spec {
         case .argmax(let token):
-            for i in 0..<vocabSize { ptr[i] = Float16(-30.0) }
-            if Int(token) >= 0 && Int(token) < vocabSize { ptr[Int(token)] = Float16(30.0) }
+            for i in 0..<vocabSize { unsafe ptr[i] = Float16(-30.0) }
+            if Int(token) >= 0 && Int(token) < vocabSize { unsafe ptr[Int(token)] = Float16(30.0) }
         case .vector(let values):
-            for i in 0..<vocabSize { ptr[i] = Float16(i < values.count ? values[i] : -30.0) }
+            for i in 0..<vocabSize { unsafe ptr[i] = Float16(i < values.count ? values[i] : -30.0) }
         }
     }
 }

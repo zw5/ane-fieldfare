@@ -71,7 +71,7 @@ public final class SharedExpertInt4 {
         if gate.weightsOffset % 2 == 0, up.weightsOffset % 2 == 0,
            gate.cols % UInt32(Quantization.groupSize) == 0,
            let encoder = cb.makeComputeCommandEncoder() {
-            var d = gate.cols, f = gate.rows
+            let d = gate.cols, f = gate.rows
             encoder.setComputePipelineState(try gateUpActPipeline(d: d, f: f))
             encoder.setBuffer(gate.weights, offset: gate.weightsOffset, index: 0)
             encoder.setBuffer(gate.scales, offset: gate.scalesOffset, index: 1)
@@ -81,8 +81,8 @@ public final class SharedExpertInt4 {
             encoder.setBuffer(up.biases, offset: up.biasesOffset, index: 5)
             encoder.setBuffer(x, offset: xOffset, index: 6)
             encoder.setBuffer(scratchAct, offset: scratchActOffset, index: 7)
-            encoder.setBytes(&d, length: 4, index: 8)
-            encoder.setBytes(&f, length: 4, index: 9)
+            encoder.setValue(d, index: 8)
+            encoder.setValue(f, index: 9)
             encoder.dispatchThreadgroups(MTLSize(width: (intermediate + 7) / 8, height: 1, depth: 1),
                                          threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             encoder.endEncoding()
@@ -116,8 +116,8 @@ public final class SharedExpertInt4 {
         encoder.setBuffer(scratchGate, offset: scratchGateOffset, index: 0)
         encoder.setBuffer(scratchUp, offset: scratchUpOffset, index: 1)
         encoder.setBuffer(scratchAct, offset: scratchActOffset, index: 2)
-        var count = UInt32(intermediate)
-        encoder.setBytes(&count, length: MemoryLayout<UInt32>.size, index: 3)
+        let count = UInt32(intermediate)
+        encoder.setValue(count, index: 3)
         let width = min(geluMulPSO.maxTotalThreadsPerThreadgroup, 256)
         encoder.dispatchThreads(MTLSize(width: intermediate, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))

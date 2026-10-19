@@ -48,13 +48,13 @@ enum ResidentIndexReader {
     /// read here — that's the resident-buffer materialization job.
     static func load(fileURL: URL,
                             maxBytes: UInt64 = defaultMaxBytes) throws -> ResidentIndex {
-        let fd = open(fileURL.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        let fd = unsafe open(fileURL.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
             throw ModelError.posixFailed(call: "open(\(fileURL.path))", errno: errno)
         }
         defer { close(fd) }
         var info = stat()
-        guard fstat(fd, &info) == 0 else {
+        guard unsafe fstat(fd, &info) == 0 else {
             throw ModelError.posixFailed(call: "fstat(\(fileURL.path))", errno: errno)
         }
         guard (info.st_mode & S_IFMT) == S_IFREG else {
@@ -71,13 +71,13 @@ enum ResidentIndexReader {
         let headerBytes = GTurboFormatV1.residentHeaderBytes
         var headerBuf = [UInt8](repeating: 0, count: headerBytes)
         try headerBuf.withUnsafeMutableBytes {
-            try preadExactly(fd: fd, into: $0, offset: 0,
+            try unsafe preadExactly(fd: fd, into: $0, offset: 0,
                              field: "IndexHeader")
         }
         let wireHeader: GTurboResidentIndexHeaderV1
         do {
             wireHeader = try headerBuf.withUnsafeBytes {
-                try GTurboResidentIndexCodec.decodeHeader($0)
+                try unsafe GTurboResidentIndexCodec.decodeHeader($0)
             }
         } catch {
             throw ModelError.indexCorrupt(detail: "\(error)")
@@ -90,7 +90,7 @@ enum ResidentIndexReader {
             throw ModelError.indexCorrupt(detail: "indexSize is smaller than the header")
         }
         var st = stat()
-        guard fstat(fd, &st) == 0, st.st_size >= 0 else {
+        guard unsafe fstat(fd, &st) == 0, st.st_size >= 0 else {
             throw ModelError.posixFailed(call: "fstat(\(displayPath))", errno: errno)
         }
         guard wireHeader.indexSize <= UInt64(st.st_size),
@@ -103,7 +103,7 @@ enum ResidentIndexReader {
         var indexBuf = [UInt8](repeating: 0, count: regionLen)
         indexBuf.replaceSubrange(0..<headerBytes, with: headerBuf)
         try indexBuf.withUnsafeMutableBytes { raw in
-            try preadExactly(
+            try unsafe preadExactly(
                 fd: fd,
                 into: UnsafeMutableRawBufferPointer(
                     rebasing: raw[headerBytes..<regionLen]),
@@ -114,7 +114,7 @@ enum ResidentIndexReader {
         let wireEntries: [GTurboResidentIndexEntryV1]
         do {
             wireEntries = try indexBuf.withUnsafeBytes {
-                try GTurboResidentIndexCodec.decodeRegion($0, header: wireHeader)
+                try unsafe GTurboResidentIndexCodec.decodeRegion($0, header: wireHeader)
             }
         } catch {
             throw ModelError.indexCorrupt(detail: "\(error)")
@@ -140,7 +140,7 @@ enum ResidentIndexReader {
                                      field: String) throws {
         var total = 0
         while total < buffer.count {
-            let count = pread(fd, buffer.baseAddress?.advanced(by: total),
+            let count = unsafe pread(fd, buffer.baseAddress?.advanced(by: total),
                               buffer.count - total, offset + off_t(total))
             if count < 0, errno == EINTR { continue }
             guard count > 0 else {

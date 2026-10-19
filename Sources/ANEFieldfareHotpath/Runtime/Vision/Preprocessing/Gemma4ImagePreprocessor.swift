@@ -109,12 +109,12 @@ public final class Gemma4ImagePreprocessor {
         let sourceBuffer = gpuResize == nil
             ? nil
             : device.makeBuffer(length: sourceBytes, options: .storageModeShared)
-        let sourceRGBA = sourceBuffer?.contents()
+        let sourceRGBA = unsafe sourceBuffer?.contents()
             ?? UnsafeMutableRawPointer.allocate(byteCount: sourceBytes, alignment: 64)
-        sourceRGBA.initializeMemory(as: UInt8.self, repeating: 255, count: sourceBytes)
-        defer { if sourceBuffer == nil { sourceRGBA.deallocate() } }
+        unsafe sourceRGBA.initializeMemory(as: UInt8.self, repeating: 255, count: sourceBytes)
+        defer { if sourceBuffer == nil { unsafe sourceRGBA.deallocate() } }
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let sourceDrawing = CGContext(
+              let sourceDrawing = unsafe CGContext(
                 data: sourceRGBA,
                 width: decoded.width,
                 height: decoded.height,
@@ -134,7 +134,7 @@ public final class Gemma4ImagePreprocessor {
         let rowBytes = try checkedMultiply(geometry.processedWidth, 4)
         let rgbaBytes = try checkedMultiply(rowBytes, geometry.processedHeight)
         let rgba = UnsafeMutableRawPointer.allocate(byteCount: rgbaBytes, alignment: 64)
-        defer { rgba.deallocate() }
+        defer { unsafe rgba.deallocate() }
         // Same filter either way — the GPU path applies the weights this one
         // builds, and the parity tests assert byte equality — so this chooses
         // only where the arithmetic runs.
@@ -148,7 +148,7 @@ public final class Gemma4ImagePreprocessor {
                 sourceWidth: decoded.width, sourceHeight: decoded.height,
                 destinationWidth: geometry.processedWidth,
                 destinationHeight: geometry.processedHeight)
-            try gpuResize.resize(
+            try unsafe gpuResize.resize(
                 sourceBuffer: sourceBuffer,
                 sourceWidth: decoded.width,
                 sourceHeight: decoded.height,
@@ -158,7 +158,7 @@ public final class Gemma4ImagePreprocessor {
                 destinationHeight: geometry.processedHeight,
                 destinationRowBytes: rowBytes)
         } else {
-            resizeScratchBytes = TorchBicubicResize.resize(
+            resizeScratchBytes = unsafe TorchBicubicResize.resize(
                 source: sourceRGBA.assumingMemoryBound(to: UInt8.self),
                 sourceWidth: decoded.width,
                 sourceHeight: decoded.height,
@@ -179,7 +179,7 @@ public final class Gemma4ImagePreprocessor {
                 length: positionBytes, options: .storageModeShared) else {
             throw VisionImageError.allocationFailed
         }
-        patchify(
+        unsafe patchify(
             rgba: rgba.assumingMemoryBound(to: UInt8.self),
             rowBytes: rowBytes,
             geometry: geometry,
@@ -205,24 +205,24 @@ public final class Gemma4ImagePreprocessor {
         patches: any MTLBuffer,
         positions: any MTLBuffer
     ) {
-        let patchPointer = patches.contents().bindMemory(
+        let patchPointer = unsafe patches.contents().bindMemory(
             to: UInt16.self, capacity: geometry.patchCount * config.patchDimension)
-        let positionPointer = positions.contents().bindMemory(
+        let positionPointer = unsafe positions.contents().bindMemory(
             to: Int32.self, capacity: geometry.patchCount * 2)
         let size = config.patchSize
         for patchY in 0..<geometry.patchGridHeight {
             for patchX in 0..<geometry.patchGridWidth {
                 let row = patchY * geometry.patchGridWidth + patchX
-                positionPointer[row * 2] = Int32(patchX)
-                positionPointer[row * 2 + 1] = Int32(patchY)
+                unsafe positionPointer[row * 2] = Int32(patchX)
+                unsafe positionPointer[row * 2 + 1] = Int32(patchY)
                 var output = row * config.patchDimension
                 for pixelY in 0..<size {
                     let inputRow = (patchY * size + pixelY) * rowBytes
                     for pixelX in 0..<size {
                         let input = inputRow + (patchX * size + pixelX) * 4
-                        patchPointer[output] = Self.unitBF16[Int(rgba[input])]
-                        patchPointer[output + 1] = Self.unitBF16[Int(rgba[input + 1])]
-                        patchPointer[output + 2] = Self.unitBF16[Int(rgba[input + 2])]
+                        unsafe patchPointer[output] = unsafe Self.unitBF16[Int(rgba[input])]
+                        unsafe patchPointer[output + 1] = unsafe Self.unitBF16[Int(rgba[input + 1])]
+                        unsafe patchPointer[output + 2] = unsafe Self.unitBF16[Int(rgba[input + 2])]
                         output += 3
                     }
                 }

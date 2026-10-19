@@ -43,7 +43,7 @@ package enum GTurboResidentIndexCodec {
         guard bytes.count >= GTurboFormatV1.residentHeaderBytes, let base = bytes.baseAddress else {
             throw GTurboFormatError.truncated(field: "resident.header")
         }
-        return GTurboResidentIndexHeaderV1(
+        return unsafe GTurboResidentIndexHeaderV1(
             indexSize: readU64(base, 0),
             residentSize: readU64(base, 8),
             entryCount: readU64(base, 16))
@@ -78,10 +78,10 @@ package enum GTurboResidentIndexCodec {
         payloadRanges.reserveCapacity(Int(header.entryCount) * 3)
         for index in 0..<Int(header.entryCount) {
             let offset = GTurboFormatV1.residentHeaderBytes + index * GTurboFormatV1.residentEntryBytes
-            let entry = base.advanced(by: offset)
-            let nameOffset = UInt64(readU32(entry, 0))
-            let nameLength = UInt64(readU16(entry, 4))
-            guard readU8(entry, 7) == 0 else {
+            let entry = unsafe base.advanced(by: offset)
+            let nameOffset = unsafe UInt64(readU32(entry, 0))
+            let nameLength = unsafe UInt64(readU16(entry, 4))
+            guard unsafe readU8(entry, 7) == 0 else {
                 throw GTurboFormatError.invalid(field: "resident.entries[\(index)].reserved",
                                                 reason: "must be zero")
             }
@@ -92,25 +92,25 @@ package enum GTurboResidentIndexCodec {
                 throw GTurboFormatError.invalid(field: "resident.entries[\(index)].name",
                                                 reason: "range outside string table")
             }
-            let nameBytes = UnsafeRawBufferPointer(start: base.advanced(by: Int(nameOffset)),
+            let nameBytes = unsafe UnsafeRawBufferPointer(start: base.advanced(by: Int(nameOffset)),
                                                    count: Int(nameLength))
-            guard let name = String(bytes: nameBytes, encoding: .utf8),
+            guard let name = unsafe String(bytes: nameBytes, encoding: .utf8),
                   !name.isEmpty, names.insert(name).inserted else {
                 throw GTurboFormatError.invalid(field: "resident.entries[\(index)].name",
                                                 reason: "invalid UTF-8 or duplicate")
             }
-            let dtype = readU8(entry, 6)
+            let dtype = unsafe readU8(entry, 6)
             guard GTurboFormatV1.DType(rawValue: dtype) != nil else {
                 throw GTurboFormatError.invalid(field: "resident.entries[\(index)].dtype",
                                                 reason: "unknown dtype")
             }
-            let fileOffset = readU64(entry, 8)
-            let sizeBytes = readU64(entry, 16)
-            let scaleOffset = readU64(entry, 40)
-            let scaleSize = readU64(entry, 48)
-            let biasOffset = readU64(entry, 56)
-            let biasSize = readU64(entry, 64)
-            let shape = [readU32(entry, 24), readU32(entry, 28),
+            let fileOffset = unsafe readU64(entry, 8)
+            let sizeBytes = unsafe readU64(entry, 16)
+            let scaleOffset = unsafe readU64(entry, 40)
+            let scaleSize = unsafe readU64(entry, 48)
+            let biasOffset = unsafe readU64(entry, 56)
+            let biasSize = unsafe readU64(entry, 64)
+            let shape = unsafe [readU32(entry, 24), readU32(entry, 28),
                          readU32(entry, 32), readU32(entry, 36)]
             try validateShape(shape, index: index)
             try validatePrimaryPayloadRange(offset: fileOffset, size: sizeBytes,
@@ -154,26 +154,26 @@ package enum GTurboResidentIndexCodec {
 
     package static func writeHeader(into buffer: UnsafeMutableRawPointer,
                                     header: GTurboResidentIndexHeaderV1) {
-        writeU64(buffer, 0, header.indexSize)
-        writeU64(buffer, 8, header.residentSize)
-        writeU64(buffer, 16, header.entryCount)
+        unsafe writeU64(buffer, 0, header.indexSize)
+        unsafe writeU64(buffer, 8, header.residentSize)
+        unsafe writeU64(buffer, 16, header.entryCount)
     }
 
     package static func writeEntry(into buffer: UnsafeMutableRawPointer,
                                    entry: GTurboResidentIndexEntryV1,
                                    nameOffset: UInt32) {
         precondition(entry.shape.count == 4)
-        writeU32(buffer, 0, nameOffset)
-        writeU16(buffer, 4, UInt16(entry.name.utf8.count))
-        writeU8(buffer, 6, entry.dtype)
-        writeU8(buffer, 7, 0)
-        writeU64(buffer, 8, entry.fileOffset)
-        writeU64(buffer, 16, entry.sizeBytes)
-        for i in 0..<4 { writeU32(buffer, 24 + i * 4, entry.shape[i]) }
-        writeU64(buffer, 40, entry.scaleOffset)
-        writeU64(buffer, 48, entry.scaleSize)
-        writeU64(buffer, 56, entry.biasOffset)
-        writeU64(buffer, 64, entry.biasSize)
+        unsafe writeU32(buffer, 0, nameOffset)
+        unsafe writeU16(buffer, 4, UInt16(entry.name.utf8.count))
+        unsafe writeU8(buffer, 6, entry.dtype)
+        unsafe writeU8(buffer, 7, 0)
+        unsafe writeU64(buffer, 8, entry.fileOffset)
+        unsafe writeU64(buffer, 16, entry.sizeBytes)
+        for i in 0..<4 { unsafe writeU32(buffer, 24 + i * 4, entry.shape[i]) }
+        unsafe writeU64(buffer, 40, entry.scaleOffset)
+        unsafe writeU64(buffer, 48, entry.scaleSize)
+        unsafe writeU64(buffer, 56, entry.biasOffset)
+        unsafe writeU64(buffer, 64, entry.biasSize)
     }
 
     private static func validatePrimaryPayloadRange(offset: UInt64, size: UInt64,
@@ -231,34 +231,34 @@ package enum GTurboResidentIndexCodec {
     }
 
     @inline(__always) private static func readU8(_ p: UnsafeRawPointer, _ o: Int) -> UInt8 {
-        p.advanced(by: o).load(as: UInt8.self)
+        unsafe p.advanced(by: o).load(as: UInt8.self)
     }
     @inline(__always) private static func readU16(_ p: UnsafeRawPointer, _ o: Int) -> UInt16 {
-        let q = p.advanced(by: o).assumingMemoryBound(to: UInt8.self)
-        return UInt16(q[0]) | UInt16(q[1]) << 8
+        let q = unsafe p.advanced(by: o).assumingMemoryBound(to: UInt8.self)
+        return unsafe UInt16(q[0]) | UInt16(q[1]) << 8
     }
     @inline(__always) private static func readU32(_ p: UnsafeRawPointer, _ o: Int) -> UInt32 {
-        let q = p.advanced(by: o).assumingMemoryBound(to: UInt8.self)
+        let q = unsafe p.advanced(by: o).assumingMemoryBound(to: UInt8.self)
         var value: UInt32 = 0
-        for i in (0..<4).reversed() { value = value << 8 | UInt32(q[i]) }
+        for i in (0..<4).reversed() { value = unsafe value << 8 | UInt32(q[i]) }
         return value
     }
     @inline(__always) private static func readU64(_ p: UnsafeRawPointer, _ o: Int) -> UInt64 {
-        let q = p.advanced(by: o).assumingMemoryBound(to: UInt8.self)
+        let q = unsafe p.advanced(by: o).assumingMemoryBound(to: UInt8.self)
         var value: UInt64 = 0
-        for i in (0..<8).reversed() { value = value << 8 | UInt64(q[i]) }
+        for i in (0..<8).reversed() { value = unsafe value << 8 | UInt64(q[i]) }
         return value
     }
     @inline(__always) private static func writeU8(_ p: UnsafeMutableRawPointer, _ o: Int, _ v: UInt8) {
-        p.advanced(by: o).storeBytes(of: v, as: UInt8.self)
+        unsafe p.advanced(by: o).storeBytes(of: v, as: UInt8.self)
     }
     @inline(__always) private static func writeU16(_ p: UnsafeMutableRawPointer, _ o: Int, _ v: UInt16) {
-        p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt16.self)
+        unsafe p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt16.self)
     }
     @inline(__always) private static func writeU32(_ p: UnsafeMutableRawPointer, _ o: Int, _ v: UInt32) {
-        p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt32.self)
+        unsafe p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt32.self)
     }
     @inline(__always) private static func writeU64(_ p: UnsafeMutableRawPointer, _ o: Int, _ v: UInt64) {
-        p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt64.self)
+        unsafe p.advanced(by: o).storeBytes(of: v.littleEndian, as: UInt64.self)
     }
 }

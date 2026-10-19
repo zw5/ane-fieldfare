@@ -71,7 +71,7 @@ private let mppTensorOpsAvailable: Bool = {
         }
         values.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else { return }
-            buffer.contents().advanced(by: prefixBytes)
+            unsafe buffer.contents().advanced(by: prefixBytes)
                 .copyMemory(from: baseAddress, byteCount: byteCount)
         }
         return buffer
@@ -370,13 +370,13 @@ private let mppTensorOpsAvailable: Bool = {
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)
 
-        let reference = outputs.contents().assumingMemoryBound(to: UInt16.self)
+        let reference = unsafe outputs.contents().assumingMemoryBound(to: UInt16.self)
         for run in 1..<32 {
-            let candidateOutput = outputs.contents()
+            let candidateOutput = unsafe outputs.contents()
                 .advanced(by: run * outputBytes)
                 .assumingMemoryBound(to: UInt16.self)
             var mismatch: Int?
-            for index in 0..<outputElements where reference[index] != candidateOutput[index] {
+            for index in 0..<outputElements where unsafe reference[index] != candidateOutput[index] {
                 mismatch = index
                 break
             }

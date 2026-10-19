@@ -110,7 +110,7 @@ import ANEFieldfareValidationSupport
               let scratchGate = Fp16Buffer.make(ctx.device, count: Self.f),
               let scratchUp = Fp16Buffer.make(ctx.device, count: Self.f),
               let scratchAct = Fp16Buffer.make(ctx.device, count: Self.f),
-              let postF1Buf = ctx.device.makeBuffer(bytes: postF1,
+              let postF1Buf = unsafe ctx.device.makeBuffer(bytes: postF1,
                                                      length: postF1.count * MemoryLayout<UInt16>.stride,
                                                      options: .storageModeShared) else {
             Issue.record("buffer allocation failed")
@@ -287,13 +287,13 @@ import ANEFieldfareValidationSupport
         rows: Int,
         cols: Int
     ) -> SharedExpertInt8Proj {
-        let w = ctx.device.makeBuffer(bytes: packed.packed,
+        let w = unsafe ctx.device.makeBuffer(bytes: packed.packed,
                                       length: packed.packed.count,
                                       options: .storageModeShared)!
-        let s = ctx.device.makeBuffer(bytes: packed.scales,
+        let s = unsafe ctx.device.makeBuffer(bytes: packed.scales,
                                       length: packed.scales.count * MemoryLayout<UInt16>.stride,
                                       options: .storageModeShared)!
-        let b = ctx.device.makeBuffer(bytes: packed.biases,
+        let b = unsafe ctx.device.makeBuffer(bytes: packed.biases,
                                       length: packed.biases.count * MemoryLayout<UInt16>.stride,
                                       options: .storageModeShared)!
         return SharedExpertInt8Proj(weights: w,

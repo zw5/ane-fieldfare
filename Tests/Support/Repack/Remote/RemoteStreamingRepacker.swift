@@ -430,18 +430,18 @@ public final class RemoteStreamingRepacker {
         let scratch = UnsafeMutableRawBufferPointer.allocate(
             byteCount: min(WriterCore.tileBytes, max(1, expectedIndex.count)),
             alignment: 16_384)
-        defer { scratch.deallocate() }
-        return try expectedIndex.withUnsafeBytes { expected in
+        defer { unsafe scratch.deallocate() }
+        return try unsafe expectedIndex.withUnsafeBytes { expected in
             var offset = 0
             while offset < expected.count {
                 let count = min(scratch.count, expected.count - offset)
-                try Posix.preadAll(
+                try unsafe Posix.preadAll(
                     fd: descriptor,
                     path: plan.resident.path,
                     buf: scratch.baseAddress!,
                     count: count,
                     offset: UInt64(offset))
-                guard memcmp(
+                guard unsafe memcmp(
                     scratch.baseAddress!,
                     expected.baseAddress!.advanced(by: offset),
                     count) == 0 else { return false }
@@ -467,7 +467,7 @@ public final class RemoteStreamingRepacker {
                     path: partialDirectory,
                     detail: "checkpoint contains an unknown range")
             }
-            let digest = try HTTPRangeSourceByteProvider.destinationDigest(
+            let digest = try unsafe HTTPRangeSourceByteProvider.destinationDigest(
                 copy,
                 partialDirectory: partialDirectory)
             if digest == range.destinationDigest {

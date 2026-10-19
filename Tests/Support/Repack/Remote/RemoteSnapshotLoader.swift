@@ -70,10 +70,10 @@ enum RemoteSnapshotLoader {
             guard prefixData.count == 8 else {
                 throw RepackError.safetensorsHeaderInvalid(path: shard, detail: "short header prefix")
             }
-            let headerSize = prefixData.withUnsafeBytes { raw -> UInt64 in
+            let headerSize = unsafe prefixData.withUnsafeBytes { raw -> UInt64 in
                 var value: UInt64 = 0
                 for i in 0..<8 {
-                    value |= UInt64(raw[i]) << UInt64(i * 8)
+                    unsafe value |= UInt64(raw[i]) << UInt64(i * 8)
                 }
                 return value
             }

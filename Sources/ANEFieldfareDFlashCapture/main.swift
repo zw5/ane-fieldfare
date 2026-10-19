@@ -3,6 +3,12 @@ import Foundation
 import Darwin
 import Metal
 
+/// `x` with `digits` fractional digits, in the POSIX locale, without C varargs.
+func fixed(_ x: Double, _ digits: Int) -> String {
+    x.formatted(.number.precision(.fractionLength(digits)).grouping(.never)
+        .locale(Locale(identifier: "en_US_POSIX")))
+}
+
 private struct Generation: Decodable {
     let prompt_token_ids: [Int32]
     let generated_token_ids: [Int32]
@@ -56,20 +62,20 @@ private struct Generation: Decodable {
 
     static func write(_ bytes: UnsafeRawBufferPointer, to path: String) throws {
         guard !FileManager.default.fileExists(atPath: path) else { fail("output exists: \(path)", 3) }
-        try Data(bytes).write(to: URL(fileURLWithPath: path))
+        unsafe try Data(bytes).write(to: URL(fileURLWithPath: path))
     }
 
     static func dumpEmbedding(modelPath: String, prefix: String) throws {
         let context = try MetalContext()
         let model = try loadModel(modelPath, context: context)
         let view = model.embedding
-        let base = UnsafeRawPointer(view.buffer.contents())
+        let base = unsafe UnsafeRawPointer(view.buffer.contents())
         func bytes(at offset: UInt64, count: UInt64) -> UnsafeRawBufferPointer {
-            UnsafeRawBufferPointer(start: base + Int(offset), count: Int(count))
+            unsafe UnsafeRawBufferPointer(start: base + Int(offset), count: Int(count))
         }
-        try write(bytes(at: view.offset, count: view.length), to: prefix + ".q4")
-        try write(bytes(at: view.scaleOffset, count: view.scaleLength), to: prefix + ".scales.bf16")
-        try write(bytes(at: view.biasOffset, count: view.biasLength), to: prefix + ".biases.bf16")
+        unsafe try write(bytes(at: view.offset, count: view.length), to: prefix + ".q4")
+        unsafe try write(bytes(at: view.scaleOffset, count: view.scaleLength), to: prefix + ".scales.bf16")
+        unsafe try write(bytes(at: view.biasOffset, count: view.biasLength), to: prefix + ".biases.bf16")
         print("embedding vocab=\(model.config.vocabSize) d=\(model.config.hiddenSize) bytes=\(view.length)")
     }
 
@@ -93,11 +99,13 @@ private struct Generation: Decodable {
         var chunks: [[Int]] = []
         runner.prefillCapture = PrefillCapture(hiddenLayers: contextLayers) { c in
             chunks.append([c.startPosition, c.tokenCount])
-            for slot in contextLayers.indices {
-                for row in 0..<c.tokenCount {
-                    let source = (slot * c.tokenCount + row) * D
-                    let target = ((c.startPosition + row) * contextLayers.count + slot) * D
-                    for i in 0..<D { hidden[target + i] = c.hidden[source + i] }
+            c.withHidden { captured in
+                for slot in contextLayers.indices {
+                    for row in 0..<c.tokenCount {
+                        let source = (slot * c.tokenCount + row) * D
+                        let target = ((c.startPosition + row) * contextLayers.count + slot) * D
+                        for i in 0..<D { hidden[target + i] = captured[source + i] }
+                    }
                 }
             }
             for layer in 0..<layers {
@@ -117,8 +125,8 @@ private struct Generation: Decodable {
                                             config: .production(chunkTokens: chunk), into: logits,
                                             onProgress: { _ in })
         let seconds = Date().timeIntervalSince(started)
-        try hidden.withUnsafeBytes { try write($0, to: prefix + ".hidden.f16") }
-        try routes.withUnsafeBytes { try write($0, to: prefix + ".routes.u8") }
+        try hidden.withUnsafeBytes { unsafe try write($0, to: prefix + ".hidden.f16") }
+        try routes.withUnsafeBytes { unsafe try write($0, to: prefix + ".routes.u8") }
         let receipt: [String: Any] = [
             "schema": "ane-fieldfare.dflash-capture.v1", "status": "accepted",
             "command": args(), "host": ProcessInfo.processInfo.hostName,
@@ -157,9 +165,9 @@ private struct Generation: Decodable {
             if case .greedyToken(let t) = result.seed, Int32(t) != gen[0] { mismatches += 1; firstMismatch = 0 }
             var position = prompt.count
             var i = 0
-            print("  after prompt: tile_fetch=\(String(format: "%.2f", Double(runner.prefillTileFetchNanos) / 1e9)) "
+            print("  after prompt: tile_fetch=\(fixed(Double(runner.prefillTileFetchNanos) / 1e9, 2)) "
                 + "tile_hits=\(runner.prefillTileHits) tile_misses=\(runner.prefillTileMisses) "
-                + "routed_wall=\(String(format: "%.2f", Double(runner.prefillRoutedWallNanos) / 1e9))")
+                + "routed_wall=\(fixed(Double(runner.prefillRoutedWallNanos) / 1e9, 2))")
             let started = Date()
             while i + 1 < gen.count {
                 let n = min(block, gen.count - 1 - i)
@@ -176,7 +184,7 @@ private struct Generation: Decodable {
                 rows += n; i += n; position += n
             }
             let seconds = Date().timeIntervalSince(started)
-            func sec(_ n: UInt64) -> String { String(format: "%.2f", Double(n) / 1e9) }
+            func sec(_ n: UInt64) -> String { fixed(Double(n) / 1e9, 2) }
             print("  io=\(sec(runner.totalIoNanos)) routed_wall=\(sec(runner.prefillRoutedWallNanos)) "
                 + "pre_router_gpu=\(sec(runner.prefillPreRouterGPUNanos)) shared_gpu=\(sec(runner.prefillSharedGPUNanos)) "
                 + "routed_gpu=\(sec(runner.prefillRoutedGPUNanos)) hits=\(runner.routedExpertCacheHits) "
@@ -184,8 +192,8 @@ private struct Generation: Decodable {
                 + "tile_fetch=\(sec(runner.prefillTileFetchNanos)) tile_drain=\(sec(runner.prefillTileDrainNanos)) "
                 + "tile_hits=\(runner.prefillTileHits) tile_misses=\(runner.prefillTileMisses)")
             print("rewind=\(useRewind) rows=\(rows) mismatches=\(mismatches) first=\(firstMismatch) "
-                + "verify_seconds=\(String(format: "%.2f", seconds)) per_block_ms="
-                + String(format: "%.1f", seconds * 1000 / Double((rows + block - 1) / block) / (useRewind ? 2 : 1)))
+                + "verify_seconds=\(fixed(seconds, 2)) per_block_ms="
+                + fixed(seconds * 1000 / Double((rows + block - 1) / block) / (useRewind ? 2 : 1), 1))
         }
     }
 
@@ -237,7 +245,11 @@ private struct Generation: Decodable {
                                         context: context, maxContext: 4096)
         var failure: any Error?
         runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { chunk in
-            do { try drafter.appendContext(captured: chunk.hidden, stride: chunk.tokenCount, rows: chunk.tokenCount) }
+            do {
+                try chunk.withHidden {
+                    try drafter.appendContext(captured: $0, stride: chunk.tokenCount, rows: chunk.tokenCount)
+                }
+            }
             catch { failure = error }
         }
         guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2, options: .storageModeShared) else {
@@ -253,7 +265,7 @@ private struct Generation: Decodable {
             let drafts = try drafter.propose(anchor: tokens[anchor], count: drafter.config.blockSize)
             let ms = Date().timeIntervalSince(started) * 1000
             result[String(anchor)] = drafts.map(Int.init)
-            FileHandle.standardError.write(Data("anchor \(anchor) propose_ms=\(String(format: "%.1f", ms))\n".utf8))
+            FileHandle.standardError.write(Data("anchor \(anchor) propose_ms=\(fixed(ms, 1))\n".utf8))
         }
         let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))

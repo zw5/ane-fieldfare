@@ -8,7 +8,7 @@ package final class GTurboDirectoryAccess {
 
     package init(rootPath: String) throws {
         let standardized = URL(fileURLWithPath: rootPath).standardizedFileURL.path
-        let fd = open(standardized, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        let fd = unsafe open(standardized, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard fd >= 0 else {
             throw RepackError.fileOpenFailed(path: standardized, errno: errno)
         }
@@ -33,7 +33,7 @@ package final class GTurboDirectoryAccess {
             throw RepackError.fileOpenFailed(path: rootPath, errno: errno)
         }
         for component in components.dropLast() {
-            let next = openat(directoryFD, component,
+            let next = unsafe openat(directoryFD, component,
                               O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             let savedErrno = errno
             close(directoryFD)
@@ -47,7 +47,7 @@ package final class GTurboDirectoryAccess {
             }
             directoryFD = next
         }
-        let fd = openat(directoryFD, components.last!,
+        let fd = unsafe openat(directoryFD, components.last!,
                         O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         let savedErrno = errno
         close(directoryFD)
@@ -60,7 +60,7 @@ package final class GTurboDirectoryAccess {
                                              errno: savedErrno)
         }
         var st = stat()
-        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+        guard unsafe fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
             let statErrno = errno
             close(fd)
             throw RepackError.fileStatFailed(path: "\(rootPath)/\(relativePath)",
@@ -88,8 +88,8 @@ package final class GTurboDirectoryAccess {
         }
         var data = Data(count: Int(size))
         if !data.isEmpty {
-            try data.withUnsafeMutableBytes {
-                try Posix.preadAll(
+            try unsafe data.withUnsafeMutableBytes {
+                try unsafe Posix.preadAll(
                     fd: fd, path: "\(rootPath)/\(relativePath)",
                     buf: $0.baseAddress!, count: $0.count, offset: 0)
             }
@@ -124,32 +124,32 @@ package final class GTurboDirectoryAccess {
                                 maxDepth: Int,
                                 maxEntries: Int,
                                 result: inout [String]) throws {
-        let scanFD = openat(directoryFD, ".",
+        let scanFD = unsafe openat(directoryFD, ".",
                             O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard scanFD >= 0, let directory = fdopendir(scanFD) else {
+        guard scanFD >= 0, let directory = unsafe fdopendir(scanFD) else {
             if scanFD >= 0 { close(scanFD) }
             throw RepackError.fileOpenFailed(
                 path: prefix.isEmpty ? rootPath : "\(rootPath)/\(prefix)", errno: errno)
         }
-        defer { closedir(directory) }
+        defer { unsafe closedir(directory) }
         while true {
             errno = 0
-            guard let entry = readdir(directory) else {
+            guard let entry = unsafe readdir(directory) else {
                 if errno != 0 {
                     throw RepackError.fileOpenFailed(
                         path: prefix.isEmpty ? rootPath : "\(rootPath)/\(prefix)", errno: errno)
                 }
                 break
             }
-            let name = withUnsafePointer(to: &entry.pointee.d_name) {
-                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
-                    String(cString: $0)
+            let name = unsafe withUnsafePointer(to: &entry.pointee.d_name) {
+                unsafe $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                    unsafe String(cString: $0)
                 }
             }
             if name == "." || name == ".." { continue }
             let relativePath = prefix.isEmpty ? name : "\(prefix)/\(name)"
             var info = stat()
-            guard fstatat(directoryFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            guard unsafe fstatat(directoryFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
                 // readdir returns a buffered snapshot, so an entry can be
                 // renamed or unlinked before this stat runs. A vanished entry
                 // is ordinary concurrent-directory behavior, not a damaged
@@ -174,7 +174,7 @@ package final class GTurboDirectoryAccess {
                     throw RepackError.configurationInvalid(
                         detail: "artifact directory nesting exceeds \(maxDepth)")
                 }
-                let childFD = openat(directoryFD, name,
+                let childFD = unsafe openat(directoryFD, name,
                                      O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 guard childFD >= 0 else {
                     // Same snapshot race as the stat above, one level up: the
@@ -228,23 +228,23 @@ package final class GTurboDirectoryAccess {
                 detail: "unsafe output path \(relativePath): \(error)")
         }
         let temporary = ".gturbo-\(UUID().uuidString).tmp"
-        var fd = openat(rootFD, temporary,
+        var fd = unsafe openat(rootFD, temporary,
                         O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
                         0o600)
         guard fd >= 0 else {
             throw RepackError.fileOpenFailed(path: "\(rootPath)/\(temporary)", errno: errno)
         }
         do {
-            try data.withUnsafeBytes { raw in
+            try unsafe data.withUnsafeBytes { raw in
                 guard let base = raw.baseAddress else { return }
-                try Posix.pwriteAll(
+                try unsafe Posix.pwriteAll(
                     fd: fd, path: "\(rootPath)/\(temporary)",
-                    buf: base, count: raw.count, offset: 0)
+                    buf: unsafe base, count: raw.count, offset: 0)
             }
             try Posix.fsync(fd, path: "\(rootPath)/\(temporary)")
             close(fd)
             fd = -1
-            guard renameat(rootFD, temporary, rootFD, relativePath) == 0 else {
+            guard unsafe renameat(rootFD, temporary, rootFD, relativePath) == 0 else {
                 throw RepackError.renameFailed(
                     from: "\(rootPath)/\(temporary)",
                     to: "\(rootPath)/\(relativePath)", errno: errno)
@@ -252,7 +252,7 @@ package final class GTurboDirectoryAccess {
             try Posix.fsync(rootFD, path: rootPath)
         } catch {
             if fd >= 0 { close(fd) }
-            _ = unlinkat(rootFD, temporary, 0)
+            _ = unsafe unlinkat(rootFD, temporary, 0)
             throw error
         }
     }
@@ -260,7 +260,7 @@ package final class GTurboDirectoryAccess {
     package func fileSize(fileDescriptor fd: Int32,
                           relativePath: String) throws -> UInt64 {
         var st = stat()
-        guard fstat(fd, &st) == 0 else {
+        guard unsafe fstat(fd, &st) == 0 else {
             throw RepackError.fileStatFailed(path: "\(rootPath)/\(relativePath)", errno: errno)
         }
         guard st.st_size >= 0 else {

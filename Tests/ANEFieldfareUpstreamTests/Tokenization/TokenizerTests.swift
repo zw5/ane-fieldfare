@@ -339,7 +339,7 @@ struct TokenizerTests {
         // reimplementation of the reference decoder's run semantics
         // (from_utf8, else one U+FFFD per byte) and against our own streaming.
         let byteIDs: [Int32] = try (0...255).map {
-            try tokenID(String(format: "<0x%02X>", $0))
+            unsafe try tokenID(String(format: "<0x%02X>", $0))
         }
         let theID = try tokenID("the")
         var state: UInt64 = 0xA076_1D64_78BD_642F

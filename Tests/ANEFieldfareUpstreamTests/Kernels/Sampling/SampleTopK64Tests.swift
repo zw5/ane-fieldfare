@@ -71,9 +71,9 @@ import Testing
         }
 
         func write(_ values: (Int) -> Float) {
-            let ptr = probs.contents().bindMemory(to: Float16.self, capacity: vocab)
+            let ptr = unsafe probs.contents().bindMemory(to: Float16.self, capacity: vocab)
             for i in 0..<vocab {
-                ptr[i] = Float16(values(i))
+                unsafe ptr[i] = Float16(values(i))
             }
         }
 
@@ -97,7 +97,7 @@ import Testing
                              seed: seed)
             cb.commit()
             cb.waitUntilCompleted()
-            return (currentOutput.contents().load(as: UInt32.self),
+            return unsafe (currentOutput.contents().load(as: UInt32.self),
                     candidateOutput.contents().load(as: UInt32.self))
         }
     }

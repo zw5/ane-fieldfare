@@ -67,17 +67,15 @@ public final class VisionLinearBF16 {
         encoder.setBuffer(input, offset: inputOffset, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)
         encoder.setBuffer(output, offset: outputOffset, index: 2)
-        var rows = UInt32(m), columns = UInt32(n), inner = UInt32(k)
-        encoder.setBytes(&rows, length: 4, index: 3)
-        encoder.setBytes(&columns, length: 4, index: 4)
-        encoder.setBytes(&inner, length: 4, index: 5)
-        var store = VisionGEMMPaddedStore(
+        let rows = UInt32(m), columns = UInt32(n), inner = UInt32(k)
+        encoder.setValue(rows, index: 3)
+        encoder.setValue(columns, index: 4)
+        encoder.setValue(inner, index: 5)
+        let store = VisionGEMMPaddedStore(
             rowStride: UInt32(paddedHeadStore?.rowStride ?? 0),
             headDim: UInt32(paddedHeadStore?.headDim ?? 0),
             paddedHeadDim: UInt32(paddedHeadStore?.paddedHeadDim ?? 0))
-        encoder.setBytes(&store,
-                         length: MemoryLayout<VisionGEMMPaddedStore>.stride,
-                         index: 6)
+        encoder.setValue(store, index: 6)
         encoder.setComputePipelineState(pipeline)
         encoder.dispatchThreadgroups(
             MTLSize(width: (n + 127) / 128, height: (m + 63) / 64, depth: 1),

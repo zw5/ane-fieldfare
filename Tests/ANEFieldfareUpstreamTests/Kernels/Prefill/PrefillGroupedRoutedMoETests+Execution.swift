@@ -39,7 +39,7 @@ extension PrefillGroupedRoutedMoETests {
     let ctx = try MetalContext()
     let grouped = try PrefillGroupedRoutedMoE(context: ctx)
     guard let hiddenBuffer = Fp16Buffer.make(ctx.device, halves: hidden),
-      let pairBuffer = ctx.device.makeBuffer(
+      let pairBuffer = unsafe ctx.device.makeBuffer(
         bytes: routes.sortedPairs,
         length: routes.sortedPairs.count * MemoryLayout<PrefillTokenExpertPair>.stride,
         options: .storageModeShared),

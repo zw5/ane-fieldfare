@@ -51,16 +51,16 @@ import ANEFieldfareValidationSupport
             produceCalls += 1
             let spec = step(token, calls)
             calls += 1
-            let ptr = logits.contents().bindMemory(to: Float16.self, capacity: vocabSize)
+            let ptr = unsafe logits.contents().bindMemory(to: Float16.self, capacity: vocabSize)
             switch spec {
             case .argmax(let token):
-                for i in 0..<vocabSize { ptr[i] = Float16(-30.0) }
+                for i in 0..<vocabSize { unsafe ptr[i] = Float16(-30.0) }
                 if Int(token) >= 0 && Int(token) < vocabSize {
-                    ptr[Int(token)] = Float16(30.0)
+                    unsafe ptr[Int(token)] = Float16(30.0)
                 }
             case .vector(let values):
                 for i in 0..<vocabSize {
-                    ptr[i] = Float16(i < values.count ? values[i] : -30.0)
+                    unsafe ptr[i] = Float16(i < values.count ? values[i] : -30.0)
                 }
             }
         }
@@ -106,9 +106,9 @@ import ANEFieldfareValidationSupport
             chunkedCalls += 1
             lastOutputMode = outputMode
             lastConfig = config
-            let ptr = logits.contents().bindMemory(to: Float16.self, capacity: vocabSize)
-            for i in 0..<vocabSize { ptr[i] = Float16(-30.0) }
-            ptr[Int(firstToken)] = Float16(30.0)
+            let ptr = unsafe logits.contents().bindMemory(to: Float16.self, capacity: vocabSize)
+            for i in 0..<vocabSize { unsafe ptr[i] = Float16(-30.0) }
+            unsafe ptr[Int(firstToken)] = Float16(30.0)
             onProgress(tokens.count)
             return PrefillResult(newPosition: startPosition + tokens.count,
                                  seed: seed)

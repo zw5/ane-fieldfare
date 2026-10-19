@@ -194,10 +194,10 @@ final class SharedExpertInt8 {
         enc.setBuffer(up.biases,    offset: up.biasesOffset,    index: 5)
         enc.setBuffer(x, offset: xOffset, index: 6)
         enc.setBuffer(scratchAct, offset: scratchActOffset, index: 7)
-        var rows = gate.rows
-        var cols = gate.cols
-        enc.setBytes(&rows, length: MemoryLayout<UInt32>.size, index: 8)
-        enc.setBytes(&cols, length: MemoryLayout<UInt32>.size, index: 9)
+        let rows = gate.rows
+        let cols = gate.cols
+        enc.setValue(rows, index: 8)
+        enc.setValue(cols, index: 9)
 
         let rowsPerTG = 8
         let groups = (Int(gate.rows) + rowsPerTG - 1) / rowsPerTG

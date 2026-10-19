@@ -24,7 +24,7 @@ final class PrefillSIMDAttentionTests: XCTestCase {
                     } }
                 }
                 func buffer(_ values: [Float16]) throws -> any MTLBuffer {
-                    try values.withUnsafeBytes { try XCTUnwrap(context.device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)) }
+                    try values.withUnsafeBytes { unsafe try XCTUnwrap(context.device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)) }
                 }
                 let qb = try buffer(q), kb = try buffer(k), vb = try buffer(v)
                 let out = try buffer(Array(repeating: .nan, count: q.count))
@@ -45,10 +45,10 @@ final class PrefillSIMDAttentionTests: XCTestCase {
                         bidirectionalBlockEnd: UInt32(imageBlock ? valid : 0)),
                     kvRingCapacity: UInt32(capacity), layerKind: .slidingWindow, path: .causalTiled)
                 cb.commit(); cb.waitUntilCompleted(); XCTAssertNil(cb.error)
-                XCTAssertEqual(Data(bytes: out.contents(), count: out.length),
+                unsafe XCTAssertEqual(Data(bytes: out.contents(), count: out.length),
                                Data(bytes: reference.contents(), count: reference.length),
                                "SIMD schedule must preserve the reference FP16 values")
-                let actual = out.contents().assumingMemoryBound(to: Float16.self)
+                let actual = unsafe out.contents().assumingMemoryBound(to: Float16.self)
                 var maximum = 0.0
                 for row in 0..<count { for h in 0..<heads {
                     let first = window > 0 ? max(0, start + row + 1 - window) : 0
@@ -63,7 +63,7 @@ final class PrefillSIMDAttentionTests: XCTestCase {
                     for c in 0..<d {
                         var expected = 0.0
                         for (i,key) in keys.enumerated() { expected += weights[i] * Double(v[((key%slots)*kvHeads+h/2)*d+c]) / sum }
-                        let value = Double(actual[(row*heads+h)*d+c])
+                        let value = unsafe Double(actual[(row*heads+h)*d+c])
                         XCTAssertTrue(value.isFinite)
                         maximum = max(maximum, abs(value-expected))
                     }

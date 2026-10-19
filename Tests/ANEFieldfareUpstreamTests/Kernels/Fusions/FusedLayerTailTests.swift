@@ -20,13 +20,13 @@ import ANEFieldfareValidationSupport
         let ctx = try MetalContext()
         let fused = try FusedLayerTail(context: ctx)
         guard
-            let h2Buf = ctx.device.makeBuffer(bytes: h2, length: Self.bytes(h2.count), options: .storageModeShared),
-            let h1Buf = ctx.device.makeBuffer(bytes: h1, length: Self.bytes(h1.count), options: .storageModeShared),
-            let hiddenBuf = ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(hidden.count), options: .storageModeShared),
-            let w2 = ctx.device.makeBuffer(bytes: wPostFFN2,
+            let h2Buf = unsafe ctx.device.makeBuffer(bytes: h2, length: Self.bytes(h2.count), options: .storageModeShared),
+            let h1Buf = unsafe ctx.device.makeBuffer(bytes: h1, length: Self.bytes(h1.count), options: .storageModeShared),
+            let hiddenBuf = unsafe ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(hidden.count), options: .storageModeShared),
+            let w2 = unsafe ctx.device.makeBuffer(bytes: wPostFFN2,
                                            length: wPostFFN2.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared),
-            let w = ctx.device.makeBuffer(bytes: wPostFFN,
+            let w = unsafe ctx.device.makeBuffer(bytes: wPostFFN,
                                           length: wPostFFN.count * MemoryLayout<UInt16>.size,
                                           options: .storageModeShared)
         else {
@@ -60,7 +60,7 @@ import ANEFieldfareValidationSupport
         var maxAbs: Float = 0
         var refNorm: Float = 0
         for i in 0..<Self.d {
-            let got = Float(hiddenBuf.contents().load(fromByteOffset: i * MemoryLayout<Float16>.size,
+            let got = unsafe Float(hiddenBuf.contents().load(fromByteOffset: i * MemoryLayout<Float16>.size,
                                                       as: Float16.self))
             maxAbs = max(maxAbs, abs(got - ref[i]))
             refNorm = max(refNorm, abs(ref[i]))

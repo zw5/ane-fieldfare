@@ -290,7 +290,7 @@ public final class KVCacheManager {
         // whole number of pages so we never hand madvise a partial tail page.
         let len = (buffer.length / pageSize) * pageSize
         if len > 0 {
-            _ = posix_madvise(buffer.contents(), len, POSIX_MADV_DONTNEED)
+            _ = unsafe posix_madvise(buffer.contents(), len, POSIX_MADV_DONTNEED)
         }
     }
 }

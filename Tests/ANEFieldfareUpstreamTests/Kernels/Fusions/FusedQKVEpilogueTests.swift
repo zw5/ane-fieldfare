@@ -47,18 +47,18 @@ import ANEFieldfareValidationSupport
         let fused = try FusedQKVEpilogue(context: ctx)
 
         guard
-            let qLegacy = ctx.device.makeBuffer(bytes: q, length: Self.bytes(qCount), options: .storageModeShared),
-            let kLegacy = ctx.device.makeBuffer(bytes: k, length: Self.bytes(kvCount), options: .storageModeShared),
-            let vLegacy = ctx.device.makeBuffer(bytes: v,
+            let qLegacy = unsafe ctx.device.makeBuffer(bytes: q, length: Self.bytes(qCount), options: .storageModeShared),
+            let kLegacy = unsafe ctx.device.makeBuffer(bytes: k, length: Self.bytes(kvCount), options: .storageModeShared),
+            let vLegacy = unsafe ctx.device.makeBuffer(bytes: v,
                                                 length: Self.bytes(kvCount),
                                                 options: .storageModeShared),
-            let qFused = ctx.device.makeBuffer(bytes: q, length: Self.bytes(qCount), options: .storageModeShared),
-            let kFused = ctx.device.makeBuffer(bytes: k, length: Self.bytes(kvCount), options: .storageModeShared),
-            let vFused = ctx.device.makeBuffer(bytes: v, length: Self.bytes(kvCount), options: .storageModeShared),
-            let qW = ctx.device.makeBuffer(bytes: qWeight,
+            let qFused = unsafe ctx.device.makeBuffer(bytes: q, length: Self.bytes(qCount), options: .storageModeShared),
+            let kFused = unsafe ctx.device.makeBuffer(bytes: k, length: Self.bytes(kvCount), options: .storageModeShared),
+            let vFused = unsafe ctx.device.makeBuffer(bytes: v, length: Self.bytes(kvCount), options: .storageModeShared),
+            let qW = unsafe ctx.device.makeBuffer(bytes: qWeight,
                                            length: qWeight.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared),
-            let kW = ctx.device.makeBuffer(bytes: kWeight,
+            let kW = unsafe ctx.device.makeBuffer(bytes: kWeight,
                                            length: kWeight.count * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared)
         else {
@@ -152,7 +152,7 @@ import ANEFieldfareValidationSupport
     }
 
     private static func bufferBytes(_ buffer: any MTLBuffer, count: Int) -> [UInt8] {
-        Array(UnsafeBufferPointer(start: buffer.contents().assumingMemoryBound(to: UInt8.self),
+        unsafe Array(UnsafeBufferPointer(start: buffer.contents().assumingMemoryBound(to: UInt8.self),
                                   count: bytes(count)))
     }
 }

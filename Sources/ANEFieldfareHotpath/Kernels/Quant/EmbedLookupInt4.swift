@@ -35,12 +35,12 @@ final class EmbedLookupInt4 {
         enc.setBuffer(scales, offset: scalesOffset, index: 1)
         enc.setBuffer(biases, offset: biasesOffset, index: 2)
         enc.setBuffer(out,    offset: outOffset,    index: 3)
-        var tokenVar = tokenId
-        var dVar     = d
-        var sVar     = outScale
-        enc.setBytes(&tokenVar, length: MemoryLayout<UInt32>.size, index: 4)
-        enc.setBytes(&dVar,     length: MemoryLayout<UInt32>.size, index: 5)
-        enc.setBytes(&sVar,     length: MemoryLayout<Float>.size,  index: 6)
+        let tokenVar = tokenId
+        let dVar     = d
+        let sVar     = outScale
+        enc.setValue(tokenVar, index: 4)
+        enc.setValue(dVar, index: 5)
+        enc.setValue(sVar, index: 6)
 
         let threadsPerGroup = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         let gridSize = MTLSize(width: Int(d), height: 1, depth: 1)

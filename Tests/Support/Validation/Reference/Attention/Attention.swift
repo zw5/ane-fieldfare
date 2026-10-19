@@ -53,7 +53,7 @@ public enum AttentionRef {
                     let kBase = (p * numKVHeads + kvHead) * headDim
                     var dot: Float = 0
                     k.withUnsafeBufferPointer { pk in
-                        vDSP_dotpr(
+                        unsafe vDSP_dotpr(
                             pq.baseAddress! + qBase, 1,
                             pk.baseAddress! + kBase, 1,
                             &dot, vDSP_Length(headDim)
@@ -68,17 +68,17 @@ public enum AttentionRef {
             for s in scores { if s > mx { mx = s } }
             var negMax = -mx
             scores.withUnsafeMutableBufferPointer { ps in
-                vDSP_vsadd(ps.baseAddress!, 1, &negMax,
+                unsafe vDSP_vsadd(ps.baseAddress!, 1, &negMax,
                            ps.baseAddress!, 1, vDSP_Length(ps.count))
             }
             scores = vForce.exp(scores)
             var sum: Float = 0
             scores.withUnsafeBufferPointer { ps in
-                vDSP_sve(ps.baseAddress!, 1, &sum, vDSP_Length(ps.count))
+                unsafe vDSP_sve(ps.baseAddress!, 1, &sum, vDSP_Length(ps.count))
             }
             var invSum = 1.0 / sum
             scores.withUnsafeMutableBufferPointer { ps in
-                vDSP_vsmul(ps.baseAddress!, 1, &invSum,
+                unsafe vDSP_vsmul(ps.baseAddress!, 1, &invSum,
                            ps.baseAddress!, 1, vDSP_Length(ps.count))
             }
 
@@ -90,7 +90,7 @@ public enum AttentionRef {
                     v.withUnsafeBufferPointer { pv in
                         let vColumnStart = (kvStart * numKVHeads + kvHead) * headDim + d
                         let stride = numKVHeads * headDim
-                        vDSP_dotpr(
+                        unsafe vDSP_dotpr(
                             ps.baseAddress!, 1,
                             pv.baseAddress! + vColumnStart, vDSP_Stride(stride),
                             &acc, vDSP_Length(ps.count)

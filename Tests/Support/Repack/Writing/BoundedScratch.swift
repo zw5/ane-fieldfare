@@ -3,6 +3,11 @@ import Foundation
 /// Per-worker scratch buffer with a hard upper bound. Calls beyond the bound
 /// throw rather than silently grow — the M1a copy budget caps per-worker
 /// staging well under 1 MB.
+///
+/// `@safe`: the scratch owns its allocation and frees it exactly once.
+/// `ensure` and `zeroBuffer` are `@unsafe`: they return the raw buffer
+/// itself, valid until the next `ensure` grows it or the scratch is released.
+@safe
 public final class BoundedScratch {
     public static let defaultLimitBytes: Int = 1_048_576 - 1  // strictly under 1 MB
 
@@ -17,37 +22,37 @@ public final class BoundedScratch {
         // hashing gap regions. 16 KB is arm64 page size; reading zero bytes
         // straight from this static avoids touching the bigger working buffer.
         let initial = 16_384
-        self.buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: initial,
+        unsafe self.buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: initial,
                                                              alignment: 16_384)
-        self.buffer.initializeMemory(as: UInt8.self, repeating: 0)
+        unsafe self.buffer.initializeMemory(as: UInt8.self, repeating: 0)
         self.largestEverBytes = initial
     }
 
-    deinit { buffer.deallocate() }
+    deinit { unsafe buffer.deallocate() }
 
     /// Grow the scratch to at least `byteCount` if needed. Returns the
     /// guaranteed-zeroed buffer.
     @discardableResult
-    public func ensure(_ byteCount: Int) throws -> UnsafeMutableRawBufferPointer {
+    @unsafe public func ensure(_ byteCount: Int) throws -> UnsafeMutableRawBufferPointer {
         if byteCount > limitBytes {
-            throw RepackError.scratchExceeded(requested: byteCount, limit: limitBytes)
+            throw unsafe RepackError.scratchExceeded(requested: byteCount, limit: limitBytes)
         }
-        if byteCount <= buffer.count { return buffer }
-        let newCount = max(byteCount, buffer.count * 2)
+        if unsafe byteCount <= buffer.count { return unsafe buffer }
+        let newCount = unsafe max(byteCount, buffer.count * 2)
         let bounded = min(newCount, limitBytes)
         if bounded < byteCount {
-            throw RepackError.scratchExceeded(requested: byteCount, limit: limitBytes)
+            throw unsafe RepackError.scratchExceeded(requested: byteCount, limit: limitBytes)
         }
         let newBuf = UnsafeMutableRawBufferPointer.allocate(byteCount: bounded,
                                                             alignment: 16_384)
-        newBuf.initializeMemory(as: UInt8.self, repeating: 0)
-        buffer.deallocate()
-        buffer = newBuf
+        unsafe newBuf.initializeMemory(as: UInt8.self, repeating: 0)
+        unsafe buffer.deallocate()
+        unsafe buffer = unsafe newBuf
         if bounded > largestEverBytes { largestEverBytes = bounded }
-        return buffer
+        return unsafe buffer
     }
 
-    public var zeroBuffer: UnsafeRawBufferPointer {
-        UnsafeRawBufferPointer(start: buffer.baseAddress, count: buffer.count)
+    @unsafe public var zeroBuffer: UnsafeRawBufferPointer {
+        unsafe UnsafeRawBufferPointer(start: buffer.baseAddress, count: buffer.count)
     }
 }

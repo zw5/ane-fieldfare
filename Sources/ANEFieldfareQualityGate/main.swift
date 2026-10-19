@@ -60,14 +60,14 @@ private struct Fixture: Decodable {
             var finite = true
             var greedy: [Int] = []
             func appendLogits() throws {
-                let values = logits.contents().assumingMemoryBound(to: Float16.self)
+                let values = unsafe logits.contents().assumingMemoryBound(to: Float16.self)
                 var best = 0
                 for i in 0..<model.config.vocabSize {
-                    if !values[i].isFinite { finite = false }
-                    if values[i] > values[best] { best = i }
+                    if unsafe !values[i].isFinite { finite = false }
+                    if unsafe values[i] > values[best] { best = i }
                 }
                 greedy.append(best)
-                try output.write(contentsOf: Data(bytes: values, count: logits.length))
+                unsafe try output.write(contentsOf: Data(bytes: values, count: logits.length))
             }
             try appendLogits()
             for (offset, token) in fixture.continuation_token_ids.enumerated() {

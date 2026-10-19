@@ -21,7 +21,7 @@ final class ResidentBuffer {
                 fileDescriptor: Int32? = nil) throws {
         let pageSize = Int(getpagesize())
 
-        let fd = fileDescriptor.map { fcntl($0, F_DUPFD_CLOEXEC, 0) }
+        let fd = unsafe fileDescriptor.map { fcntl($0, F_DUPFD_CLOEXEC, 0) }
             ?? open(fileURL.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
             throw ModelError.posixFailed(call: "open(\(fileURL.path))", errno: errno)
@@ -29,7 +29,7 @@ final class ResidentBuffer {
         defer { close(fd) }
 
         var info = stat()
-        guard fstat(fd, &info) == 0 else {
+        guard unsafe fstat(fd, &info) == 0 else {
             throw ModelError.posixFailed(call: "fstat(\(fileURL.path))", errno: errno)
         }
         guard (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0 else {
@@ -47,28 +47,28 @@ final class ResidentBuffer {
             throw ModelError.indexCorrupt(detail: "resident mapping exceeds addressable memory")
         }
         let mappedLen = sliceShift + Int(residentSize)
-        let mapped = mmap(nil, mappedLen, PROT_READ, MAP_PRIVATE,
+        let mapped = unsafe mmap(nil, mappedLen, PROT_READ, MAP_PRIVATE,
                           fd, off_t(alignedOffset))
-        guard let base = mapped, base != MAP_FAILED else {
+        guard let base = unsafe mapped, unsafe base != MAP_FAILED else {
             throw ModelError.posixFailed(call: "mmap", errno: errno)
         }
 
-        _ = posix_madvise(base, mappedLen, POSIX_MADV_RANDOM)
+        _ = unsafe posix_madvise(base, mappedLen, POSIX_MADV_RANDOM)
 
-        let sliceStart = base.advanced(by: sliceShift)
+        let sliceStart = unsafe base.advanced(by: sliceShift)
 
         // The deallocator gets the slice start back and recovers the mapping
         // base from it. Do NOT capture self here — that would create a retain
         // cycle through the MTLBuffer.
-        guard let buf = device.makeBuffer(
+        guard let buf = unsafe device.makeBuffer(
             bytesNoCopy: sliceStart,
             length: Int(residentSize),
             options: .storageModeShared,
             deallocator: { sliceStart, _ in
-                munmap(sliceStart.advanced(by: -sliceShift), mappedLen)
+                unsafe munmap(sliceStart.advanced(by: -sliceShift), mappedLen)
             }
         ) else {
-            munmap(base, mappedLen)
+            unsafe munmap(base, mappedLen)
             throw ModelError.residentBufferWrapFailed
         }
 

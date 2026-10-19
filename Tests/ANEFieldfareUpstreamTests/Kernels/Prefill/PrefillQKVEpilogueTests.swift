@@ -70,10 +70,10 @@ import ANEFieldfareValidationSupport
         let scalarRoPE = try RoPE(context: ctx)
         let block = try PrefillQKVEpilogue(context: ctx)
         guard
-            let qWeightBuf = ctx.device.makeBuffer(bytes: qWeight,
+            let qWeightBuf = unsafe ctx.device.makeBuffer(bytes: qWeight,
                                                    length: qWeight.count * MemoryLayout<UInt16>.size,
                                                    options: .storageModeShared),
-            let kWeightBuf = ctx.device.makeBuffer(bytes: kWeight,
+            let kWeightBuf = unsafe ctx.device.makeBuffer(bytes: kWeight,
                                                    length: kWeight.count * MemoryLayout<UInt16>.size,
                                                    options: .storageModeShared),
             let qRef = Fp16Buffer.make(ctx.device, halves: q),
@@ -250,10 +250,10 @@ import ANEFieldfareValidationSupport
                                                rows: Int,
                                                rowStride: Int,
                                                usedPerRow: Int) {
-        let ptr = buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
+        let ptr = unsafe buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
         for row in 0..<rows {
             for i in usedPerRow..<rowStride {
-                #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
+                unsafe #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
                         "padding changed at row=\(row) i=\(i)")
             }
         }

@@ -26,9 +26,9 @@ package final class VisionPrimitives {
         encoder.setComputePipelineState(normalize)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(output, offset: 0, index: 1)
-        var real = UInt32(rows), padded = UInt32(paddedRows)
-        encoder.setBytes(&real, length: 4, index: 2)
-        encoder.setBytes(&padded, length: 4, index: 3)
+        let real = UInt32(rows), padded = UInt32(paddedRows)
+        encoder.setValue(real, index: 2)
+        encoder.setValue(padded, index: 3)
         dispatch1D(encoder, count: paddedRows * 768, pipeline: normalize)
     }
 
@@ -41,8 +41,8 @@ package final class VisionPrimitives {
         encoder.setBuffer(hidden, offset: 0, index: 0)
         encoder.setBuffer(table, offset: tableOffset, index: 1)
         encoder.setBuffer(positions, offset: 0, index: 2)
-        var count = UInt32(rows)
-        encoder.setBytes(&count, length: 4, index: 3)
+        let count = UInt32(rows)
+        encoder.setValue(count, index: 3)
         dispatch1D(encoder, count: rows * 1_152, pipeline: addPosition)
     }
 
@@ -55,9 +55,9 @@ package final class VisionPrimitives {
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(weightBuffer, offset: weightOffset, index: 1)
         encoder.setBuffer(output, offset: 0, index: 2)
-        var rowCount = UInt32(rows), dimension = UInt32(width)
-        encoder.setBytes(&rowCount, length: 4, index: 3)
-        encoder.setBytes(&dimension, length: 4, index: 4)
+        let rowCount = UInt32(rows), dimension = UInt32(width)
+        encoder.setValue(rowCount, index: 3)
+        encoder.setValue(dimension, index: 4)
         encoder.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 288, height: 1, depth: 1))
         encoder.endEncoding()
@@ -73,9 +73,9 @@ package final class VisionPrimitives {
         encoder.setBuffer(branch, offset: 0, index: 1)
         encoder.setBuffer(weightBuffer, offset: weightOffset, index: 2)
         encoder.setBuffer(output, offset: 0, index: 3)
-        var rowCount = UInt32(rows), width: UInt32 = 1_152
-        encoder.setBytes(&rowCount, length: 4, index: 4)
-        encoder.setBytes(&width, length: 4, index: 5)
+        let rowCount = UInt32(rows), width: UInt32 = 1_152
+        encoder.setValue(rowCount, index: 4)
+        encoder.setValue(width, index: 5)
         encoder.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 288, height: 1, depth: 1))
         encoder.endEncoding()
@@ -97,11 +97,11 @@ package final class VisionPrimitives {
         encoder.setBuffer(weights, offset: qWeightOffset, index: 3)
         encoder.setBuffer(weights, offset: kWeightOffset, index: 4)
         encoder.setBuffer(positions, offset: 0, index: 5)
-        var rowCount = UInt32(rows), headCount = UInt32(heads)
-        encoder.setBytes(&rowCount, length: 4, index: 6)
-        encoder.setBytes(&headCount, length: 4, index: 7)
-        var stride = UInt32(paddedRowStride)
-        encoder.setBytes(&stride, length: 4, index: 8)
+        let rowCount = UInt32(rows), headCount = UInt32(heads)
+        encoder.setValue(rowCount, index: 6)
+        encoder.setValue(headCount, index: 7)
+        let stride = UInt32(paddedRowStride)
+        encoder.setValue(stride, index: 8)
         dispatch1D(encoder, count: rows * heads, pipeline: pipeline)
     }
 
@@ -118,9 +118,9 @@ package final class VisionPrimitives {
         encoder.setBuffer(weights, offset: stdBiasOffset, index: 1)
         encoder.setBuffer(weights, offset: stdScaleOffset, index: 2)
         encoder.setBuffer(output, offset: 0, index: 3)
-        var width = UInt32(patchWidth), height = UInt32(patchHeight)
-        encoder.setBytes(&width, length: 4, index: 4)
-        encoder.setBytes(&height, length: 4, index: 5)
+        let width = UInt32(patchWidth), height = UInt32(patchHeight)
+        encoder.setValue(width, index: 4)
+        encoder.setValue(height, index: 5)
         encoder.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         encoder.endEncoding()
@@ -133,8 +133,8 @@ package final class VisionPrimitives {
         encoder.setComputePipelineState(bfloatToHalf)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(output, offset: 0, index: 1)
-        var value = UInt32(count)
-        encoder.setBytes(&value, length: 4, index: 2)
+        let value = UInt32(count)
+        encoder.setValue(value, index: 2)
         dispatch1D(encoder, count: count, pipeline: bfloatToHalf)
     }
 

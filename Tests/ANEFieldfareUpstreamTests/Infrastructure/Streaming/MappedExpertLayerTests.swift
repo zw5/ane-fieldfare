@@ -31,7 +31,7 @@ import Metal
 
     static func open(_ url: URL, device: any MTLDevice, stride: Int = expertStride,
                      offsets: [UInt64] = offsets) throws -> MappedExpertLayer {
-        let fd = Darwin.open(url.path, O_RDONLY)
+        let fd = unsafe Darwin.open(url.path, O_RDONLY)
         #expect(fd >= 0)
         defer { close(fd) }
         return try MappedExpertLayer(fileDescriptor: fd, path: url.path, device: device,
@@ -48,8 +48,8 @@ import Metal
         for e in 0..<Self.numExperts {
             let buffer = layer.buffers[e]
             #expect(buffer.length == Self.expertStride)
-            let bytes = UnsafeRawBufferPointer(start: buffer.contents(), count: buffer.length)
-            #expect(bytes.allSatisfy { $0 == Self.tagByte(e) })
+            let bytes = unsafe UnsafeRawBufferPointer(start: buffer.contents(), count: buffer.length)
+            unsafe #expect(bytes.allSatisfy { $0 == Self.tagByte(e) })
         }
     }
 

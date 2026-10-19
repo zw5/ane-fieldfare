@@ -264,16 +264,16 @@ final class Attention {
         p1.setBuffer(mPartial, offset: 0, index: 3)
         p1.setBuffer(dPartial, offset: 0, index: 4)
         p1.setBuffer(oPartial, offset: 0, index: 5)
-        var hd = headDim, nq = numQHeads, nkv = numKVHeads, sl = seqLen, ks = kvStart
-        var cl = UInt32(chunkLen), nc = UInt32(nChunks), sc = scale
-        p1.setBytes(&hd,  length: MemoryLayout<UInt32>.size, index: 6)
-        p1.setBytes(&nq,  length: MemoryLayout<UInt32>.size, index: 7)
-        p1.setBytes(&nkv, length: MemoryLayout<UInt32>.size, index: 8)
-        p1.setBytes(&sl,  length: MemoryLayout<UInt32>.size, index: 9)
-        p1.setBytes(&ks,  length: MemoryLayout<UInt32>.size, index: 10)
-        p1.setBytes(&cl,  length: MemoryLayout<UInt32>.size, index: 11)
-        p1.setBytes(&nc,  length: MemoryLayout<UInt32>.size, index: 12)
-        p1.setBytes(&sc,  length: MemoryLayout<Float>.size,  index: 13)
+        let hd = headDim, nq = numQHeads, nkv = numKVHeads, sl = seqLen, ks = kvStart
+        let cl = UInt32(chunkLen), nc = UInt32(nChunks), sc = scale
+        p1.setValue(hd, index: 6)
+        p1.setValue(nq, index: 7)
+        p1.setValue(nkv, index: 8)
+        p1.setValue(sl, index: 9)
+        p1.setValue(ks, index: 10)
+        p1.setValue(cl, index: 11)
+        p1.setValue(nc, index: 12)
+        p1.setValue(sc, index: 13)
         let partialGroups = geometry.partialThreadgroups
         p1.dispatchThreadgroups(MTLSize(width: partialGroups, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tgWidth, height: 1, depth: 1))
@@ -289,9 +289,9 @@ final class Attention {
         p2.setBuffer(dPartial, offset: 0, index: 1)
         p2.setBuffer(oPartial, offset: 0, index: 2)
         p2.setBuffer(out, offset: outOffset, index: 3)
-        var hd2 = headDim, nc2 = UInt32(nChunks)
-        p2.setBytes(&hd2, length: MemoryLayout<UInt32>.size, index: 4)
-        p2.setBytes(&nc2, length: MemoryLayout<UInt32>.size, index: 5)
+        let hd2 = headDim, nc2 = UInt32(nChunks)
+        p2.setValue(hd2, index: 4)
+        p2.setValue(nc2, index: 5)
         let combineTGWidth = min(Self.threadsPerGroup,
                                  Int(combinePSO.maxTotalThreadsPerThreadgroup))
         p2.dispatchThreadgroups(MTLSize(width: Int(numQHeads), height: 1, depth: 1),

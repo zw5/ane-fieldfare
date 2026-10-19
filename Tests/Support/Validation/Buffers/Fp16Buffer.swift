@@ -6,7 +6,7 @@ public enum Fp16Buffer {
     public static func make(_ device: any MTLDevice, values: [Float]) -> any MTLBuffer? {
         let halves = values.map { Float16($0) }
         return halves.withUnsafeBufferPointer { ptr in
-            device.makeBuffer(
+            unsafe device.makeBuffer(
                 bytes: ptr.baseAddress!,
                 length: halves.count * MemoryLayout<Float16>.size,
                 options: .storageModeShared
@@ -16,7 +16,7 @@ public enum Fp16Buffer {
 
     public static func make(_ device: any MTLDevice, halves: [Float16]) -> any MTLBuffer? {
         halves.withUnsafeBufferPointer { ptr in
-            device.makeBuffer(
+            unsafe device.makeBuffer(
                 bytes: ptr.baseAddress!,
                 length: halves.count * MemoryLayout<Float16>.size,
                 options: .storageModeShared
@@ -33,9 +33,9 @@ public enum Fp16Buffer {
 
     public static func read(_ buf: any MTLBuffer, count: Int) -> [Float] {
         var out = [Float](repeating: 0, count: count)
-        let base = buf.contents()
+        let base = unsafe buf.contents()
         for i in 0..<count {
-            let h = base.load(
+            let h = unsafe base.load(
                 fromByteOffset: i * MemoryLayout<Float16>.size,
                 as: Float16.self
             )
@@ -46,9 +46,9 @@ public enum Fp16Buffer {
 
     public static func readHalf(_ buf: any MTLBuffer, count: Int) -> [Float16] {
         var out = [Float16](repeating: 0, count: count)
-        let base = buf.contents()
+        let base = unsafe buf.contents()
         for i in 0..<count {
-            out[i] = base.load(
+            out[i] = unsafe base.load(
                 fromByteOffset: i * MemoryLayout<Float16>.size,
                 as: Float16.self
             )

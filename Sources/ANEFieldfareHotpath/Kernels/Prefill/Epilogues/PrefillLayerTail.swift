@@ -38,20 +38,20 @@ final class PrefillLayerTail {
         enc.setBuffer(hidden, offset: hiddenOffset, index: 2)
         enc.setBuffer(postFFN2Weight, offset: postFFN2WeightOffset, index: 3)
         enc.setBuffer(postFFNWeight, offset: postFFNWeightOffset, index: 4)
-        var tVar = queryCount
-        var dVar = d
-        var h2Stride = h2StrideElements
-        var h1Stride = h1StrideElements
-        var hiddenStride = hiddenStrideElements
-        var epsVar = eps
-        var scaleVar = layerScalar
-        enc.setBytes(&tVar, length: MemoryLayout<UInt32>.size, index: 5)
-        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 6)
-        enc.setBytes(&h2Stride, length: MemoryLayout<UInt32>.size, index: 7)
-        enc.setBytes(&h1Stride, length: MemoryLayout<UInt32>.size, index: 8)
-        enc.setBytes(&hiddenStride, length: MemoryLayout<UInt32>.size, index: 9)
-        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size, index: 10)
-        enc.setBytes(&scaleVar, length: MemoryLayout<Float>.size, index: 11)
+        let tVar = queryCount
+        let dVar = d
+        let h2Stride = h2StrideElements
+        let h1Stride = h1StrideElements
+        let hiddenStride = hiddenStrideElements
+        let epsVar = eps
+        let scaleVar = layerScalar
+        enc.setValue(tVar, index: 5)
+        enc.setValue(dVar, index: 6)
+        enc.setValue(h2Stride, index: 7)
+        enc.setValue(h1Stride, index: 8)
+        enc.setValue(hiddenStride, index: 9)
+        enc.setValue(epsVar, index: 10)
+        enc.setValue(scaleVar, index: 11)
 
         let threads = min(pso.maxTotalThreadsPerThreadgroup, 256)
         enc.dispatchThreadgroups(MTLSize(width: Int(queryCount), height: 1, depth: 1),

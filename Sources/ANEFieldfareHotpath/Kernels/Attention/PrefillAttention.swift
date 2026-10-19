@@ -152,8 +152,8 @@ final class PrefillAttention {
         enc.setBuffer(k, offset: kOffset, index: 1)
         enc.setBuffer(v, offset: vOffset, index: 2)
         enc.setBuffer(out, offset: outOffset, index: 3)
-        var p = effectiveParams
-        enc.setBytes(&p, length: MemoryLayout<PrefillAttentionParams>.stride, index: 4)
+        let p = effectiveParams
+        enc.setValue(p, index: 4)
         let groups = useTensorOps
             ? MTLSize(width: Int(effectiveParams.queryCount),
                       height: Int(effectiveParams.numQHeads) / 8,
@@ -203,8 +203,8 @@ final class PrefillAttention {
                            out: any MTLBuffer) {
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(psoParamsSmoke)
-        var p = params
-        enc.setBytes(&p, length: MemoryLayout<PrefillAttentionParams>.stride, index: 0)
+        let p = params
+        enc.setValue(p, index: 0)
         enc.setBuffer(out, offset: 0, index: 1)
         enc.dispatchThreads(MTLSize(width: 13, height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 13, height: 1, depth: 1))

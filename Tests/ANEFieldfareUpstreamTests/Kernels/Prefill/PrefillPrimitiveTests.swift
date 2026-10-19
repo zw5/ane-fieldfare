@@ -37,14 +37,14 @@ import ANEFieldfareValidationSupport
         let scalar = try EmbedLookupInt4(context: ctx)
         let block = try PrefillEmbedLookupInt4(context: ctx)
 
-        guard let tableBuf = ctx.device.makeBuffer(bytes: packed, length: packed.count, options: .storageModeShared),
-              let scalesBuf = ctx.device.makeBuffer(bytes: scales,
+        guard let tableBuf = unsafe ctx.device.makeBuffer(bytes: packed, length: packed.count, options: .storageModeShared),
+              let scalesBuf = unsafe ctx.device.makeBuffer(bytes: scales,
                                                     length: scales.count * MemoryLayout<UInt16>.size,
                                                     options: .storageModeShared),
-              let biasesBuf = ctx.device.makeBuffer(bytes: biases,
+              let biasesBuf = unsafe ctx.device.makeBuffer(bytes: biases,
                                                     length: biases.count * MemoryLayout<UInt16>.size,
                                                     options: .storageModeShared),
-              let tokenBuf = ctx.device.makeBuffer(bytes: tokens,
+              let tokenBuf = unsafe ctx.device.makeBuffer(bytes: tokens,
                                                    length: tokens.count * MemoryLayout<UInt32>.size,
                                                    options: .storageModeShared),
               let scalarOut = Fp16Buffer.make(ctx.device, count: tokens.count * Self.d),
@@ -101,8 +101,8 @@ import ANEFieldfareValidationSupport
             Issue.record("alloc failed")
             return
         }
-        let wPtr = wBuf.contents().bindMemory(to: UInt16.self, capacity: wBits.count)
-        for i in 0..<wBits.count { wPtr[i] = wBits[i] }
+        let wPtr = unsafe wBuf.contents().bindMemory(to: UInt16.self, capacity: wBits.count)
+        for i in 0..<wBits.count { unsafe wPtr[i] = wBits[i] }
 
         let rowBytes = dim * MemoryLayout<Float16>.size
         let cb = ctx.queue.makeCommandBuffer()!

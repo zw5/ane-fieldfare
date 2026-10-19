@@ -51,7 +51,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
     /// The file mapping and descriptor. Every expert buffer's deallocator
     /// holds it, so a buffer that outlives its layer (a caller's view, a
     /// command buffer in flight) never reads unmapped memory.
-    private final class Mapping: @unchecked Sendable {
+    @safe private final class Mapping: @unchecked Sendable {
         // SAFETY: immutable after init. `base` is unmapped only in `deinit`,
         // which runs after the last expert buffer's deallocator releases it.
         let fd: Int32
@@ -59,11 +59,11 @@ public final class MappedExpertLayer: @unchecked Sendable {
         let bytes: Int
         init(fd: Int32, base: UnsafeMutableRawPointer, bytes: Int) {
             self.fd = fd
-            self.base = base
+            unsafe self.base = unsafe base
             self.bytes = bytes
         }
         deinit {
-            munmap(base, bytes)
+            unsafe munmap(base, bytes)
             close(fd)
         }
     }
@@ -78,7 +78,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
 
     private let mapping: Mapping
     private var fd: Int32 { mapping.fd }
-    private var base: UnsafeMutableRawPointer { mapping.base }
+    private var base: UnsafeMutableRawPointer { unsafe mapping.base }
     private let expertOffsets: [Int]
     private let pageSize = Int(getpagesize())
 
@@ -100,7 +100,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
         defer { if closeOnFailure { close(fd) } }
 
         var info = stat()
-        guard fstat(fd, &info) == 0 else { throw ExpertStoreError.mapFailed(path: path, errno: errno) }
+        guard unsafe fstat(fd, &info) == 0 else { throw ExpertStoreError.mapFailed(path: path, errno: errno) }
         let offsets = expertOffsets.map { Int($0) }
         let required = (offsets.max() ?? 0) + expertBytes
         guard Int(info.st_size) >= required else {
@@ -110,16 +110,16 @@ public final class MappedExpertLayer: @unchecked Sendable {
             throw ExpertStoreError.misaligned("expert offset \(bad), page \(page)")
         }
         let mapped = (required + page - 1) / page * page
-        guard let raw = mmap(nil, mapped, PROT_READ, MAP_SHARED, fd, 0), raw != MAP_FAILED else {
+        guard let raw = unsafe mmap(nil, mapped, PROT_READ, MAP_SHARED, fd, 0), unsafe raw != MAP_FAILED else {
             throw ExpertStoreError.mapFailed(path: path, errno: errno)
         }
         // From here the mapping owns the descriptor and unmaps on release.
         closeOnFailure = false
-        let mapping = Mapping(fd: fd, base: raw, bytes: mapped)
+        let mapping = unsafe Mapping(fd: fd, base: raw, bytes: mapped)
         var buffers: [any MTLBuffer] = []
         buffers.reserveCapacity(expertCount)
         for (expert, offset) in offsets.enumerated() {
-            guard let buffer = device.makeBuffer(bytesNoCopy: raw + offset, length: expertBytes,
+            guard let buffer = unsafe device.makeBuffer(bytesNoCopy: raw + offset, length: expertBytes,
                                                  options: .storageModeShared,
                                                  deallocator: { _, _ in withExtendedLifetime(mapping) {} }) else {
                 throw ExpertStoreError.bufferWrapFailed(expert: expert)
@@ -154,7 +154,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
         var state: CChar = 0
         for probe in 0..<probes {
             let page = probe * (pages - 1) / max(1, probes - 1)
-            guard mincore(base + expertOffsets[expert] + page * pageSize, pageSize, &state) == 0,
+            guard unsafe mincore(base + expertOffsets[expert] + page * pageSize, pageSize, &state) == 0,
                   state & CChar(MINCORE_INCORE) != 0 else { return false }
         }
         return true
@@ -166,7 +166,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
         for expert in experts {
             guard let offset = try? checked(expert) else { continue }
             var advice = radvisory(ra_offset: off_t(offset), ra_count: Int32(expertBytes))
-            _ = fcntl(fd, F_RDADVISE, &advice)
+            _ = unsafe fcntl(fd, F_RDADVISE, &advice)
         }
     }
 
@@ -185,8 +185,8 @@ public final class MappedExpertLayer: @unchecked Sendable {
             let start = (index % parts) * part
             let count = min(part, expertBytes - start)
             do {
-                try ReadSink.with(bytes: part) { sink in
-                    try Self.readFull(fd: fd, into: sink, offset: offsets[index / parts] + start, count: count)
+                unsafe try ReadSink.with(bytes: part) { sink in
+                    unsafe try Self.readFull(fd: fd, into: sink, offset: offsets[index / parts] + start, count: count)
                 }
             } catch {
                 firstError.withLock { if $0 == nil { $0 = error } }
@@ -198,7 +198,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
     private static func readFull(fd: Int32, into sink: UnsafeMutableRawPointer, offset: Int, count: Int) throws {
         var filled = 0
         while filled < count {
-            let n = pread(fd, sink, count - filled, off_t(offset + filled))
+            let n = unsafe pread(fd, sink, count - filled, off_t(offset + filled))
             if n < 0 {
                 if errno == EINTR { continue }
                 throw ExpertStoreError.preadFailed(errno: errno)
@@ -223,7 +223,7 @@ private enum ReadSink {
         defer { free.withLock { [sink] in $0.append(sink) } }
         return try sink.withUnsafeMutableBytes { buffer in
             guard let base = buffer.baseAddress else { throw ExpertStoreError.shortRead(expected: bytes, actual: 0) }
-            return try body(base)
+            return unsafe try body(base)
         }
     }
 }

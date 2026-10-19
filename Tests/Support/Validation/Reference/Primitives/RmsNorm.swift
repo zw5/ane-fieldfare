@@ -17,7 +17,7 @@ public enum RmsNormRef {
 
         var sumSq: Float = 0
         x.withUnsafeBufferPointer { p in
-            vDSP_svesq(p.baseAddress!, 1, &sumSq, vDSP_Length(d))
+            unsafe vDSP_svesq(p.baseAddress!, 1, &sumSq, vDSP_Length(d))
         }
         let invRms = 1.0 / (sumSq / Float(d) + eps).squareRoot()
 
@@ -25,14 +25,14 @@ public enum RmsNormRef {
         x.withUnsafeBufferPointer { px in
             weight.withUnsafeBufferPointer { pw in
                 y.withUnsafeMutableBufferPointer { py in
-                    vDSP_vmul(
+                    unsafe vDSP_vmul(
                         px.baseAddress!, 1,
                         pw.baseAddress!, 1,
                         py.baseAddress!, 1,
                         vDSP_Length(d)
                     )
                     var s = invRms
-                    vDSP_vsmul(
+                    unsafe vDSP_vsmul(
                         py.baseAddress!, 1,
                         &s,
                         py.baseAddress!, 1,

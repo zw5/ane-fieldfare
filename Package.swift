@@ -6,12 +6,14 @@ import PackageDescription
 
 // Every target builds in Swift 6 mode with complete concurrency checking, and
 // every warning is an error: a diagnostic is fixed by changing the code, not
-// by suppressing it. `Scripts/lint_escape_hatches.py` covers what the
+// by suppressing it. Strict memory safety makes each unsafe operation carry an
+// explicit `unsafe`. `Scripts/lint_escape_hatches.py` covers what the
 // compiler cannot reject on its own.
 let strictSwiftSettings: [SwiftSetting] = [
     .enableUpcomingFeature("ExistentialAny"),
     .enableUpcomingFeature("InternalImportsByDefault"),
     .enableUpcomingFeature("MemberImportVisibility"),
+    .strictMemorySafety(),
     .treatAllWarnings(as: .error),
 ]
 

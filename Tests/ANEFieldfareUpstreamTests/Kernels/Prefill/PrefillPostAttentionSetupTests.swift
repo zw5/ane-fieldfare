@@ -33,13 +33,13 @@ import ANEFieldfareValidationSupport
         let scalar = try FusedPostAttentionSetup(context: ctx)
         let block = try PrefillPostAttentionSetup(context: ctx)
         guard
-            let wPostBuf = ctx.device.makeBuffer(bytes: wPost,
+            let wPostBuf = unsafe ctx.device.makeBuffer(bytes: wPost,
                                                  length: wPost.count * MemoryLayout<UInt16>.size,
                                                  options: .storageModeShared),
-            let wPreBuf = ctx.device.makeBuffer(bytes: wPre,
+            let wPreBuf = unsafe ctx.device.makeBuffer(bytes: wPre,
                                                 length: wPre.count * MemoryLayout<UInt16>.size,
                                                 options: .storageModeShared),
-            let wPre2Buf = ctx.device.makeBuffer(bytes: wPre2,
+            let wPre2Buf = unsafe ctx.device.makeBuffer(bytes: wPre2,
                                                  length: wPre2.count * MemoryLayout<UInt16>.size,
                                                  options: .storageModeShared),
             let hiddenBlock = Fp16Buffer.make(ctx.device, halves: hidden),
@@ -190,10 +190,10 @@ import ANEFieldfareValidationSupport
                                                rows: Int,
                                                rowStride: Int,
                                                usedPerRow: Int) {
-        let ptr = buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
+        let ptr = unsafe buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
         for row in 0..<rows {
             for i in usedPerRow..<rowStride {
-                #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
+                unsafe #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
                         "padding changed at row=\(row) i=\(i)")
             }
         }

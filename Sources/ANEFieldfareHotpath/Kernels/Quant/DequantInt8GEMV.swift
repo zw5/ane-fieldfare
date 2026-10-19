@@ -67,10 +67,10 @@ final class DequantInt8GEMV {
         enc.setBuffer(biases,  offset: biasesOffset,  index: 2)
         enc.setBuffer(x,       offset: xOffset,       index: 3)
         enc.setBuffer(y,       offset: yOffset,       index: 4)
-        var mVar = m
-        var nVar = n
-        enc.setBytes(&mVar, length: MemoryLayout<UInt32>.size, index: 5)
-        enc.setBytes(&nVar, length: MemoryLayout<UInt32>.size, index: 6)
+        let mVar = m
+        let nVar = n
+        enc.setValue(mVar, index: 5)
+        enc.setValue(nVar, index: 6)
 
         let rowsPerTG = 8
         let tgSize  = MTLSize(width: 32 * rowsPerTG, height: 1, depth: 1)

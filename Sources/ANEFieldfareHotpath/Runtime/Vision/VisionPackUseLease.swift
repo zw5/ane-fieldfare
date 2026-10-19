@@ -29,7 +29,7 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
         timeout: Duration = acquisitionTimeout
     ) throws -> VisionPackUseLease {
         let lockURL = lockURL(for: companionURL)
-        let created = open(
+        let created = unsafe open(
             lockURL.path,
             O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC,
             0o600)
@@ -48,7 +48,7 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
         // guards the open itself: a FIFO planted at the lock path would block
         // a plain O_RDONLY open forever, before any flock timeout applies;
         // opened nonblocking it proceeds and the S_IFREG check rejects it.
-        let readOnly = open(lockURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        let readOnly = unsafe open(lockURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         if readOnly >= 0 {
             return try lease(descriptor: readOnly, lockURL: lockURL, timeout: timeout)
         }
@@ -62,7 +62,7 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
         // the lease still owns a descriptor whose lifetime brackets the use.
         // An unwritable directory on a writable volume deliberately stays an
         // error above: a privileged writer could still mutate the pack there.
-        let companion = open(companionURL.standardizedFileURL.path, O_RDONLY | O_CLOEXEC)
+        let companion = unsafe open(companionURL.standardizedFileURL.path, O_RDONLY | O_CLOEXEC)
         guard companion >= 0 else {
             let companionErrno = errno
             throw VisionPackError.invalidMetadata(
@@ -76,7 +76,7 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
         descriptor: Int32, lockURL: URL, timeout: Duration
     ) throws -> VisionPackUseLease {
         var info = stat()
-        guard fstat(descriptor, &info) == 0,
+        guard unsafe fstat(descriptor, &info) == 0,
               (info.st_mode & S_IFMT) == S_IFREG else {
             let savedErrno = errno
             close(descriptor)
@@ -128,7 +128,7 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
                         + "timed out after \(timeout)")
             }
             var pause = timespec(tv_sec: 0, tv_nsec: 20_000_000)
-            nanosleep(&pause, nil)
+            unsafe nanosleep(&pause, nil)
         }
     }
 
@@ -136,12 +136,12 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
         _ descriptor: Int32, path: String
     ) throws -> Bool {
         var descriptorInfo = stat()
-        guard fstat(descriptor, &descriptorInfo) == 0 else {
+        guard unsafe fstat(descriptor, &descriptorInfo) == 0 else {
             throw VisionPackError.invalidMetadata(
                 "could not stat use lock descriptor for \(path): errno \(errno)")
         }
         var pathInfo = stat()
-        guard lstat(path, &pathInfo) == 0 else {
+        guard unsafe lstat(path, &pathInfo) == 0 else {
             throw VisionPackError.invalidMetadata(
                 "could not stat use lock at \(path): errno \(errno)")
         }

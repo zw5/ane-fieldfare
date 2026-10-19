@@ -90,7 +90,7 @@ import Metal
         let scratch = try RawCompletionScratch(context: context, vocab: model.config.vocabSize)
         let promptSet = options.suite == "full" ? prompts : Array(prompts.prefix(3))
         let modes = drafter == nil ? ["plain"] : ["plain", "spec"]
-        log("[bench \(options.label)] load \(String(format: "%.1f", Date().timeIntervalSince(started)))s; "
+        log(unsafe "[bench \(options.label)] load \(String(format: "%.1f", Date().timeIntervalSince(started)))s; "
             + "\(promptSet.count) prompts x \(modes.count) modes x \(options.reps) reps, \(options.tokens) tokens")
 
         // Warm-up: compiles pipelines and fills the page cache the same way for
@@ -142,7 +142,7 @@ import Metal
                         stepPrompt = result.prompt
                     }
                     cases.append(record)
-                    log(String(format: "  %-8@ %-5@ rep %d  %6.2f tok/s  %d tokens", name as NSString,
+                    unsafe log(String(format: "  %-8@ %-5@ rep %d  %6.2f tok/s  %d tokens", name as NSString,
                                mode as NSString, rep, decodeTPS, result.result.newTokens))
                 }
             }
@@ -162,7 +162,7 @@ import Metal
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         if let out = options.out {
             try data.write(to: URL(fileURLWithPath: out))
-            log("[bench \(options.label)] wrote \(out) in \(String(format: "%.0f", Date().timeIntervalSince(started)))s")
+            log(unsafe "[bench \(options.label)] wrote \(out) in \(String(format: "%.0f", Date().timeIntervalSince(started)))s")
         } else {
             FileHandle.standardOutput.write(data)
         }
@@ -261,9 +261,9 @@ import Metal
 
     static func environment() -> [String: Any] {
         var size = 0
-        sysctlbyname("hw.model", nil, &size, nil, 0)
+        unsafe sysctlbyname("hw.model", nil, &size, nil, 0)
         var model = [CChar](repeating: 0, count: max(size, 1))
-        sysctlbyname("hw.model", &model, &size, nil, 0)
+        unsafe sysctlbyname("hw.model", &model, &size, nil, 0)
         let env = ProcessInfo.processInfo.environment
         return [
             "host": ProcessInfo.processInfo.hostName,

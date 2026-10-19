@@ -311,8 +311,8 @@ import ANEFieldfareValidationSupport
         cb.commit()
         cb.waitUntilCompleted()
 
-        let ptr = out.contents().bindMemory(to: UInt32.self, capacity: 11)
-        let fields = (0..<13).map { ptr[$0] }
+        let ptr = unsafe out.contents().bindMemory(to: UInt32.self, capacity: 11)
+        let fields = (0..<13).map { unsafe ptr[$0] }
         #expect(fields[0] == params.startPosition)
         #expect(fields[1] == params.queryCount)
         #expect(fields[2] == params.headDim)

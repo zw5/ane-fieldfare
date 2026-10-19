@@ -24,8 +24,8 @@ public enum WriterCore {
         let tile = WriterCore.tileBytes
         while remaining > 0 {
             let n = min(remaining, tile)
-            let p = srcShard.base.advanced(by: Int(srcOff))
-            try Posix.pwriteAll(fd: dstFd, path: dstPath, buf: p, count: n, offset: dstOff)
+            let p = unsafe srcShard.base.advanced(by: Int(srcOff))
+            try unsafe Posix.pwriteAll(fd: dstFd, path: dstPath, buf: p, count: n, offset: dstOff)
             audit.recordTile(bytes: n)
             audit.recordWrite(bytes: n)
             audit.recordRead(bytes: n)
@@ -51,7 +51,7 @@ public enum WriterCore {
 
         let buf = UnsafeMutableRawBufferPointer.allocate(byteCount: WriterCore.tileBytes,
                                                          alignment: 16_384)
-        defer { buf.deallocate() }
+        defer { unsafe buf.deallocate() }
         if buf.count > audit.largestScratchBytes {
             audit.largestScratchBytes = buf.count
         }
@@ -63,11 +63,11 @@ public enum WriterCore {
         while remaining > 0 {
             try cancellationCheck()
             let want = min(remaining, WriterCore.tileBytes)
-            let got = pread(fd, buf.baseAddress, want, off_t(off))
+            let got = unsafe pread(fd, buf.baseAddress, want, off_t(off))
             if got <= 0 {
                 throw RepackError.preadShort(path: path, expected: want, got: 0, errno: errno)
             }
-            hasher.update(UnsafeRawBufferPointer(start: buf.baseAddress, count: got))
+            unsafe hasher.update(UnsafeRawBufferPointer(start: buf.baseAddress, count: got))
             audit.byteCopyTiles &+= 1
             off += UInt64(got)
             remaining -= got

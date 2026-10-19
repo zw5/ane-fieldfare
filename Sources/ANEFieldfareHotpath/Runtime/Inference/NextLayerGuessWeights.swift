@@ -50,7 +50,7 @@ final class NextLayerGuessWeights {
             + (numLayers - 1) * (weightBytes + 2 * groupBytes)
 
         var info = stat()
-        guard stat(fileURL.path, &info) == 0 else {
+        guard unsafe stat(fileURL.path, &info) == 0 else {
             throw ModelError.posixFailed(call: "stat(\(fileURL.path))", errno: errno)
         }
         guard Int(info.st_size) == expectedSize else {
@@ -61,29 +61,29 @@ final class NextLayerGuessWeights {
         buffer = try ResidentBuffer(fileURL: fileURL, fileOffset: 0,
                                     residentSize: UInt64(expectedSize), device: device).buffer
 
-        let header = UnsafeRawBufferPointer(start: buffer.contents(), count: Self.headerBytes)
+        let header = unsafe UnsafeRawBufferPointer(start: buffer.contents(), count: Self.headerBytes)
         let fields = (0..<6).map {
-            UInt32(littleEndian: header.loadUnaligned(fromByteOffset: 8 + 4 * $0,
+            unsafe UInt32(littleEndian: header.loadUnaligned(fromByteOffset: 8 + 4 * $0,
                                                       as: UInt32.self))
         }
         let expected = [numLayers, numExperts, hiddenSize, Quantization.groupSize,
                         1, numLayers - 1].map(UInt32.init)
-        guard Array(header.prefix(8)) == Self.magic, fields == expected else {
+        guard unsafe Array(header.prefix(8)) == Self.magic, fields == expected else {
             throw ModelError.indexCorrupt(detail: "next-layer guess header \(fields) does not "
                 + "match this model \(expected)")
         }
         self.numLayers = numLayers
         name = fileURL.lastPathComponent
-        sha256 = SHA256.hash(data: UnsafeRawBufferPointer(start: buffer.contents(),
+        sha256 = unsafe SHA256.hash(data: UnsafeRawBufferPointer(start: buffer.contents(),
                                                           count: expectedSize))
-            .map { String(format: "%02x", $0) }.joined()
+            .map { unsafe String(format: "%02x", $0) }.joined()
 
         guard let ones = device.makeBuffer(length: hiddenSize * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared) else {
             throw MetalError.noDevice
         }
         let one = Quantization.bf16Bits(1)
-        ones.contents().initializeMemory(as: UInt16.self, repeating: one, count: hiddenSize)
+        unsafe ones.contents().initializeMemory(as: UInt16.self, repeating: one, count: hiddenSize)
         unitScale = ones
     }
 

@@ -10,12 +10,12 @@ struct Sha256Stream {
     init() { self.hasher = SHA256() }
 
     mutating func update(_ ptr: UnsafeRawBufferPointer) {
-        hasher.update(bufferPointer: ptr)
+        unsafe hasher.update(bufferPointer: ptr)
     }
 
     func finalizeHexString() -> String {
         let digest = self.hasher.finalize()
-        return digest.map { String(format: "%02x", $0) }.joined()
+        return digest.map { unsafe String(format: "%02x", $0) }.joined()
     }
 
     /// One-shot helper to hash a file from disk in tile-bounded chunks. Used
@@ -26,7 +26,7 @@ struct Sha256Stream {
                                 noFollow: Bool = false,
                                 onProgress: ((UInt64) throws -> Void)? = nil) throws -> String {
         let flags = O_RDONLY | (noFollow ? O_NOFOLLOW : 0)
-        let fd = open(path, flags)
+        let fd = unsafe open(path, flags)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
         defer { close(fd) }
         if noCache {
@@ -47,17 +47,17 @@ struct Sha256Stream {
         if noCache { _ = fcntl(fd, F_NOCACHE, 1) }
         var hasher = Sha256Stream()
         let buf = UnsafeMutableRawBufferPointer.allocate(byteCount: tileBytes, alignment: 16_384)
-        defer { buf.deallocate() }
+        defer { unsafe buf.deallocate() }
         var off: off_t = 0
         while true {
-            let got = pread(fd, buf.baseAddress, tileBytes, off)
+            let got = unsafe pread(fd, buf.baseAddress, tileBytes, off)
             if got < 0, errno == EINTR { continue }
             if got < 0 {
                 throw RepackError.preadShort(path: displayPath,
                                              expected: tileBytes, got: 0, errno: errno)
             }
             if got == 0 { break }
-            hasher.update(UnsafeRawBufferPointer(start: buf.baseAddress, count: got))
+            unsafe hasher.update(UnsafeRawBufferPointer(start: buf.baseAddress, count: got))
             off += off_t(got)
             try onProgress?(UInt64(off))
         }

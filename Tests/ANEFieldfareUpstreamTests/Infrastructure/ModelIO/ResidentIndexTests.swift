@@ -57,17 +57,17 @@ import Darwin
         var fileBuf = [UInt8](repeating: 0, count: indexBytes + residentBytes)
         fileBuf.withUnsafeMutableBytes { raw in
             let base = raw.baseAddress!
-            GTurboBinary.writeIndexHeader(into: base,
+            unsafe GTurboBinary.writeIndexHeader(into: base,
                                           indexSize: UInt64(indexBytes),
                                           residentSize: UInt64(residentBytes),
                                           entryCount: UInt64(entries.count))
             for (i, e) in entries.enumerated() {
-                let dst = base.advanced(by: entriesBase + i * entryBytes)
-                GTurboBinary.writeIndexEntry(into: dst, entry: e,
+                let dst = unsafe base.advanced(by: entriesBase + i * entryBytes)
+                unsafe GTurboBinary.writeIndexEntry(into: dst, entry: e,
                                              nameOffset: nameOffsets[i])
             }
-            stringTable.withUnsafeBytes { sb in
-                _ = memcpy(base.advanced(by: stringTableBase), sb.baseAddress!, stringTable.count)
+            unsafe stringTable.withUnsafeBytes { sb in
+                _ = unsafe memcpy(base.advanced(by: stringTableBase), sb.baseAddress!, stringTable.count)
             }
         }
 
@@ -109,8 +109,8 @@ import Darwin
     @Test func acceptsIndexRegionExactlyAtMetadataCap() throws {
         let cap = ResidentIndexReader.defaultMaxBytes
         var data = Data(repeating: 0, count: Int(cap))
-        data.withUnsafeMutableBytes {
-            GTurboBinary.writeIndexHeader(
+        unsafe data.withUnsafeMutableBytes {
+            unsafe GTurboBinary.writeIndexHeader(
                 into: $0.baseAddress!, indexSize: cap,
                 residentSize: 0, entryCount: 0)
         }
@@ -126,8 +126,8 @@ import Darwin
     @Test func rejectsIndexRegionAboveMetadataCapBeforeAllocation() throws {
         let claimed = ResidentIndexReader.defaultMaxBytes + 1
         var data = Data(repeating: 0, count: GTurboBinary.indexHeaderBytes)
-        data.withUnsafeMutableBytes {
-            GTurboBinary.writeIndexHeader(
+        unsafe data.withUnsafeMutableBytes {
+            unsafe GTurboBinary.writeIndexHeader(
                 into: $0.baseAddress!, indexSize: claimed,
                 residentSize: 0, entryCount: 0)
         }
@@ -145,8 +145,8 @@ import Darwin
 
     @Test func rejectsIndexSizeSmallerThanHeader() throws {
         var data = Data(repeating: 0, count: GTurboBinary.indexHeaderBytes)
-        data.withUnsafeMutableBytes {
-            GTurboBinary.writeIndexHeader(
+        unsafe data.withUnsafeMutableBytes {
+            unsafe GTurboBinary.writeIndexHeader(
                 into: $0.baseAddress!, indexSize: UInt64(GTurboBinary.indexHeaderBytes - 1),
                 residentSize: 0, entryCount: 0)
         }
@@ -162,8 +162,8 @@ import Darwin
     @Test func callerSelectedSymlinkToRegularIndexStillLoads() throws {
         let indexSize = Int(GTurboFormatV1.alignmentBytes)
         var data = Data(repeating: 0, count: indexSize)
-        data.withUnsafeMutableBytes {
-            GTurboBinary.writeIndexHeader(
+        unsafe data.withUnsafeMutableBytes {
+            unsafe GTurboBinary.writeIndexHeader(
                 into: $0.baseAddress!, indexSize: UInt64(indexSize),
                 residentSize: 0, entryCount: 0)
         }
@@ -174,7 +174,7 @@ import Darwin
         let target = directory.appendingPathComponent("target.bin")
         let alias = directory.appendingPathComponent("alias.bin")
         try data.write(to: target)
-        #expect(symlink(target.path, alias.path) == 0)
+        unsafe #expect(symlink(target.path, alias.path) == 0)
         let parsed = try ResidentIndexReader.load(fileURL: alias)
         #expect(parsed.header.entryCount == 0)
     }
@@ -186,8 +186,8 @@ import Darwin
         defer { try? FileManager.default.removeItem(at: directory) }
         let fifo = directory.appendingPathComponent("index.fifo")
         let alias = directory.appendingPathComponent("alias.bin")
-        #expect(mkfifo(fifo.path, 0o600) == 0)
-        #expect(symlink(fifo.path, alias.path) == 0)
+        unsafe #expect(mkfifo(fifo.path, 0o600) == 0)
+        unsafe #expect(symlink(fifo.path, alias.path) == 0)
         #expect(throws: ModelError.self) {
             try ResidentIndexReader.load(fileURL: alias)
         }

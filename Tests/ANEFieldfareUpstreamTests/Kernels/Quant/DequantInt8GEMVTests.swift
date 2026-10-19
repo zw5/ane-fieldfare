@@ -43,13 +43,13 @@ import ANEFieldfareValidationSupport
         let ctx = try MetalContext()
         let kernel = try DequantInt8GEMV(context: ctx)
 
-        guard let wBuf = ctx.device.makeBuffer(
+        guard let wBuf = unsafe ctx.device.makeBuffer(
                 bytes: packed, length: packed.count,
                 options: .storageModeShared),
-              let sBuf = ctx.device.makeBuffer(
+              let sBuf = unsafe ctx.device.makeBuffer(
                 bytes: scales, length: scales.count * MemoryLayout<UInt16>.size,
                 options: .storageModeShared),
-              let bBuf = ctx.device.makeBuffer(
+              let bBuf = unsafe ctx.device.makeBuffer(
                 bytes: biases, length: biases.count * MemoryLayout<UInt16>.size,
                 options: .storageModeShared),
               let xBuf = Fp16Buffer.make(ctx.device, halves: xFp16),

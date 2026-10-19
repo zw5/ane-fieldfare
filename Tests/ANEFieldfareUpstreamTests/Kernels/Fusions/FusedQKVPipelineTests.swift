@@ -31,29 +31,29 @@ import ANEFieldfareValidationSupport
         let fusedEpilogue = try FusedQKVEpilogue(context: ctx)
 
         guard
-            let qWeights = ctx.device.makeBuffer(bytes: qProjection.weights,
+            let qWeights = unsafe ctx.device.makeBuffer(bytes: qProjection.weights,
                                                  length: qProjection.weights.count,
                                                  options: .storageModeShared),
-            let qScales = ctx.device.makeBuffer(bytes: qProjection.scales,
+            let qScales = unsafe ctx.device.makeBuffer(bytes: qProjection.scales,
                                                 length: qProjection.scales.count * 2,
                                                 options: .storageModeShared),
-            let qBiases = ctx.device.makeBuffer(bytes: qProjection.biases,
+            let qBiases = unsafe ctx.device.makeBuffer(bytes: qProjection.biases,
                                                 length: qProjection.biases.count * 2,
                                                 options: .storageModeShared),
-            let kvWeights = ctx.device.makeBuffer(bytes: kvProjection.weights,
+            let kvWeights = unsafe ctx.device.makeBuffer(bytes: kvProjection.weights,
                                                   length: kvProjection.weights.count,
                                                   options: .storageModeShared),
-            let kvScales = ctx.device.makeBuffer(bytes: kvProjection.scales,
+            let kvScales = unsafe ctx.device.makeBuffer(bytes: kvProjection.scales,
                                                  length: kvProjection.scales.count * 2,
                                                  options: .storageModeShared),
-            let kvBiases = ctx.device.makeBuffer(bytes: kvProjection.biases,
+            let kvBiases = unsafe ctx.device.makeBuffer(bytes: kvProjection.biases,
                                                  length: kvProjection.biases.count * 2,
                                                  options: .storageModeShared),
             let xBuffer = Fp16Buffer.make(ctx.device, halves: x),
-            let qNormBuffer = ctx.device.makeBuffer(bytes: qNorm,
+            let qNormBuffer = unsafe ctx.device.makeBuffer(bytes: qNorm,
                                                     length: qNorm.count * 2,
                                                     options: .storageModeShared),
-            let kNormBuffer = ctx.device.makeBuffer(bytes: kNorm,
+            let kNormBuffer = unsafe ctx.device.makeBuffer(bytes: kNorm,
                                                     length: kNorm.count * 2,
                                                     options: .storageModeShared),
             let qLegacy = Fp16Buffer.make(ctx.device, count: qRows),
@@ -154,7 +154,7 @@ import ANEFieldfareValidationSupport
     }
 
     private static func bytes(_ buffer: any MTLBuffer, count: Int) -> [UInt8] {
-        Array(UnsafeBufferPointer(
+        unsafe Array(UnsafeBufferPointer(
             start: buffer.contents().assumingMemoryBound(to: UInt8.self),
             count: count * MemoryLayout<Float16>.size))
     }

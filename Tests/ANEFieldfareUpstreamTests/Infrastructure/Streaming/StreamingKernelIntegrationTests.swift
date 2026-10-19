@@ -62,13 +62,13 @@ import ANEFieldfareValidationSupport
 
         var blob = [UInt8](repeating: 0, count: blobSize)
         blob.withUnsafeMutableBufferPointer { ptr in
-            _ = memcpy(ptr.baseAddress!, packed, Sizes.packedBytes)
+            _ = unsafe memcpy(ptr.baseAddress!, packed, Sizes.packedBytes)
             scales.withUnsafeBufferPointer { sptr in
-                _ = memcpy(ptr.baseAddress!.advanced(by: scalesOffset),
+                _ = unsafe memcpy(ptr.baseAddress!.advanced(by: scalesOffset),
                            sptr.baseAddress!, Sizes.scalesBytes)
             }
             biases.withUnsafeBufferPointer { bptr in
-                _ = memcpy(ptr.baseAddress!.advanced(by: biasesOffset),
+                _ = unsafe memcpy(ptr.baseAddress!.advanced(by: biasesOffset),
                            bptr.baseAddress!, Sizes.biasesBytes)
             }
         }
@@ -117,7 +117,7 @@ import ANEFieldfareValidationSupport
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         let ctx = try MetalContext()
-        let fd = open(tmp.path, O_RDONLY)
+        let fd = unsafe open(tmp.path, O_RDONLY)
         #expect(fd >= 0)
         defer { close(fd) }
         let layer = try MappedExpertLayer(
@@ -138,8 +138,8 @@ import ANEFieldfareValidationSupport
             Issue.record("Failed to allocate x / y buffers")
             return
         }
-        xBuf.contents().withMemoryRebound(to: Float16.self, capacity: Sizes.N) { dst in
-            for i in 0..<Sizes.N { dst[i] = xFp16[i] }
+        unsafe xBuf.contents().withMemoryRebound(to: Float16.self, capacity: Sizes.N) { dst in
+            for i in 0..<Sizes.N { unsafe dst[i] = xFp16[i] }
         }
 
         guard let cmd = ctx.queue.makeCommandBuffer() else {
@@ -155,7 +155,7 @@ import ANEFieldfareValidationSupport
         cmd.waitUntilCompleted()
 
         let yKernel: [Float] = (0..<Sizes.M).map { i in
-            Float(yBuf.contents().load(fromByteOffset: i * MemoryLayout<Float16>.size,
+            unsafe Float(yBuf.contents().load(fromByteOffset: i * MemoryLayout<Float16>.size,
                                        as: Float16.self))
         }
         let yRef = Self.cpuReferenceGemv(weightsFp32: weights, x: xFp32)

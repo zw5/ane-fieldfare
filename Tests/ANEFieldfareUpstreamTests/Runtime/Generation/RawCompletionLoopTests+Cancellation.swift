@@ -25,7 +25,7 @@ extension RawCompletionLoopTests {
         prefillConfig: .off
       ) { progress in
         if case .token(let index, _, _) = progress, index == 2 {
-          withUnsafeCurrentTask { $0?.cancel() }
+          unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
         }
       }
     }

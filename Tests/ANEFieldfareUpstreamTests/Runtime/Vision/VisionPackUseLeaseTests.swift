@@ -30,7 +30,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: pack.deletingLastPathComponent()) }
         let lockURL = VisionPackUseLease.lockURL(for: pack)
         #expect(FileManager.default.createFile(atPath: lockURL.path, contents: nil))
-        #expect(chmod(lockURL.path, 0o444) == 0)
+        unsafe #expect(chmod(lockURL.path, 0o444) == 0)
         // The O_RDWR create-open gets EACCES; the O_RDONLY retry must lock.
         let lease = try VisionPackUseLease.acquireShared(companionURL: pack)
         #expect(lease.lockFileURL.path == lockURL.path)
@@ -40,10 +40,10 @@ import Testing
         let pack = try makePack()
         let parent = pack.deletingLastPathComponent()
         defer {
-            _ = chmod(parent.path, 0o755)
+            _ = unsafe chmod(parent.path, 0o755)
             try? FileManager.default.removeItem(at: parent)
         }
-        #expect(chmod(parent.path, 0o555) == 0)
+        unsafe #expect(chmod(parent.path, 0o555) == 0)
         // A writable volume whose directory merely denies us could still host
         // a privileged writer, so no lock file means no lease.
         #expect(throws: VisionPackError.self) {
@@ -58,7 +58,7 @@ import Testing
         // Read-only FIFO: the create-open gets EACCES, and the O_RDONLY retry
         // would block forever on a FIFO without O_NONBLOCK; the S_IFREG check
         // must reject it instead.
-        #expect(mkfifo(lockURL.path, 0o444) == 0)
+        unsafe #expect(mkfifo(lockURL.path, 0o444) == 0)
         #expect(throws: VisionPackError.self) {
             _ = try VisionPackUseLease.acquireShared(companionURL: pack)
         }
@@ -68,7 +68,7 @@ import Testing
         let pack = try makePack()
         defer { try? FileManager.default.removeItem(at: pack.deletingLastPathComponent()) }
         let lockURL = VisionPackUseLease.lockURL(for: pack)
-        let writer = open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        let writer = unsafe open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         #expect(writer >= 0)
         defer { close(writer) }
         #expect(flock(writer, LOCK_EX) == 0)

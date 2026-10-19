@@ -110,7 +110,7 @@ public final class MetalContext: Sendable {
         // dispatches can otherwise be killed as compositor-impacting on macOS
         // 26. Overwrite 0 preserves an operator's explicit stock-behaviour
         // override. This relaxes the deadline; it does not guarantee survival.
-        setenv("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1", 0)
+        unsafe setenv("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1", 0)
         #endif
     }
 
@@ -271,13 +271,13 @@ public final class MetalContext: Sendable {
             switch constant.value {
             case .bool(let value):
                 var v = value
-                values.setConstantValue(&v, type: .bool, index: constant.index)
+                unsafe values.setConstantValue(&v, type: .bool, index: constant.index)
             case .uint32(let value):
                 var v = value
-                values.setConstantValue(&v, type: .uint, index: constant.index)
+                unsafe values.setConstantValue(&v, type: .uint, index: constant.index)
             case .float(let value):
                 var v = value
-                values.setConstantValue(&v, type: .float, index: constant.index)
+                unsafe values.setConstantValue(&v, type: .float, index: constant.index)
             }
         }
 
@@ -288,7 +288,7 @@ public final class MetalContext: Sendable {
             descriptor.computeFunction = fn
             descriptor.maxTotalThreadsPerThreadgroup = hint
             var reflection: MTLAutoreleasedComputePipelineReflection?
-            p = try device.makeComputePipelineState(descriptor: descriptor,
+            p = try unsafe device.makeComputePipelineState(descriptor: descriptor,
                                                     options: [],
                                                     reflection: &reflection)
         } else {

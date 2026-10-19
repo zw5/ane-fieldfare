@@ -10,7 +10,7 @@ import Darwin
         defer { try? FileManager.default.removeItem(at: dir) }
         let layout = dir.appendingPathComponent("packed_experts/layout.json")
         try FileManager.default.removeItem(at: layout)
-        #expect(mkfifo(layout.path, 0o600) == 0)
+        unsafe #expect(mkfifo(layout.path, 0o600) == 0)
 
         #expect(throws: ModelError.self) {
             try PackedExpertsLayoutReader.load(directoryURL: dir)

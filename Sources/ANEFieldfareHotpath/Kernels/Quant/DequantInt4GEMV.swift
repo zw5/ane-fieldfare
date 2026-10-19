@@ -109,8 +109,8 @@ final class DequantInt4GEMV {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        var values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
-        for i in values.indices { encoder.setBytes(&values[i], length: 4, index: 5 + i) }
+        let values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
+        for i in values.indices { encoder.setValue(values[i], index: 5 + i) }
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(m) + 8 * weightRows - 1) / (8 * weightRows), height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -144,8 +144,8 @@ final class DequantInt4GEMV {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        var values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
-        for i in values.indices { encoder.setBytes(&values[i], length: 4, index: 5 + i) }
+        let values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
+        for i in values.indices { encoder.setValue(values[i], index: 5 + i) }
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(m) + 31) / 32, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
@@ -179,10 +179,10 @@ final class DequantInt4GEMV {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        var mValue = m
-        var nValue = n
-        encoder.setBytes(&mValue, length: MemoryLayout<UInt32>.size, index: 5)
-        encoder.setBytes(&nValue, length: MemoryLayout<UInt32>.size, index: 6)
+        let mValue = m
+        let nValue = n
+        encoder.setValue(mValue, index: 5)
+        encoder.setValue(nValue, index: 6)
 
         let threadgroupSize = MTLSize(
             width: 32 * Self.rowsPerThreadgroup,

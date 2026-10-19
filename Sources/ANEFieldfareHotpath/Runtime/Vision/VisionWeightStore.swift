@@ -62,7 +62,7 @@ final class VisionWeightStore {
         // "Metadata is invalid" for a pack that was never installed sends the
         // reader looking for corruption. Absence is its own answer.
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(
+        guard unsafe FileManager.default.fileExists(
             atPath: directoryURL.standardizedFileURL.path,
             isDirectory: &isDirectory), isDirectory.boolValue else {
             throw VisionPackError.packNotFound(directoryURL.standardizedFileURL.path)

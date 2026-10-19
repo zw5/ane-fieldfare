@@ -231,7 +231,9 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         let drafter = self.drafter
         runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { chunk in
             do {
-                try drafter.appendContext(captured: chunk.hidden, stride: chunk.tokenCount, rows: chunk.tokenCount)
+                try chunk.withHidden { hidden in
+                    try drafter.appendContext(captured: hidden, stride: chunk.tokenCount, rows: chunk.tokenCount)
+                }
             } catch { failure = error }
         }
         defer { runner.prefillCapture = nil }
@@ -291,7 +293,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
     private func plainStep(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
         let layers = drafter.config.contextLayers.count, D = drafter.config.hiddenSize
         runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { [self] chunk in
-            pendingContext.append(contentsOf: chunk.hidden.prefix(layers * D))
+            pendingContext.append(contentsOf: chunk.hiddenValues.prefix(layers * D))
             pendingContextRows += 1
         }
         defer { runner.prefillCapture = nil }
@@ -316,9 +318,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         }
         pendingContext.removeAll(keepingCapacity: true)
         pendingContextRows = 0
-        try laid.withUnsafeBufferPointer {
-            try drafter.appendContext(captured: $0, stride: rows, rows: rows)
-        }
+        try drafter.appendContext(captured: laid.span, stride: rows, rows: rows)
         stats.contextSeconds += Date().timeIntervalSince(started)
     }
 
@@ -328,7 +328,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         let length = drafts.count + 1
         var verifyHidden: [Float16] = []
         runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { chunk in
-            verifyHidden = Array(chunk.hidden)
+            verifyHidden = chunk.hiddenValues
         }
         defer { runner.prefillCapture = nil }
         var started = Date()
@@ -340,9 +340,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         // Rows [0, count] (anchor and accepted drafts) are now context.
         if count + 1 < length { try runner.rewind(to: position + count + 1) }
         started = Date()
-        try verifyHidden.withUnsafeBufferPointer {
-            try drafter.appendContext(captured: $0, stride: length, rows: count + 1)
-        }
+        try drafter.appendContext(captured: verifyHidden.span, stride: length, rows: count + 1)
         stats.contextSeconds += Date().timeIntervalSince(started)
 
         lastGreedyToken = UInt32(bitPattern: verified[0])
