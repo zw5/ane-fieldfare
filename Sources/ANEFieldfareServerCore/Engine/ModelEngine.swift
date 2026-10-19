@@ -6,11 +6,11 @@ import ANEFieldfareHotpathCLICore
 /// DFlash drafter, generating through the same `runRawCompletion` loop and
 /// `selectLogitProducer` decision as the CLI.
 ///
-/// The runner is built with the fused greedy head, so greedy requests take
-/// the hot-vocabulary head (or the drafter) exactly as the CLI's
-/// `--temperature 0` does, and sampled requests go through
-/// `LogitsHeadProducer`, which takes the logits head a CLI sampling run's
-/// `forceLogitsHead` runner takes. Every request starts from a reset KV
+/// The runner is built with the fused head, so greedy requests take the
+/// hot-vocabulary head and sampled requests sample on the GPU, both through
+/// the drafter when one is loaded, exactly as the CLI does; a request with a
+/// repetition penalty goes through `LogitsHeadProducer`, the logits head a
+/// CLI run with a penalty takes. Every request starts from a reset KV
 /// cache: `runRawCompletion` resets the producer before its prefill, and no
 /// prefix is reused across requests.
 public final class ModelEngine: CompletionEngine {
@@ -90,10 +90,11 @@ public final class ModelEngine: CompletionEngine {
             chunkTokens: PrefillRuntimeConfig.autoChunkTokens(promptTokens: promptIDs.count,
                                                               cap: maxPrefillChunkTokens))
         // A decoder per request: its policy starts fresh, as a CLI run's does,
-        // and releasing it detaches the drafter's feature tap, which plain and
-        // sampled requests must not pay for.
+        // and releasing it detaches the drafter's feature tap, which requests
+        // without it must not pay for. Greedy and sampled requests both use
+        // it; a repetition penalty needs host logits and cannot.
         let speculative: SpeculativeDecoder?
-        if config.isPureGreedy, let drafter {
+        if config.repetitionPenalty == 1, let drafter {
             speculative = try SpeculativeDecoder(runner: runner, drafter: drafter)
         } else {
             speculative = nil

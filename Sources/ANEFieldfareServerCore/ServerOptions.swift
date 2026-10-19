@@ -48,8 +48,9 @@ public struct ServerOptions: Sendable, Equatable {
       --model <dir>              Path to a .gturbo model directory.
 
     options:
-      --drafter <dir>            DFlash drafter checkpoint: greedy requests
-                                 (temperature 0) decode speculatively.
+      --drafter <dir>            DFlash drafter checkpoint: requests decode
+                                 speculatively, greedy or sampled (not with a
+                                 repetition penalty).
       --host <address>           Address to bind (default 127.0.0.1).
       --port <int>               Port to bind (default 8080; 0 = any free port).
       --max-context <int>        Context limit in tokens, prompt plus
@@ -198,7 +199,7 @@ public func runServer(options: ServerOptions,
                 faultPolicy: options.faultPolicy,
                 earlyExpertRead: options.earlyExpertRead),
             tokenizer: tokenizer)
-        let drafterNote = engine.hasDrafter ? ", drafter on for greedy requests" : ""
+        let drafterNote = engine.hasDrafter ? ", drafter on" : ""
         let loaded = loadStarted.duration(to: .now).components
         let loadSeconds = (Double(loaded.seconds) + Double(loaded.attoseconds) / 1e18) * 100
         log("[server] model loaded in \(loadSeconds.rounded() / 100) s; context \(options.maxContext) tokens, "

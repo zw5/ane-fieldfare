@@ -157,7 +157,7 @@ expect OpenRouter's base URL can use `http://127.0.0.1:8080/api/v1`.
 | Server option | What it does |
 | --- | --- |
 | `--model <dir>` | The `.gturbo` model. Required. |
-| `--drafter <dir>` | DFlash drafter: greedy requests (temperature 0) decode speculatively. |
+| `--drafter <dir>` | DFlash drafter: greedy and sampled requests decode speculatively (not with a repetition penalty). |
 | `--host <address>`, `--port <n>` | Where to listen. Default `127.0.0.1:8080`; `--host 0.0.0.0` for other machines. |
 | `--max-context <n>` | Prompt plus completion limit in tokens. Default 32768. |
 | `--model-id <id>` | The id `/v1/models` advertises. Default `gemma-4-26b-a4b-it`. Requests may name any model. |
@@ -185,11 +185,11 @@ Streams send a first chunk with `role`, content deltas, a chunk with
 `finish_reason` (`stop` or `length`), the usage chunk if asked, and
 `data: [DONE]`.
 
-**Decoding.** Temperature 0 with no repetition penalty is greedy: it takes the
-drafter when one is loaded, otherwise the hot-vocabulary head, exactly as the
-CLI's `--temperature 0`. Anything else samples through the full logits head.
-Set temperature 0 in the client (or start the server with `--temperature 0`) to
-get the fast path.
+**Decoding.** As in the CLI: temperature 0 is greedy (the hot-vocabulary head
+without a drafter), anything above it samples on the GPU, and with a drafter
+loaded both decode speculatively, with the same text for a given `seed` as
+without it. A request with a repetition penalty samples on the host, without
+the drafter.
 
 **Concurrency.** One generation runs at a time; others wait in order, up to
 `--max-queue`, and further requests get `503` with `Retry-After`. A client that

@@ -4,9 +4,9 @@
 # Runs the CLI and the server on the same prompts and requires the server's
 # output to equal the CLI's: greedy chat (non-streaming and streaming),
 # seeded sampled chat, and a raw /v1/completions prompt. With SMOKE_DRAFTER
-# set it restarts the server with --drafter and compares a greedy request with
-# the CLI's --drafter run (reported, not required: speculative output may
-# differ from run to run at near-ties). Prints CLI and server tok/s.
+# set it restarts the server with --drafter and compares a greedy and a seeded
+# sampled request with the CLI's --drafter runs (reported, not required:
+# speculative output may differ at near-ties). Prints CLI and server tok/s.
 #
 # Loads the model several times; run it under the benchmark lock:
 #   Scripts/with_benchmark_lock.sh Scripts/server/smoke.sh
@@ -62,6 +62,10 @@ if [[ -n "$drafter" ]]; then
   "$bin/ANEFieldfareHotpathCLI" --model "$model" --max-context "$context" --chat-prompt "$chat_prompt" \
     --temperature 0 --max-new "$max_new" --drafter "$drafter" > "$work/cli-drafter.txt" 2> "$work/cli-drafter.err"
   cli_drafter_tps="$(footer_tps "$work/cli-drafter.err")"
+  "$bin/ANEFieldfareHotpathCLI" --model "$model" --max-context "$context" --chat-prompt "$chat_prompt" \
+    --temperature 0.7 --top-k 40 --top-p 0.9 --seed 7 --max-new "$max_new" --drafter "$drafter" \
+    > "$work/cli-drafter-sampled.txt" 2> "$work/cli-drafter-sampled.err"
+  cli_drafter_sampled_tps="$(footer_tps "$work/cli-drafter-sampled.err")"
 fi
 
 start_server() { # extra flags...
@@ -130,6 +134,16 @@ if [[ -n "$drafter" ]]; then
     echo "DIFFERS greedy chat with drafter vs CLI --drafter (near-tie variation is possible)"
   fi
   server_drafter_tps="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["timings"]; print("%.3f (%s)" % (d["predicted_per_second"], d["decode_path"]))' "$work/drafter.json")"
+  curl -sS "$base/chat/completions" -H 'Content-Type: application/json' -d "$sampled" > "$work/drafter-sampled.json"
+  content < "$work/drafter-sampled.json" > "$work/server-drafter-sampled.txt"
+  for reference in cli-sampled cli-drafter-sampled; do
+    if cmp -s "$work/$reference.txt" "$work/server-drafter-sampled.txt"; then
+      echo "SAME seeded sampled chat with drafter == $reference"
+    else
+      echo "DIFFERS seeded sampled chat with drafter vs $reference (near-tie variation is possible)"
+    fi
+  done
+  server_drafter_sampled_tps="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["timings"]; print("%.3f (%s)" % (d["predicted_per_second"], d["decode_path"]))' "$work/drafter-sampled.json")"
   grep '^\[chatcmpl' "$work/server.err" || true
   stop_server
 fi
@@ -140,6 +154,8 @@ echo "server: $server_tps"
 if [[ -n "$drafter" ]]; then
   echo "CLI --drafter:    $cli_drafter_tps"
   echo "server --drafter: $server_drafter_tps"
+  echo "sampled, CLI --drafter:    $cli_drafter_sampled_tps"
+  echo "sampled, server --drafter: $server_drafter_sampled_tps"
 fi
 if (( failures > 0 )); then echo "$failures check(s) failed"; exit 1; fi
 echo "all checks passed"

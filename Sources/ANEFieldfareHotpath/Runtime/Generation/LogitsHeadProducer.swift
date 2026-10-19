@@ -1,12 +1,13 @@
 public import Metal
 
-/// Sampling on a runner built with the fused greedy head.
+/// Host-side sampling on a runner built with the fused head.
 ///
-/// A runner's head is chosen when it is built: the fused head leaves a greedy
-/// token on the device and never writes logits, so a sampling configuration
-/// needs `forceLogitsHead: true`. A process that serves greedy and sampled
-/// requests from one runner, as the server does, wraps the runner in this for
-/// its sampled requests instead: every prefill and decode step runs with
+/// A fused head picks its token on the device, greedy or under a
+/// `TokenSampling` rule, and never writes logits; only a configuration the
+/// GPU cannot sample (a repetition penalty reads the history) needs the
+/// logits on the host. A process that serves every configuration from one
+/// runner, as the server does, wraps the runner in this for those requests:
+/// every prefill and decode step runs with
 /// `PrefillOutputMode.logits`, which takes the same logits head a
 /// `forceLogitsHead` runner takes. The runner's fused-head state (its hot
 /// vocabulary) is not read or changed.
@@ -48,13 +49,14 @@ public final class LogitsHeadProducer: LogitProducer, ChunkedPrefillRunner, Mult
 /// The producer a generation decodes with, decided the same way for the CLI
 /// and the server.
 ///
-/// - A speculative decoder, when the caller built one (greedy text prompts).
+/// - A speculative decoder, when the caller built one (text prompts, greedy
+///   or sampled without a repetition penalty).
 /// - Plain greedy text decoding with chunked prefill guesses from the hot
 ///   vocabulary and checks every token against the full head; the output is
 ///   the full head's.
-/// - A sampling configuration on a fused-head runner samples through
-///   `LogitsHeadProducer`.
-/// - Otherwise the runner itself.
+/// - A configuration with a repetition penalty on a fused-head runner
+///   samples on the host through `LogitsHeadProducer`.
+/// - Otherwise the runner itself, which samples on the GPU.
 public func selectLogitProducer(runner: RealForwardRunner,
                                 speculative: SpeculativeDecoder?,
                                 config: GenerationConfig,
@@ -63,8 +65,11 @@ public func selectLogitProducer(runner: RealForwardRunner,
     if let speculative {
         return speculative
     }
-    if !config.isPureGreedy {
+    if config.repetitionPenalty != 1 {
         return runner.usesFusedGreedyHead ? LogitsHeadProducer(runner: runner) : runner
+    }
+    if !config.isPureGreedy {
+        return runner
     }
     if !hasImages, prefillConfig.mode == .chunked, let hotHead = HotHeadDecoder(runner: runner) {
         return hotHead
