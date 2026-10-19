@@ -44,6 +44,11 @@ public final class ModelEngine: CompletionEngine {
     private let runner: RealForwardRunner
     private let scratch: RawCompletionScratch
     private let drafter: DFlashDrafter?
+    /// The tokens in the runner's KV cache after the last request that
+    /// completed, and the decode path that wrote them; nil after a failed or
+    /// cancelled request, whose cache state is unknown. Requests run one at a
+    /// time, so this is never read and written concurrently.
+    private var cached: (tokens: [Int32], path: String)?
 
     public var hasDrafter: Bool { drafter != nil }
 
@@ -108,6 +113,16 @@ public final class ModelEngine: CompletionEngine {
         case is LogitsHeadProducer: path = "sampled"
         default: path = config.isPureGreedy ? "plain" : "sampled"
         }
+        // A chat re-sends its whole history: keep the prefix still cached and
+        // prefill only what follows. Only on the path that wrote the cache —
+        // a speculative request also needs the drafter's context rows, which
+        // other paths do not write.
+        var reuse = 0
+        if let cached, cached.path == path {
+            // The prompt's last token is always prefilled, for its seed.
+            reuse = min(zip(cached.tokens, promptIDs).prefix { $0.0 == $0.1 }.count, promptIDs.count - 1)
+        }
+        cached = nil
         let result = try await runRawCompletion(
             producer: producer,
             tokenizer: tokenizer,
@@ -116,7 +131,11 @@ public final class ModelEngine: CompletionEngine {
             context: context,
             scratch: scratch,
             prefillConfig: prefill,
+            reusingPrefix: reuse,
             onProgress: onProgress)
+        if result.kvBackedTokenIDs.count == result.kvPosition {
+            cached = (result.kvBackedTokenIDs, path)
+        }
         return EngineCompletion(result: result, decodePath: path)
     }
 }

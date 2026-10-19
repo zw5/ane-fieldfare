@@ -15,7 +15,7 @@ public import Metal
 /// Deliberately not a `FusedGreedyProducer`, so `runRawCompletion` samples
 /// from the logits buffer.
 public final class LogitsHeadProducer: LogitProducer, ChunkedPrefillRunner, MultimodalPrefillRunner,
-    ContextWindowReporting {
+    ContextWindowReporting, PrefixReusingProducer {
     public let runner: RealForwardRunner
     public var maxContext: Int { runner.maxContext }
 
@@ -26,6 +26,10 @@ public final class LogitsHeadProducer: LogitProducer, ChunkedPrefillRunner, Mult
     public func reset() {
         runner.reset()
     }
+
+    public func canReuse(prefix position: Int) -> Bool { runner.canRewind(to: position) }
+
+    public func rewindForReuse(to position: Int) throws { try runner.rewindForReuse(to: position) }
 
     public func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
         try await runner.produceLogits(token: token, position: position, into: logits)

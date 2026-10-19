@@ -18,7 +18,7 @@ public import Metal
 /// drafts the next block from the target's next token. The host reads the
 /// outcome and the next drafts together once all of it completes.
 public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, ContextWindowReporting,
-    SamplingTokenProducer {
+    SamplingTokenProducer, PrefixReusingProducer {
     public let runner: RealForwardRunner
     public let drafter: DFlashDrafter
     public private(set) var policy: SpeculationPolicy
@@ -79,6 +79,18 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         accepted.removeAll()
         chained = nil
         plannedPlain = nil
+    }
+
+    public func canReuse(prefix position: Int) -> Bool { runner.canRewind(to: position) }
+
+    /// Keeps the target's and the drafter's first `position` tokens; the
+    /// next prefill starts there.
+    public func rewindForReuse(to position: Int) throws {
+        accepted.removeAll()
+        chained = nil
+        plannedPlain = nil
+        try runner.rewindForReuse(to: position)
+        if drafter.contextLength > position { try drafter.truncateContext(to: position) }
     }
 
     public func prefillChunked(tokens: ArraySlice<Int32>, startPosition: Int, outputMode: PrefillOutputMode,

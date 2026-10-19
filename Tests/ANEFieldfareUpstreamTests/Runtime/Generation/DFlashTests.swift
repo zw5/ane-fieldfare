@@ -199,6 +199,54 @@ struct DFlashChainedDraftTests {
         #expect(mismatches.isEmpty, "verify differs from plain sampled decode at \(mismatches)")
     }
 
+    /// A chat's next turn keeps the cached conversation and prefills only
+    /// its new tokens (`PrefixReusingProducer`): the reply equals a fresh
+    /// prefill of the whole conversation, for the plain runner and the
+    /// speculative decoder.
+    @Test func reusedPrefixGivesTheFreshPrefillsReply() async throws {
+        let context = try MetalContext()
+        let model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device)
+        let runner = try RealForwardRunner(model: model, context: context, maxContext: 1024)
+        let drafter = try await DFlashDrafter(directory: try #require(installedDrafterURL), model: model,
+                                              context: context, maxContext: 1024)
+        let logits = try #require(context.device.makeBuffer(length: model.config.vocabSize * 2,
+                                                             options: .storageModeShared))
+        let first: [Int32] = [2, 105, 2364, 107, 6974, 496, 17856, 1292, 600, 130450, 48490, 20312, 528, 496,
+                              1694, 236764, 607, 496, 6484, 2383, 532, 496, 2822, 2591, 236761, 106, 107, 105,
+                              4368, 107, 100, 45518, 107, 101]
+        func run(_ producer: any FusedGreedyProducer & ChunkedPrefillRunner, prompt: [Int32], from start: Int,
+                 count: Int) async throws -> [Int32] {
+            let prefill = try await producer.prefillChunked(
+                tokens: prompt[start...], startPosition: start, outputMode: .greedyIfAvailable,
+                config: .production(chunkTokens: 64), into: logits, onProgress: { _ in })
+            guard case .greedyToken(let seed) = prefill.seed else { return [] }
+            var tokens = [Int32(bitPattern: seed)]
+            while tokens.count < count {
+                try await producer.produce(token: tokens[tokens.count - 1],
+                                           position: prompt.count + tokens.count - 1, into: logits)
+                tokens.append(Int32(bitPattern: producer.lastGreedyToken))
+            }
+            return tokens
+        }
+        for speculative in [false, true] {
+            let decoder = speculative ? try SpeculativeDecoder(runner: runner, drafter: drafter) : nil
+            let producer: any FusedGreedyProducer & ChunkedPrefillRunner & PrefixReusingProducer =
+                decoder ?? runner
+            // Turn 1, then a follow-up appended to everything the cache holds.
+            producer.reset()
+            let reply = try await run(producer, prompt: first, from: 0, count: 24)
+            let cachedCount = first.count + reply.count - 1
+            let second = first + reply.dropLast() + [106, 107, 105, 2364, 107, 236840, 106, 107, 105, 4368, 107,
+                                                     100, 45518, 107, 101]
+            #expect(producer.canReuse(prefix: cachedCount))
+            try producer.rewindForReuse(to: cachedCount)
+            let reused = try await run(producer, prompt: second, from: cachedCount, count: 24)
+            producer.reset()
+            let fresh = try await run(producer, prompt: second, from: 0, count: 24)
+            #expect(reused == fresh, "speculative \(speculative)")
+        }
+    }
+
     /// The installed INT4 weights hold each source row where the fused
     /// layout puts it, within the INT4 rounding bound of the BF16 source.
     @Test func installedWeightsMatchTheCheckpoint() throws {

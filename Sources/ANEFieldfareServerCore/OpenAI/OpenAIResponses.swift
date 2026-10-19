@@ -33,6 +33,7 @@ struct UsageJSON: Encodable, Equatable {
 /// Server-side timings, in llama.cpp's `timings` shape. Extra top-level
 /// fields are ignored by OpenAI clients.
 struct TimingsJSON: Encodable {
+    let cacheN: Int
     let promptN: Int
     let promptMS: Double
     let predictedN: Int
@@ -41,7 +42,8 @@ struct TimingsJSON: Encodable {
     let decodePath: String
 
     init(_ outcome: CompletionOutcome) {
-        promptN = outcome.promptTokens
+        cacheN = outcome.cachedTokens
+        promptN = outcome.promptTokens - outcome.cachedTokens
         promptMS = outcome.prefillSeconds * 1000
         predictedN = outcome.completionTokens
         predictedMS = outcome.decodeSeconds * 1000
@@ -50,6 +52,7 @@ struct TimingsJSON: Encodable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case cacheN = "cache_n"
         case promptN = "prompt_n"
         case promptMS = "prompt_ms"
         case predictedN = "predicted_n"

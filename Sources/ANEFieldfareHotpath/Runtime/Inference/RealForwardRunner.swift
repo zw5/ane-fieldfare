@@ -57,7 +57,7 @@ internal enum PrefillProjectionDispatchPolicy {
 }
 
 public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRunner, ContextWindowReporting,
-    SamplingTokenProducer {
+    SamplingTokenProducer, PrefixReusingProducer {
     private struct LayerSharedExpertProjections {
         let gate: SharedExpertInt8Proj
         let up: SharedExpertInt8Proj
@@ -1043,6 +1043,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 unsafe write[index] = weights[index]
             }
         }
+    }
+
+    /// Whether `rewind(to:)` can return to `position`: it must be cached, and
+    /// the sliding-window rings must still hold its window.
+    public func canRewind(to position: Int) -> Bool {
+        position > 0 && position <= kv.position && kv.highWaterPosition - position <= kv.maxRewindTokens
+    }
+
+    public func canReuse(prefix position: Int) -> Bool { canRewind(to: position) }
+
+    public func rewindForReuse(to position: Int) throws {
+        hotHead = nil
+        try rewind(to: position)
     }
 
     /// Abandons the newest KV tokens, e.g. rejected speculative drafts. Rows

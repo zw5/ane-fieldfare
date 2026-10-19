@@ -56,7 +56,7 @@ private final class IdleEngine: CompletionEngine {
         #expect(try tokenizer.applyChatTemplate(serverMessages) == cliText)
         #expect(try backend(tokenizer).prepare(request.prompt).tokenIDs == cliIDs)
         #expect(cliText.hasSuffix("<|turn>user\nAnd of Italy?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"))
-        #expect(cliText.contains("<|turn>model\nParis.<turn|>\n"))
+        #expect(cliText.contains("<|turn>model\n<|channel>thought\n<channel|>Paris.<turn|>\n"))
     }
 
     /// A single user message equals `--chat-prompt`.

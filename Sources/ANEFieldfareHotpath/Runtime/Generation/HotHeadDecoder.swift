@@ -16,7 +16,7 @@ public import Metal
 /// (~0.75 ms). A wrong guess costs the steps after it in its block; the tokens
 /// handed out are the full head's either way.
 public final class HotHeadDecoder: LogitProducer, ChunkedPrefillRunner, ContextWindowReporting,
-    FusedGreedyProducer {
+    FusedGreedyProducer, PrefixReusingProducer {
     public let runner: RealForwardRunner
     public private(set) var lastGreedyToken: UInt32 = 0
     public var usesFusedGreedyHead: Bool { true }
@@ -38,6 +38,13 @@ public final class HotHeadDecoder: LogitProducer, ChunkedPrefillRunner, ContextW
     public func reset() {
         runner.reset()
         checked.removeAll()
+    }
+
+    public func canReuse(prefix position: Int) -> Bool { runner.canRewind(to: position) }
+
+    public func rewindForReuse(to position: Int) throws {
+        checked.removeAll()
+        try runner.rewindForReuse(to: position)
     }
 
     func prefillChunked(tokens: ArraySlice<Int32>, startPosition: Int, outputMode: PrefillOutputMode,

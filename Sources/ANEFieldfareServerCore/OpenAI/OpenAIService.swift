@@ -299,6 +299,7 @@ struct Generation: Sendable {
 
     private func logOutcome(_ outcome: CompletionOutcome) {
         log(unsafe "[\(envelope.id)] path=\(outcome.decodePath) prompt=\(outcome.promptTokens)tok "
+            + "cached=\(outcome.cachedTokens)tok "
             + "new=\(outcome.completionTokens)tok finish=\(outcome.finishReason.rawValue) "
             + "prefill=\(String(format: "%.2f", outcome.prefillSeconds))s "
             + "decode=\(String(format: "%.2f", outcome.decodeSeconds))s "

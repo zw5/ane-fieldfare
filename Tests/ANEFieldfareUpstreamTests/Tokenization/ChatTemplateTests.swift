@@ -34,12 +34,13 @@ struct ChatTemplateTests {
         ])
         // Contents appear in order.
         let ia = p.range(of: "<|turn>user\nA<turn|>")!
-        let ib = p.range(of: "<|turn>model\nB<turn|>")!
+        let ib = p.range(of: "<|turn>model\n<|channel>thought\n<channel|>B<turn|>")!
         let ic = p.range(of: "<|turn>user\nC<turn|>")!
         #expect(ia.lowerBound < ib.lowerBound)
         #expect(ib.lowerBound < ic.lowerBound)
-        // The assistant turn for "B" is closed; the trailing assistant turn is open.
-        #expect(p.contains("<|turn>model\nB<turn|>"))
+        // The assistant turn for "B" is closed and keeps the empty thought
+        // block it was generated after; the trailing assistant turn is open.
+        #expect(p.contains("<|turn>model\n<|channel>thought\n<channel|>B<turn|>"))
         #expect(p.hasSuffix("<|turn>model\n<|channel>thought\n<channel|>"))
     }
 

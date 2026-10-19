@@ -13,6 +13,8 @@ public enum RawDecodeProgress: Sendable {
 }
 
 struct RawPrefillOutcome {
+    /// Prompt tokens kept from the producer's cache instead of prefilled.
+    let reusedTokens: Int
     let position: Int
     let seed: PrefillSeed?
     let prefillSeconds: Double
@@ -27,6 +29,7 @@ func runRawPrefill(
     prefillConfig requestedPrefillConfig: PrefillRuntimeConfig,
     outputMode: PrefillOutputMode,
     producerPicksTokens: Bool,
+    reusingPrefix: Int = 0,
     historyReserve: Int,
     scratch: RawCompletionScratch,
     onProgress: (RawDecodeProgress) -> Void
@@ -61,11 +64,21 @@ func runRawPrefill(
     var history: [Int32] = []
     history.reserveCapacity(historyReserve)
 
-    producer.reset()
+    // A prefix still in the producer's cache is kept; at least the prompt's
+    // last token is prefilled, for the seed.
+    let reused = multimodalInput == nil && reusingPrefix > 0 && reusingPrefix < promptIds.count
+        && (producer as? any PrefixReusingProducer)?.canReuse(prefix: reusingPrefix) == true
+        ? reusingPrefix : 0
+    if reused > 0, let reusing = producer as? any PrefixReusingProducer {
+        try reusing.rewindForReuse(to: reused)
+        history.append(contentsOf: promptIds[..<reused])
+    } else {
+        producer.reset()
+    }
     let prefillStart = Date()
-    var position = 0
+    var position = reused
     var prefillSeed: PrefillSeed?
-    let prefillTokens = promptIds[...]
+    let prefillTokens = promptIds[reused...]
     switch (multimodalInput, prefillConfig.mode) {
     case (.some(let input), .chunked):
         // The coercion above leaves an image prompt in chunked mode, so a
@@ -101,7 +114,7 @@ func runRawPrefill(
                                                       outputMode: outputMode,
                                                       config: prefillConfig,
                                                       into: scratch.logits) { done in
-            onProgress(.prefill(done: done, total: promptIds.count))
+            onProgress(.prefill(done: reused + done, total: promptIds.count))
         }
         try checkSeed(result.seed, path: "chunked", requiresWrittenLogits: true)
         position = result.newPosition
@@ -118,6 +131,7 @@ func runRawPrefill(
     }
 
     return RawPrefillOutcome(
+        reusedTokens: reused,
         position: position,
         seed: prefillSeed,
         prefillSeconds: Date().timeIntervalSince(prefillStart),
@@ -134,6 +148,9 @@ public struct RawDecodeResult: Sendable {
     public let kvBackedTokenIDs: [Int32]
     public let uncommittedBoundaryTokenIDs: [Int32]
     public let withheldTrailingKVTokens: Int
+    /// Prompt tokens kept from the producer's cache (`reusingPrefix`); the
+    /// rest of the prompt was prefilled.
+    public var reusedPrefixTokens = 0
 
     public init(prefillTokens: Int,
                 prefillSeconds: Double,
@@ -210,6 +227,7 @@ public func runRawCompletion(producer: some LogitProducer,
                              context: MetalContext,
                              scratch: RawCompletionScratch,
                              prefillConfig: PrefillRuntimeConfig = .defaultChunked,
+                             reusingPrefix: Int = 0,
                              shouldStop: () -> Bool = { false },
                              onProgress: (RawDecodeProgress) -> Void) async throws -> RawDecodeResult {
     try config.validate()
@@ -251,6 +269,7 @@ public func runRawCompletion(producer: some LogitProducer,
         prefillConfig: prefillConfig,
         outputMode: fusedGreedy ? .greedyIfAvailable : .logits,
         producerPicksTokens: config.isPureGreedy || sampledOnGPU,
+        reusingPrefix: reusingPrefix,
         historyReserve: promptIds.count + config.maxNewTokens,
         scratch: scratch,
         onProgress: onProgress)
@@ -326,7 +345,7 @@ public func runRawCompletion(producer: some LogitProducer,
         uncommittedBoundaryTokenIDs.removeAll(keepingCapacity: true)
     }
 
-    return RawDecodeResult(prefillTokens: promptIds.count,
+    var result = RawDecodeResult(prefillTokens: promptIds.count,
                            prefillSeconds: prefillSeconds,
                            newTokens: generated,
                            decodeSeconds: Date().timeIntervalSince(decodeStart),
@@ -336,6 +355,8 @@ public func runRawCompletion(producer: some LogitProducer,
                            uncommittedBoundaryTokenIDs: uncommittedBoundaryTokenIDs,
                            withheldTrailingKVTokens: reason == .stopString
                                ? trailingInvisibleTokens : 0)
+    result.reusedPrefixTokens = prefill.reusedTokens
+    return result
 }
 
 private func sampleOnce(scratch: RawCompletionScratch, context: MetalContext,

@@ -286,6 +286,9 @@ public struct GFTokenizer: Sendable {
     private static let turnClose   = "<turn|>"
     private static let bosMark     = "<bos>"
 
+    /// The thinking-off marker that opens every model turn.
+    static let emptyThought = "<|channel>thought\n<channel|>"
+
     public func applyChatTemplate(_ messages: [Message]) throws -> String {
         var s = Self.bosMark
         for (index, message) in messages.enumerated() {
@@ -297,9 +300,13 @@ public struct GFTokenizer: Sendable {
                 throw GFTokenizerError.invalidChatTemplate("system message must be first")
             }
             let role = message.role == .assistant ? "model" : message.role.rawValue
-            s += Self.turnOpen + role + "\n" + content + Self.turnClose + "\n"
+            // A past model turn keeps the empty thought block it was generated
+            // after, so the history is token for token what the model saw and
+            // a server can keep that turn's KV for the next request.
+            let thought = message.role == .assistant ? Self.emptyThought : ""
+            s += Self.turnOpen + role + "\n" + thought + content + Self.turnClose + "\n"
         }
-        s += Self.turnOpen + "model\n<|channel>thought\n<channel|>"
+        s += Self.turnOpen + "model\n" + Self.emptyThought
         return s
     }
 

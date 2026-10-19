@@ -88,6 +88,9 @@ public struct CompletionOutcome: Sendable, Equatable {
     public let decodeSeconds: Double
     /// Which producer decoded: `speculative`, `hot-head`, `sampled` or `plain`.
     public let decodePath: String
+    /// Prompt tokens the engine kept cached from the previous request instead
+    /// of prefilling.
+    public var cachedTokens = 0
 
     public init(promptTokens: Int, completionTokens: Int, finishReason: FinishReason,
                 prefillSeconds: Double, decodeSeconds: Double, decodePath: String) {
@@ -268,12 +271,14 @@ public final class SerializedBackend<Engine: CompletionEngine>: CompletionBacken
             }
         }
         let result = completion.result
-        return CompletionOutcome(
+        var outcome = CompletionOutcome(
             promptTokens: prompt.tokenIDs.count,
             completionTokens: result.newTokens,
             finishReason: FinishReason(result.reason),
             prefillSeconds: result.prefillSeconds,
             decodeSeconds: result.decodeSeconds,
             decodePath: completion.decodePath)
+        outcome.cachedTokens = result.reusedPrefixTokens
+        return outcome
     }
 }
