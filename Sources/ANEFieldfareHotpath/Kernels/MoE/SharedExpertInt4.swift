@@ -1,5 +1,5 @@
 import Foundation
-import Metal
+public import Metal
 
 public enum SharedExpertError: Error, CustomStringConvertible {
     case unsupportedWeightBits(Int)
@@ -20,7 +20,7 @@ public enum SharedExpertError: Error, CustomStringConvertible {
 
 public final class SharedExpertInt4 {
     private let int4: DequantInt4GEMV
-    private let geluMulPSO: MTLComputePipelineState
+    private let geluMulPSO: any MTLComputePipelineState
     private let context: MetalContext
 
     public init(context: MetalContext) throws {
@@ -30,7 +30,7 @@ public final class SharedExpertInt4 {
     }
 
     /// Gate, up and GELU in one dispatch, specialized for (`d`, `f`).
-    private func gateUpActPipeline(d: UInt32, f: UInt32) throws -> MTLComputePipelineState {
+    private func gateUpActPipeline(d: UInt32, f: UInt32) throws -> any MTLComputePipelineState {
         try context.pipeline("shared_gate_up_act_int4", constants: [
             MetalFunctionConstant(index: 0, value: .uint32(d)),
             MetalFunctionConstant(index: 1, value: .uint32(f)),
@@ -38,15 +38,15 @@ public final class SharedExpertInt4 {
         ])
     }
 
-    public func encode(commandBuffer cb: MTLCommandBuffer,
-                       x: MTLBuffer, xOffset: Int = 0,
+    public func encode(commandBuffer cb: any MTLCommandBuffer,
+                       x: any MTLBuffer, xOffset: Int = 0,
                        gate: SharedExpertProjection,
                        up: SharedExpertProjection,
                        down: SharedExpertProjection,
-                       y: MTLBuffer, yOffset: Int = 0,
-                       scratchGate: MTLBuffer, scratchGateOffset: Int = 0,
-                       scratchUp: MTLBuffer, scratchUpOffset: Int = 0,
-                       scratchAct: MTLBuffer, scratchActOffset: Int = 0) throws {
+                       y: any MTLBuffer, yOffset: Int = 0,
+                       scratchGate: any MTLBuffer, scratchGateOffset: Int = 0,
+                       scratchUp: any MTLBuffer, scratchUpOffset: Int = 0,
+                       scratchAct: any MTLBuffer, scratchActOffset: Int = 0) throws {
         guard gate.rows == up.rows, gate.cols == up.cols,
               down.rows == gate.cols, down.cols == gate.rows else {
             throw SharedExpertError.dimensionMismatch(
@@ -151,15 +151,15 @@ public final class SharedExpertRuntime {
         }
     }
 
-    public func encode(commandBuffer: MTLCommandBuffer,
-                       x: MTLBuffer, xOffset: Int = 0,
+    public func encode(commandBuffer: any MTLCommandBuffer,
+                       x: any MTLBuffer, xOffset: Int = 0,
                        gate: SharedExpertProjection,
                        up: SharedExpertProjection,
                        down: SharedExpertProjection,
-                       y: MTLBuffer, yOffset: Int = 0,
-                       scratchGate: MTLBuffer, scratchGateOffset: Int = 0,
-                       scratchUp: MTLBuffer, scratchUpOffset: Int = 0,
-                       scratchAct: MTLBuffer, scratchActOffset: Int = 0) throws {
+                       y: any MTLBuffer, yOffset: Int = 0,
+                       scratchGate: any MTLBuffer, scratchGateOffset: Int = 0,
+                       scratchUp: any MTLBuffer, scratchUpOffset: Int = 0,
+                       scratchAct: any MTLBuffer, scratchActOffset: Int = 0) throws {
         switch implementation {
         case .int4(let runtime):
             try runtime.encode(commandBuffer: commandBuffer, x: x, xOffset: xOffset,

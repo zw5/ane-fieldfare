@@ -16,8 +16,8 @@ public enum RuntimeFaultPolicy: String, Codable, Sendable, CaseIterable {
 /// `partials`. On throw the guest has drained its own in-flight work, so the
 /// host may overwrite `partials` immediately.
 protocol RoutedPrefillGuest: AnyObject {
-    func runLayer(model: Model, layer: Int, hidden: MTLBuffer, partials: MTLBuffer,
-                  routes: PrefillMoEGroupedRoutes, pairs: MTLBuffer) async throws
+    func runLayer(model: Model, layer: Int, hidden: any MTLBuffer, partials: any MTLBuffer,
+                  routes: PrefillMoEGroupedRoutes, pairs: any MTLBuffer) async throws
     var profile: [String: Any] { get }
 }
 
@@ -48,7 +48,7 @@ struct GuestFault: Equatable {
 final class DeviceSupervisor {
     let aneLayers: Int
     let faultPolicy: RuntimeFaultPolicy
-    private let guest: RoutedPrefillGuest?
+    private let guest: any RoutedPrefillGuest?
     private(set) var evicted = false
     private(set) var faults: [GuestFault] = []
 
@@ -67,7 +67,7 @@ final class DeviceSupervisor {
 
     convenience init(configuration: RuntimeConfiguration, model: Model, context: MetalContext) throws {
         let layers = try Self.aneLayerCount(backend: configuration.backend, numLayers: model.config.numLayers)
-        var guest: RoutedPrefillGuest?
+        var guest: any RoutedPrefillGuest?
         if layers > 0 {
             try ANERoutedPrefillBackend.validate(config: model.config)
             guard configuration.activeRoutedExperts == model.config.topKExperts,
@@ -80,7 +80,7 @@ final class DeviceSupervisor {
     }
 
     /// Inject a guest directly. Tests use this to place fault-injecting guests.
-    init(aneLayers: Int, faultPolicy: RuntimeFaultPolicy, guest: RoutedPrefillGuest?) {
+    init(aneLayers: Int, faultPolicy: RuntimeFaultPolicy, guest: any RoutedPrefillGuest?) {
         self.aneLayers = guest == nil ? 0 : aneLayers
         self.faultPolicy = faultPolicy
         self.guest = guest
@@ -90,7 +90,7 @@ final class DeviceSupervisor {
         DeviceSupervisor(aneLayers: 0, faultPolicy: .failClosed, guest: nil)
     }
 
-    func routedPrefill(layer: Int) -> RoutedPrefillGuest? {
+    func routedPrefill(layer: Int) -> any RoutedPrefillGuest? {
         !evicted && layer < aneLayers ? guest : nil
     }
 

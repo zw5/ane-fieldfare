@@ -25,18 +25,18 @@ struct AttentionSplitGeometry: Sendable, Equatable {
 ///   - `out` : `[numQHeads, headDim]`
 final class Attention {
     private let ctx: MetalContext
-    private let psoPartial: MTLComputePipelineState
-    private let psoGQAPartial: MTLComputePipelineState
-    private let psoCombine: MTLComputePipelineState
-    private let psoPartialSWA: MTLComputePipelineState
-    private let psoPartialFull: MTLComputePipelineState
-    private let psoGQAPartialSWA: MTLComputePipelineState
-    private let psoGQAPartialSWAChunks16: MTLComputePipelineState
-    private let psoPartialFullChunks16: MTLComputePipelineState
-    private let psoCombineSWA: MTLComputePipelineState
-    private let psoCombineFull: MTLComputePipelineState
-    private let psoCombineSWAChunks16: MTLComputePipelineState
-    private let psoCombineFullChunks16: MTLComputePipelineState
+    private let psoPartial: any MTLComputePipelineState
+    private let psoGQAPartial: any MTLComputePipelineState
+    private let psoCombine: any MTLComputePipelineState
+    private let psoPartialSWA: any MTLComputePipelineState
+    private let psoPartialFull: any MTLComputePipelineState
+    private let psoGQAPartialSWA: any MTLComputePipelineState
+    private let psoGQAPartialSWAChunks16: any MTLComputePipelineState
+    private let psoPartialFullChunks16: any MTLComputePipelineState
+    private let psoCombineSWA: any MTLComputePipelineState
+    private let psoCombineFull: any MTLComputePipelineState
+    private let psoCombineSWAChunks16: any MTLComputePipelineState
+    private let psoCombineFullChunks16: any MTLComputePipelineState
 
     /// Mirrors `kAttnThreads` in `attention.metal`. The kernel was authored
     /// with a hardcoded 256-thread group so its threadgroup-memory scratch
@@ -56,9 +56,9 @@ final class Attention {
     // Partial state written by pass 1, read by pass 2. One shared allocation:
     // attention runs once per layer, serially, and pass 2 hazard-tracks pass 1
     // within the same command buffer — no race (mirrors MoE.routerLogits).
-    private let mPartial: MTLBuffer
-    private let dPartial: MTLBuffer
-    private let oPartial: MTLBuffer
+    private let mPartial: any MTLBuffer
+    private let dPartial: any MTLBuffer
+    private let oPartial: any MTLBuffer
 
     init(context: MetalContext) throws {
         self.ctx = context
@@ -162,11 +162,11 @@ final class Attention {
     /// `scale` defaults to `rsqrt(head_dim)` for generic callers;
     /// Gemma 4 callers pass 1.0 because the model's configured attention scale
     /// is 1.0.
-    func encodeSWA(commandBuffer: MTLCommandBuffer,
-                          q: MTLBuffer, qOffset: Int = 0,
-                          k: MTLBuffer, kOffset: Int = 0,
-                          v: MTLBuffer, vOffset: Int = 0,
-                          out: MTLBuffer, outOffset: Int = 0,
+    func encodeSWA(commandBuffer: any MTLCommandBuffer,
+                          q: any MTLBuffer, qOffset: Int = 0,
+                          k: any MTLBuffer, kOffset: Int = 0,
+                          v: any MTLBuffer, vOffset: Int = 0,
+                          out: any MTLBuffer, outOffset: Int = 0,
                           headDim: UInt32,
                           numQHeads: UInt32,
                           numKVHeads: UInt32,
@@ -193,11 +193,11 @@ final class Attention {
     /// Full attention. Gemma 4 reuses the raw K projection as raw V input, but
     /// separate normalization and RoPE make the cache streams distinct here.
     /// `scale` mirrors `encodeSWA`.
-    func encodeFull(commandBuffer: MTLCommandBuffer,
-                           q: MTLBuffer, qOffset: Int = 0,
-                           k: MTLBuffer, kOffset: Int = 0,
-                           v: MTLBuffer, vOffset: Int = 0,
-                           out: MTLBuffer, outOffset: Int = 0,
+    func encodeFull(commandBuffer: any MTLCommandBuffer,
+                           q: any MTLBuffer, qOffset: Int = 0,
+                           k: any MTLBuffer, kOffset: Int = 0,
+                           v: any MTLBuffer, vOffset: Int = 0,
+                           out: any MTLBuffer, outOffset: Int = 0,
                            headDim: UInt32,
                            numQHeads: UInt32,
                            numKVHeads: UInt32,
@@ -225,11 +225,11 @@ final class Attention {
     /// `[kvStart, seqLen)` range across `chunkCount` threadgroups per head;
     /// pass 2 merges the partials. Both encoders go on the same command buffer
     /// so pass 2 hazard-tracks the partial scratch written by pass 1.
-    private func encodeSplit(commandBuffer: MTLCommandBuffer,
-                             q: MTLBuffer, qOffset: Int,
-                             k: MTLBuffer, kOffset: Int,
-                             v: MTLBuffer, vOffset: Int,
-                             out: MTLBuffer, outOffset: Int,
+    private func encodeSplit(commandBuffer: any MTLCommandBuffer,
+                             q: any MTLBuffer, qOffset: Int,
+                             k: any MTLBuffer, kOffset: Int,
+                             v: any MTLBuffer, vOffset: Int,
+                             out: any MTLBuffer, outOffset: Int,
                              headDim: UInt32, numQHeads: UInt32, numKVHeads: UInt32,
                              seqLen: UInt32, kvStart: UInt32, scale: Float,
                              preferGQASWA: Bool,
@@ -312,7 +312,7 @@ final class Attention {
                                             numQHeads: UInt32,
                                             numKVHeads: UInt32,
                                             numChunks: UInt32? = nil,
-                                            ringCapacity: UInt32? = nil) throws -> MTLComputePipelineState {
+                                            ringCapacity: UInt32? = nil) throws -> any MTLComputePipelineState {
         var constants = [
             MetalFunctionConstant(index: 60, value: .uint32(headDim)),
             MetalFunctionConstant(index: 61, value: .uint32(numQHeads)),
@@ -333,7 +333,7 @@ final class Attention {
                                  numKVHeads: UInt32,
                                  numChunks: Int,
                                  useGQAPartial: Bool,
-                                 ringCapacity: UInt32 = 0) -> MTLComputePipelineState {
+                                 ringCapacity: UInt32 = 0) -> any MTLComputePipelineState {
         if ringCapacity > 0 {
             let name = useGQAPartial ? "attention_decode_gqa_swa_partial" : "attention_decode_partial"
             let specializedChunks = numChunks == 16 ? Optional(UInt32(numChunks)) : nil
@@ -370,7 +370,7 @@ final class Attention {
     private func combinePipeline(headDim: UInt32,
                                  numQHeads: UInt32,
                                  numKVHeads: UInt32,
-                                 numChunks: Int) -> MTLComputePipelineState {
+                                 numChunks: Int) -> any MTLComputePipelineState {
         if headDim == 256 && numQHeads == 16 && numKVHeads == 8 {
             return numChunks == 16 ? psoCombineSWAChunks16 : psoCombineSWA
         }

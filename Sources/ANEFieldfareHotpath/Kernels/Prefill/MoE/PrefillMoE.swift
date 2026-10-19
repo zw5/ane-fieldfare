@@ -2,18 +2,18 @@ import Foundation
 import Metal
 
 final class PrefillMoE {
-    private let reducePSO: MTLComputePipelineState
+    private let reducePSO: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.reducePSO = try context.pipeline("prefill_moe_reduce_token_major")
     }
 
-    func encodeReduceTokenMajor(commandBuffer: MTLCommandBuffer,
-                                       routePartials: MTLBuffer,
+    func encodeReduceTokenMajor(commandBuffer: any MTLCommandBuffer,
+                                       routePartials: any MTLBuffer,
                                        routePartialsOffset: Int = 0,
-                                       routeWeights: MTLBuffer,
+                                       routeWeights: any MTLBuffer,
                                        routeWeightsOffset: Int = 0,
-                                       h2: MTLBuffer,
+                                       h2: any MTLBuffer,
                                        h2Offset: Int = 0,
                                        queryCount: UInt32,
                                        topK: UInt32,

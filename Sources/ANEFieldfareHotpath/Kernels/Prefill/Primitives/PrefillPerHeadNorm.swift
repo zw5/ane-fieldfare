@@ -2,20 +2,20 @@ import Foundation
 import Metal
 
 final class PrefillPerHeadNorm {
-    private let psoBF16W: MTLComputePipelineState
-    private let psoNoScale: MTLComputePipelineState
+    private let psoBF16W: any MTLComputePipelineState
+    private let psoNoScale: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.psoBF16W = try context.pipeline("prefill_rmsnorm_bf16w_perhead_block")
         self.psoNoScale = try context.pipeline("prefill_rmsnorm_no_scale_perhead_block")
     }
 
-    func encodeBF16W(commandBuffer: MTLCommandBuffer,
-                            x: MTLBuffer,
+    func encodeBF16W(commandBuffer: any MTLCommandBuffer,
+                            x: any MTLBuffer,
                             xOffset: Int = 0,
-                            weight: MTLBuffer,
+                            weight: any MTLBuffer,
                             weightOffset: Int = 0,
-                            out: MTLBuffer,
+                            out: any MTLBuffer,
                             outOffset: Int = 0,
                             queryCount: UInt32,
                             headDim: UInt32,
@@ -48,10 +48,10 @@ final class PrefillPerHeadNorm {
         enc.endEncoding()
     }
 
-    func encodeNoScale(commandBuffer: MTLCommandBuffer,
-                              x: MTLBuffer,
+    func encodeNoScale(commandBuffer: any MTLCommandBuffer,
+                              x: any MTLBuffer,
                               xOffset: Int = 0,
-                              out: MTLBuffer,
+                              out: any MTLBuffer,
                               outOffset: Int = 0,
                               queryCount: UInt32,
                               headDim: UInt32,

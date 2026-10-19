@@ -2,18 +2,18 @@ import Foundation
 import Metal
 
 final class PrefillEmbedLookupInt4 {
-    private let pso: MTLComputePipelineState
+    private let pso: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("prefill_embed_lookup_int4_block")
     }
 
-    func encode(commandBuffer: MTLCommandBuffer,
-                       table: MTLBuffer, tableOffset: Int = 0,
-                       scales: MTLBuffer, scalesOffset: Int = 0,
-                       biases: MTLBuffer, biasesOffset: Int = 0,
-                       tokens: MTLBuffer, tokensOffset: Int = 0,
-                       out: MTLBuffer, outOffset: Int = 0,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       table: any MTLBuffer, tableOffset: Int = 0,
+                       scales: any MTLBuffer, scalesOffset: Int = 0,
+                       biases: any MTLBuffer, biasesOffset: Int = 0,
+                       tokens: any MTLBuffer, tokensOffset: Int = 0,
+                       out: any MTLBuffer, outOffset: Int = 0,
                        t: UInt32,
                        d: UInt32,
                        outScale: Float) {
@@ -39,16 +39,16 @@ final class PrefillEmbedLookupInt4 {
 }
 
 final class PrefillRMSNorm {
-    private let psoBF16W: MTLComputePipelineState
+    private let psoBF16W: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.psoBF16W = try context.pipeline("prefill_rmsnorm_bf16w_block")
     }
 
-    func encodeBF16W(commandBuffer: MTLCommandBuffer,
-                            x: MTLBuffer, xOffset: Int = 0,
-                            weight: MTLBuffer, weightOffset: Int = 0,
-                            out: MTLBuffer, outOffset: Int = 0,
+    func encodeBF16W(commandBuffer: any MTLCommandBuffer,
+                            x: any MTLBuffer, xOffset: Int = 0,
+                            weight: any MTLBuffer, weightOffset: Int = 0,
+                            out: any MTLBuffer, outOffset: Int = 0,
                             t: UInt32,
                             d: UInt32,
                             eps: Float) {
@@ -71,18 +71,18 @@ final class PrefillRMSNorm {
 }
 
 final class PrefillInt4QMM {
-    private let pso: MTLComputePipelineState
+    private let pso: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("prefill_dequant_int4_qmm_f16_block")
     }
 
-    func encode(commandBuffer: MTLCommandBuffer,
-                       weights: MTLBuffer, weightsOffset: Int = 0,
-                       scales: MTLBuffer, scalesOffset: Int = 0,
-                       biases: MTLBuffer, biasesOffset: Int = 0,
-                       x: MTLBuffer, xOffset: Int = 0,
-                       y: MTLBuffer, yOffset: Int = 0,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       weights: any MTLBuffer, weightsOffset: Int = 0,
+                       scales: any MTLBuffer, scalesOffset: Int = 0,
+                       biases: any MTLBuffer, biasesOffset: Int = 0,
+                       x: any MTLBuffer, xOffset: Int = 0,
+                       y: any MTLBuffer, yOffset: Int = 0,
                        t: Int,
                        n: Int,
                        k: Int) {

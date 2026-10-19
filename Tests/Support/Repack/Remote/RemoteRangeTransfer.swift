@@ -1,5 +1,5 @@
 import Darwin
-import Foundation
+public import Foundation
 import Synchronization
 
 public struct RemoteRangeExpectation: Sendable, Equatable {

@@ -19,8 +19,8 @@ final class DequantInt8GEMV {
         var n: UInt32
     }
 
-    private let pso: MTLComputePipelineState
-    private let specializedPSOs: [Shape: MTLComputePipelineState]
+    private let pso: any MTLComputePipelineState
+    private let specializedPSOs: [Shape: any MTLComputePipelineState]
     private static let realDecodeShapes: [Shape] = [
         Shape(m: 128, n: 2816),     // router.proj
         Shape(m: 2112, n: 2816),    // shared expert gate/up
@@ -31,7 +31,7 @@ final class DequantInt8GEMV {
         let kernelName = "dequant_int8_gemv_simd"
         self.pso = try context.pipeline(kernelName)
 
-        var variants: [Shape: MTLComputePipelineState] = [:]
+        var variants: [Shape: any MTLComputePipelineState] = [:]
         for shape in Self.realDecodeShapes {
             variants[shape] = try context.pipeline(
                 kernelName,
@@ -47,13 +47,13 @@ final class DequantInt8GEMV {
     /// Encodes the GEMV onto `commandBuffer`. Offsets allow passing the same
     /// mmap'd `MTLBuffer` for weights / scales / biases when they share a
     /// page-aligned blob.
-    func encode(commandBuffer: MTLCommandBuffer,
-                       weights: MTLBuffer, weightsOffset: Int = 0,
-                       scales:  MTLBuffer, scalesOffset:  Int = 0,
-                       biases:  MTLBuffer, biasesOffset:  Int = 0,
-                       x:       MTLBuffer,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       weights: any MTLBuffer, weightsOffset: Int = 0,
+                       scales:  any MTLBuffer, scalesOffset:  Int = 0,
+                       biases:  any MTLBuffer, biasesOffset:  Int = 0,
+                       x:       any MTLBuffer,
                        xOffset: Int = 0,
-                       y:       MTLBuffer,
+                       y:       any MTLBuffer,
                        yOffset: Int = 0,
                        m: UInt32,
                        n: UInt32) {

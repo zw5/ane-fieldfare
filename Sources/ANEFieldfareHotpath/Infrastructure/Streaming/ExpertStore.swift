@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import Metal
+public import Metal
 import Synchronization
 
 package enum ExpertStoreError: Error, CustomStringConvertible {
@@ -74,7 +74,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
 
     public let expertCount: Int
     public let expertBytes: Int
-    public let buffers: [MTLBuffer]
+    public let buffers: [any MTLBuffer]
 
     private let mapping: Mapping
     private var fd: Int32 { mapping.fd }
@@ -85,7 +85,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
     /// `fileDescriptor` is duplicated; the caller keeps ownership of its copy.
     public init(fileDescriptor: Int32,
                 path: String,
-                device: MTLDevice,
+                device: any MTLDevice,
                 expertCount: Int,
                 expertBytes: Int,
                 expertOffsets: [UInt64]) throws {
@@ -116,7 +116,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
         // From here the mapping owns the descriptor and unmaps on release.
         closeOnFailure = false
         let mapping = Mapping(fd: fd, base: raw, bytes: mapped)
-        var buffers: [MTLBuffer] = []
+        var buffers: [any MTLBuffer] = []
         buffers.reserveCapacity(expertCount)
         for (expert, offset) in offsets.enumerated() {
             guard let buffer = device.makeBuffer(bytesNoCopy: raw + offset, length: expertBytes,

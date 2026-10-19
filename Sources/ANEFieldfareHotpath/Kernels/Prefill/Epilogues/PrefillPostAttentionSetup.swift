@@ -2,28 +2,28 @@ import Foundation
 import Metal
 
 final class PrefillPostAttentionSetup {
-    private let pso: MTLComputePipelineState
+    private let pso: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("prefill_post_attn_setup_block")
     }
 
-    func encode(commandBuffer: MTLCommandBuffer,
-                       hidden: MTLBuffer,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       hidden: any MTLBuffer,
                        hiddenOffset: Int = 0,
-                       attn: MTLBuffer,
+                       attn: any MTLBuffer,
                        attnOffset: Int = 0,
-                       denseX: MTLBuffer,
+                       denseX: any MTLBuffer,
                        denseXOffset: Int = 0,
-                       routedX: MTLBuffer,
+                       routedX: any MTLBuffer,
                        routedXOffset: Int = 0,
-                       routerX: MTLBuffer,
+                       routerX: any MTLBuffer,
                        routerXOffset: Int = 0,
-                       postAttentionWeight: MTLBuffer,
+                       postAttentionWeight: any MTLBuffer,
                        postAttentionWeightOffset: Int = 0,
-                       preFFNWeight: MTLBuffer,
+                       preFFNWeight: any MTLBuffer,
                        preFFNWeightOffset: Int = 0,
-                       preFFN2Weight: MTLBuffer,
+                       preFFN2Weight: any MTLBuffer,
                        preFFN2WeightOffset: Int = 0,
                        queryCount: UInt32,
                        d: UInt32,

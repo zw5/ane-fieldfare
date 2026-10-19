@@ -20,7 +20,7 @@ import ANEFieldfareValidationSupport
         return values
     }
 
-    private static func assertPaddingUnchanged(_ buffer: MTLBuffer,
+    private static func assertPaddingUnchanged(_ buffer: any MTLBuffer,
                                                original: [Float16],
                                                rows: Int,
                                                rowStride: Int,

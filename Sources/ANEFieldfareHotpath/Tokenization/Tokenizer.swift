@@ -1,6 +1,6 @@
-import Foundation
-import Hub
-import Tokenizers
+public import Foundation
+public import Hub
+public import Tokenizers
 
 public enum GFTokenizerError: Error, CustomStringConvertible {
     case missingSpecialToken(String)
@@ -332,7 +332,7 @@ private enum GFTokenizerLoadSource: Hashable {
 private actor GFTokenizerLoadCoordinator {
     static let shared = GFTokenizerLoadCoordinator()
 
-    private var tasks: [GFTokenizerLoadSource: Task<GFTokenizer, Error>] = [:]
+    private var tasks: [GFTokenizerLoadSource: Task<GFTokenizer, any Error>] = [:]
 
     func load(_ source: GFTokenizerLoadSource) async throws -> GFTokenizer {
         if let task = tasks[source] {

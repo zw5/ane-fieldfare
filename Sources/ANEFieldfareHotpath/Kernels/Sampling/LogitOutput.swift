@@ -11,7 +11,7 @@ import Metal
 /// kernel signature instead of being hardcoded so that downstream callers
 /// (and tests) can disable it by passing a very large number.
 final class LogitSoftcapSoftmax {
-    private let pso: MTLComputePipelineState
+    private let pso: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("logit_softcap_softmax")
@@ -19,9 +19,9 @@ final class LogitSoftcapSoftmax {
 
     /// Encodes the kernel onto `commandBuffer`. `logits` and `probs` are FP16
     /// buffers of length `v`. Gemma 4 uses `softcap=30.0`.
-    func encode(commandBuffer: MTLCommandBuffer,
-                       logits: MTLBuffer,
-                       probs: MTLBuffer,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       logits: any MTLBuffer,
+                       probs: any MTLBuffer,
                        v: UInt32,
                        softcap: Float = 30.0) {
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
@@ -51,7 +51,7 @@ final class LogitSoftcapSoftmax {
 /// plain-temperature fast path uses the same
 /// `(seed, position, row)` Gumbel stream as the fused lm_head sampler.
 final class Sample {
-    private let pso: MTLComputePipelineState
+    private let pso: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("sample")
@@ -60,9 +60,9 @@ final class Sample {
     /// Encodes the sampler. `probs` is an FP16 buffer of length `v`. `outToken`
     /// must point at storage for one UInt32. The seed is the full 64-bit PRNG
     /// state — tests pass identical seeds to assert determinism.
-    func encode(commandBuffer: MTLCommandBuffer,
-                       probs: MTLBuffer,
-                       outToken: MTLBuffer,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       probs: any MTLBuffer,
+                       outToken: any MTLBuffer,
                        v: UInt32,
                        temperature: Float = 1.0,
                        topK: UInt32 = 0,
@@ -105,13 +105,13 @@ final class SampleTopK64 {
     private static let keptPerTile = 64
 
     private let ctx: MetalContext
-    private let stage1PSO: MTLComputePipelineState
-    private let reducePSO: MTLComputePipelineState
-    private let finalPSO: MTLComputePipelineState
-    private let stage1Values: MTLBuffer
-    private let stage1Indices: MTLBuffer
-    private let stage2Values: MTLBuffer
-    private let stage2Indices: MTLBuffer
+    private let stage1PSO: any MTLComputePipelineState
+    private let reducePSO: any MTLComputePipelineState
+    private let finalPSO: any MTLComputePipelineState
+    private let stage1Values: any MTLBuffer
+    private let stage1Indices: any MTLBuffer
+    private let stage2Values: any MTLBuffer
+    private let stage2Indices: any MTLBuffer
     private let stage1Groups: Int
     private let stage2Groups: Int
     private let stage1Count: Int
@@ -159,9 +159,9 @@ final class SampleTopK64 {
         self.stage2Indices = stage2Indices
     }
 
-    public func encode(commandBuffer: MTLCommandBuffer,
-                       probs: MTLBuffer,
-                       outToken: MTLBuffer,
+    public func encode(commandBuffer: any MTLCommandBuffer,
+                       probs: any MTLBuffer,
+                       outToken: any MTLBuffer,
                        temperature: Float,
                        topP: Float,
                        seed: UInt64) {

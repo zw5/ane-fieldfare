@@ -1,5 +1,5 @@
 import Foundation
-import Metal
+public import Metal
 
 /// Gemma 4 real-forward decode pass.
 ///
@@ -100,34 +100,34 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private let prefillFinalRowHead: PrefillFinalRowHeadInt4
 
     // Scratch — preallocated per spec'd D / F / vocab.
-    private let hidden: MTLBuffer        // [D] FP16
-    private let normed: MTLBuffer        // [D] FP16
-    private let attnOut: MTLBuffer       // [N_HEADS * head_dim] FP16
-    private let qScratch: MTLBuffer      // [N_HEADS * head_dim] FP16
-    private let oOut: MTLBuffer          // [D] FP16
-    private let h1Buf: MTLBuffer         // [D] FP16 (dense MLP output)
-    private let h2Buf: MTLBuffer         // [D] FP16 (routed output)
-    private let routedX: MTLBuffer       // [D] FP16 (pre_feedforward_layernorm_2 output)
-    private let denseX: MTLBuffer        // [D] FP16 (pre_feedforward_layernorm output)
-    private let denseScratchGate: MTLBuffer // [F=2112] FP16
-    private let denseScratchUp: MTLBuffer   // [F=2112] FP16
-    private let denseScratchAct: MTLBuffer  // [F=2112] FP16
-    private let routerInput: MTLBuffer   // [D] FP16 (rmsnorm_no_scale(h))
-    private let nextLayerScores: MTLBuffer // [numExperts] FP32, early-read guess
-    private let zeroResidual: MTLBuffer  // [D] FP16 zeros — for routed branch base
-    private let outIndices: MTLBuffer    // [topK] UInt32
-    private let outWeights: MTLBuffer    // [topK] FP16
+    private let hidden: any MTLBuffer        // [D] FP16
+    private let normed: any MTLBuffer        // [D] FP16
+    private let attnOut: any MTLBuffer       // [N_HEADS * head_dim] FP16
+    private let qScratch: any MTLBuffer      // [N_HEADS * head_dim] FP16
+    private let oOut: any MTLBuffer          // [D] FP16
+    private let h1Buf: any MTLBuffer         // [D] FP16 (dense MLP output)
+    private let h2Buf: any MTLBuffer         // [D] FP16 (routed output)
+    private let routedX: any MTLBuffer       // [D] FP16 (pre_feedforward_layernorm_2 output)
+    private let denseX: any MTLBuffer        // [D] FP16 (pre_feedforward_layernorm output)
+    private let denseScratchGate: any MTLBuffer // [F=2112] FP16
+    private let denseScratchUp: any MTLBuffer   // [F=2112] FP16
+    private let denseScratchAct: any MTLBuffer  // [F=2112] FP16
+    private let routerInput: any MTLBuffer   // [D] FP16 (rmsnorm_no_scale(h))
+    private let nextLayerScores: any MTLBuffer // [numExperts] FP32, early-read guess
+    private let zeroResidual: any MTLBuffer  // [D] FP16 zeros — for routed branch base
+    private let outIndices: any MTLBuffer    // [topK] UInt32
+    private let outWeights: any MTLBuffer    // [topK] FP16
     // Persistent MoE scratch, allocated once; about 56 KiB at production shape.
-    private let moeActs: MTLBuffer       // [topK * FmoE] FP16
+    private let moeActs: any MTLBuffer       // [topK * FmoE] FP16
     // GPU-routed decode: the routed slots the GPU fills, each layer's expert
     // address table (0 where unbound), the zero expert an unbound slot reads,
     // the layer input kept for a host patch, and per layer the slots a patch
     // recomputes (several patches can be in flight).
-    private let routedSlots: MTLBuffer          // [maxStreamedExperts] UInt64
-    private let routedAddressTable: MTLBuffer   // [numLayers * numExperts] UInt64
-    private let routedFallback: MTLBuffer       // one zeroed expert
-    private let savedHidden: MTLBuffer          // [D] FP16
-    private let patchSlots: MTLBuffer           // [numLayers * topK] UInt32
+    private let routedSlots: any MTLBuffer          // [maxStreamedExperts] UInt64
+    private let routedAddressTable: any MTLBuffer   // [numLayers * numExperts] UInt64
+    private let routedFallback: any MTLBuffer       // one zeroed expert
+    private let savedHidden: any MTLBuffer          // [D] FP16
+    private let patchSlots: any MTLBuffer           // [numLayers * topK] UInt32
     private let gpuRoutedDecode: Bool
     /// Per layer, the expert GPU addresses and the mapping they belong to: a
     /// layer can be closed and reopened at new addresses (vision residency).
@@ -154,7 +154,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// Guessed experts a GPU-routed decode layer binds; the guess's top 24
     /// hold all 8 routes in about 9 of 10 layers.
     private let bindTop = ProcessInfo.processInfo.environment["ANE_FIELDFARE_BIND_TOP"].flatMap(Int.init) ?? 24
-    private let greedyTokenBuf: MTLBuffer // 4 B UInt32 fused-head output
+    private let greedyTokenBuf: any MTLBuffer // 4 B UInt32 fused-head output
     private var prefillChunkState = PrefillChunkCommitState()
     private var prefillScratch: PrefillChunkScratchBuffers?
     /// Owns the ANE guest; the forward loop asks it per layer whether the
@@ -166,7 +166,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// Per-layer `router.scale * D^-0.5` pre-folded into one BF16 buffer
     /// allocation per layer. ~168 KB total at 30 layers × 2816 BF16 — bounded
     /// host work done once at init.
-    private let effectiveScaleBuffers: [MTLBuffer]
+    private let effectiveScaleBuffers: [any MTLBuffer]
     private let sharedExpertProjections: [LayerSharedExpertProjections]
     /// Next-layer early read; nil when `RuntimeConfiguration.earlyExpertRead`
     /// is off. See `NextLayerExpertPrefetcher`.
@@ -199,14 +199,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     public private(set) var decodeLayerPatches: UInt64 = 0
     /// Signalled by each decode layer's router, ahead of its command buffer's
     /// completion.
-    private let routerEvent: MTLSharedEvent
+    private let routerEvent: any MTLSharedEvent
     private var routerEventValue: UInt64 = 0
     /// Set only for the duration of `verify`: greedy tokens for every row,
     /// tensor-op projections at any row count, routed experts on Metal.
-    private var verifyTokens: MTLBuffer?
+    private var verifyTokens: any MTLBuffer?
     /// Per-row next-layer guesses for a verify block's early read.
-    private let chunkGuessIDs: MTLBuffer
-    private let chunkGuessWeights: MTLBuffer
+    private let chunkGuessIDs: any MTLBuffer
+    private let chunkGuessWeights: any MTLBuffer
     /// Experts advised ahead of verify blocks' next layers.
     public private(set) var prefillEarlyReads: UInt64 = 0
     public convenience init(model: Model, context: MetalContext, maxContext: Int,
@@ -277,7 +277,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         let F = cfg.intermediateSize
         let maxQ = cfg.numHeads * max(cfg.headDim, cfg.fullHeadDim)
 
-        func buf(_ count: Int, _ stride: Int = MemoryLayout<Float16>.size) throws -> MTLBuffer {
+        func buf(_ count: Int, _ stride: Int = MemoryLayout<Float16>.size) throws -> any MTLBuffer {
             guard let b = device.makeBuffer(length: max(count, 1) * stride,
                                             options: .storageModeShared) else {
                 throw ModelError.residentBufferWrapFailed
@@ -353,7 +353,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         // Pre-fold 1/sqrt(D) into router.scale per layer. Each layer gets its
         // own BF16 [D] buffer — the kernel reads `effective_scale[i]` and we
         // pay for the multiply once per generation, not per token.
-        var perLayer: [MTLBuffer] = []
+        var perLayer: [any MTLBuffer] = []
         perLayer.reserveCapacity(cfg.numLayers)
         let invSqrtD = Float(1.0) / Float(D).squareRoot()
         let dInts = D
@@ -474,12 +474,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         if !weight.isFinite { allRouteValuesFinite = false }
     }
 
-    private func snapshotFP16(_ buffer: MTLBuffer, count: Int) -> [Float16] {
+    private func snapshotFP16(_ buffer: any MTLBuffer, count: Int) -> [Float16] {
         let pointer = buffer.contents().bindMemory(to: Float16.self, capacity: count)
         return Array(UnsafeBufferPointer(start: pointer, count: count))
     }
 
-    public func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {
+    public func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
         try prefillChunkState.requireClean(operation: "produce")
         try await produceToken(token: token,
                                position: position,
@@ -491,7 +491,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                startPosition: Int,
                                outputMode: PrefillOutputMode,
                                config: PrefillRuntimeConfig,
-                               into logits: MTLBuffer,
+                               into logits: any MTLBuffer,
                                onProgress: (Int) -> Void) async throws -> PrefillResult {
         try prefillChunkState.requireClean(operation: "prefillChunked")
         guard config.mode == .chunked else {
@@ -544,7 +544,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                   startPosition: Int,
                                   outputMode: PrefillOutputMode,
                                   config: PrefillRuntimeConfig,
-                                  into logits: MTLBuffer,
+                                  into logits: any MTLBuffer,
                                   onProgress: (Int) -> Void) async throws -> PrefillResult {
         try prefillChunkState.requireClean(operation: "prefillMultimodal")
         // The same property `coercedForImagePrompt()` repairs, so the guard and
@@ -646,11 +646,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private func executePrefillChunk(tokens: ArraySlice<Int32>,
                                      startPosition: Int,
                                      outputMode: PrefillOutputMode,
-                                     logits: MTLBuffer,
+                                     logits: any MTLBuffer,
                                      scratch: PrefillChunkScratchBuffers,
                                      config: PrefillRuntimeConfig,
                                      writeFinalHead: Bool,
-                                     embeddingOverride: MTLBuffer? = nil,
+                                     embeddingOverride: any MTLBuffer? = nil,
                                      bidirectionalBlock: Range<Int>? = nil) async throws {
         guard !tokens.isEmpty else { return }
         let kvPosition = kv.position
@@ -727,11 +727,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         let t = tokens.count
         let emb = model.embedding
 
-        func encodeInt4Projection(commandBuffer: MTLCommandBuffer,
+        func encodeInt4Projection(commandBuffer: any MTLCommandBuffer,
                                   family: PrefillProjectionFamily,
                                   weights: TensorView,
-                                  x: MTLBuffer,
-                                  y: MTLBuffer,
+                                  x: any MTLBuffer,
+                                  y: any MTLBuffer,
                                   rows: Int,
                                   columns: Int,
                                   tokenCount: Int,
@@ -799,9 +799,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             }
         }
 
-        func copyPrefillKV(commandBuffer: MTLCommandBuffer,
-                           source: MTLBuffer,
-                           destination: (buffer: MTLBuffer, offset: Int, stride: Int),
+        func copyPrefillKV(commandBuffer: any MTLCommandBuffer,
+                           source: any MTLBuffer,
+                           destination: (buffer: any MTLBuffer, offset: Int, stride: Int),
                            sourceTokenOffset: Int,
                            tokenCount: Int,
                            bytesPerToken: Int) throws {
@@ -817,13 +817,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             blit.endEncoding()
         }
 
-        func copyPrefillKVToCache(commandBuffer: MTLCommandBuffer,
+        func copyPrefillKVToCache(commandBuffer: any MTLCommandBuffer,
                                   kv: KVCacheManager,
                                   layer: Int,
                                   startPosition: Int,
                                   tokenCount: Int,
-                                  keySource: MTLBuffer,
-                                  valueSource: MTLBuffer,
+                                  keySource: any MTLBuffer,
+                                  valueSource: any MTLBuffer,
                                   bytesPerToken: Int) throws {
             let capacity = kv.capacity(layer: layer)
             let physicalStart = startPosition % capacity
@@ -905,10 +905,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                              hiddenSize: D, numLayers: cfg.numLayers)
 
         struct PendingLayerTail {
-            let attention: MTLCommandBuffer
-            let tail: MTLCommandBuffer
-            let shared: MTLCommandBuffer
-            let tiles: [MTLCommandBuffer]
+            let attention: any MTLCommandBuffer
+            let tail: any MTLCommandBuffer
+            let shared: any MTLCommandBuffer
+            let tiles: [any MTLCommandBuffer]
             /// Kept alive until the tiles that read it complete.
             let metadata: Any
         }
@@ -1328,7 +1328,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                             clearCB.commit()
                         }
                     }
-                    var tileCBs: [MTLCommandBuffer] = []
+                    var tileCBs: [any MTLCommandBuffer] = []
                     if routedOnHost {
                         // One reader reads each tile's absent experts in tile
                         // order and reports each tile as it lands, so a tile
@@ -1595,7 +1595,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
 
     private func produceToken(token: Int32,
                               position: Int,
-                              into logits: MTLBuffer,
+                              into logits: any MTLBuffer,
                               outputMode: PrefillOutputMode) async throws {
         let kvPosition = kv.position
         guard kvPosition == position else {
@@ -1622,12 +1622,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         struct LayerWork {
             let layer: Int
             /// Through the router; signals `event` when the routes are ready.
-            let attention: MTLCommandBuffer
+            let attention: any MTLCommandBuffer
             let event: UInt64
-            let shared: MTLCommandBuffer
+            let shared: any MTLCommandBuffer
             /// The routed experts, looked up on the GPU, and the layer tail;
             /// nil on the host path.
-            let routed: MTLCommandBuffer?
+            let routed: any MTLCommandBuffer?
             /// Experts `routed` binds; a route outside it is patched.
             let bound: [Bool]
             let layerScalar: Float
@@ -1635,13 +1635,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let postFFN: TensorView
             /// Profiling only: kernels split out ahead of `attention` and
             /// `shared`.
-            var pieces: [(String, MTLCommandBuffer)] = []
-            var sharedPieces: [(String, MTLCommandBuffer)] = []
+            var pieces: [(String, any MTLCommandBuffer)] = []
+            var sharedPieces: [(String, any MTLCommandBuffer)] = []
         }
-        var profiled: [(String, MTLCommandBuffer)] = []
-        var committed: [(MTLCommandBuffer, ReferenceWritableKeyPath<RealForwardRunner, UInt64>)] = []
+        var profiled: [(String, any MTLCommandBuffer)] = []
+        var committed: [(any MTLCommandBuffer, ReferenceWritableKeyPath<RealForwardRunner, UInt64>)] = []
 
-        func encodeTail(_ cb: MTLCommandBuffer, _ work: LayerWork) {
+        func encodeTail(_ cb: any MTLCommandBuffer, _ work: LayerWork) {
             fusedTail.encode(commandBuffer: cb,
                              h2: h2Buf,
                              h1: h1Buf,
@@ -1695,7 +1695,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 .assumingMemoryBound(to: UInt16.self)
 
             var cb = try ctx.makeCommandBuffer()
-            var pieces: [(String, MTLCommandBuffer)] = []
+            var pieces: [(String, any MTLCommandBuffer)] = []
             // Profiling: each kernel in its own command buffer, queued
             // back to back, so its GPU time is its own.
             func cut(_ name: String) throws {
@@ -1845,7 +1845,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             // The shared dense MLP depends only on denseX; it runs while the
             // host checks the routes.
             var sharedCB = try ctx.makeCommandBuffer()
-            var sharedPieces: [(String, MTLCommandBuffer)] = []
+            var sharedPieces: [(String, any MTLCommandBuffer)] = []
             func cutShared(_ name: String) throws {
                 guard profileKernels else { return }
                 sharedPieces.append((name, sharedCB))
@@ -1885,7 +1885,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             let table = routedAddressTable.contents().assumingMemoryBound(to: UInt64.self)
                 + L * numExperts
             var bound = [Bool](repeating: false, count: numExperts)
-            var resident: [MTLBuffer] = [routedFallback]
+            var resident: [any MTLBuffer] = [routedFallback]
             for e in topIndices(guess, count: bindTop) where mapped.isResident(e, probes: Self.bindProbes) {
                 bound[e] = true
                 resident.append(mapped.buffers[e])
@@ -2157,7 +2157,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     /// than most of the wait. Past `routerSpinNanos` (a layer's attention
     /// takes well under 1 ms) it blocks on `cb`, so a stalled GPU cannot pin a
     /// core indefinitely.
-    private func awaitRouter(_ value: UInt64, signaledBy cb: MTLCommandBuffer) throws {
+    private func awaitRouter(_ value: UInt64, signaledBy cb: any MTLCommandBuffer) throws {
         let deadline = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + Self.routerSpinNanos
         while routerEvent.signaledValue < value {
             if cb.status == .error { try checkCommandBufferError(cb) }
@@ -2168,19 +2168,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         }
     }
 
-    private func runSync(_ body: (MTLCommandBuffer) -> Void) throws {
+    private func runSync(_ body: (any MTLCommandBuffer) -> Void) throws {
         let cb = try ctx.makeCommandBuffer()
         body(cb)
         cb.commit()
         try waitForCompletion(cb)
     }
 
-    private nonisolated func waitForCompletion(_ cb: MTLCommandBuffer) throws {
+    private nonisolated func waitForCompletion(_ cb: any MTLCommandBuffer) throws {
         waitUntilCompleted(cb)
         try checkCommandBufferError(cb)
     }
 
-    private nonisolated func waitUntilCompleted(_ cb: MTLCommandBuffer) {
+    private nonisolated func waitUntilCompleted(_ cb: any MTLCommandBuffer) {
         cb.waitUntilCompleted()
     }
 

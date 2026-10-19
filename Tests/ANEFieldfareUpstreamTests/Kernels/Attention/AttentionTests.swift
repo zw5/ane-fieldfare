@@ -143,7 +143,7 @@ import ANEFieldfareValidationSupport
               let outBuf = Fp16Buffer.make(ctx.device, count: qCount) else {
             Issue.record("Failed to allocate buffers"); return
         }
-        let vBuf: MTLBuffer
+        let vBuf: any MTLBuffer
         if shareKV {
             vBuf = kBuf
         } else {

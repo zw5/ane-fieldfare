@@ -53,9 +53,9 @@ struct PrefillAttentionParams: Sendable, Equatable {
 
 final class PrefillAttention {
     private let context: MetalContext
-    private let psoCausalTiled: MTLComputePipelineState
-    private let psoParamsSmoke: MTLComputePipelineState
-    private let psoFullTensorOps2DValidityV2: MTLComputePipelineState?
+    private let psoCausalTiled: any MTLComputePipelineState
+    private let psoParamsSmoke: any MTLComputePipelineState
+    private let psoFullTensorOps2DValidityV2: any MTLComputePipelineState?
 
     var tensorOps2DValidityV2Available: Bool {
         psoFullTensorOps2DValidityV2 != nil
@@ -86,11 +86,11 @@ final class PrefillAttention {
         }
     }
 
-    func encodeCausal(commandBuffer: MTLCommandBuffer,
-                             q: MTLBuffer, qOffset: Int = 0,
-                             k: MTLBuffer, kOffset: Int = 0,
-                             v: MTLBuffer, vOffset: Int = 0,
-                             out: MTLBuffer, outOffset: Int = 0,
+    func encodeCausal(commandBuffer: any MTLCommandBuffer,
+                             q: any MTLBuffer, qOffset: Int = 0,
+                             k: any MTLBuffer, kOffset: Int = 0,
+                             v: any MTLBuffer, vOffset: Int = 0,
+                             out: any MTLBuffer, outOffset: Int = 0,
                              params: PrefillAttentionParams,
                              kvRingCapacity: UInt32 = 0,
                              layerKind: PrefillAttentionLayerKind = .full,
@@ -122,7 +122,7 @@ final class PrefillAttention {
             && effectiveParams.scale == 1.0
         let tensorOpsPipeline = tensorOpsShape ? psoFullTensorOps2DValidityV2 : nil
         let useTensorOps = tensorOpsPipeline != nil
-        let pipeline: MTLComputePipelineState
+        let pipeline: any MTLComputePipelineState
         let useSIMD = path == .causalSIMD && tensorOpsPipeline == nil && [256, 512].contains(params.headDim)
         if useSIMD {
             pipeline = try context.pipeline("attention_prefill_causal_simd",
@@ -198,9 +198,9 @@ final class PrefillAttention {
     /// Reads every field back through the MSL struct. `PrefillAttentionParams`
     /// is mirrored by hand in `prefill.metal`, and a field added on one side
     /// only shifts every later field silently.
-    func encodeParamsSmoke(commandBuffer: MTLCommandBuffer,
+    func encodeParamsSmoke(commandBuffer: any MTLCommandBuffer,
                            params: PrefillAttentionParams,
-                           out: MTLBuffer) {
+                           out: any MTLBuffer) {
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(psoParamsSmoke)
         var p = params
@@ -211,7 +211,7 @@ final class PrefillAttention {
         enc.endEncoding()
     }
 
-    private func causalTiledPipeline(kvRingCapacity: UInt32) throws -> MTLComputePipelineState {
+    private func causalTiledPipeline(kvRingCapacity: UInt32) throws -> any MTLComputePipelineState {
         guard kvRingCapacity > 0 else { return psoCausalTiled }
         return try context.pipeline(
             "attention_prefill_causal_tiled",

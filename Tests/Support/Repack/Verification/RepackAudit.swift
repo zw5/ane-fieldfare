@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 import Darwin
 import Darwin.Mach
 

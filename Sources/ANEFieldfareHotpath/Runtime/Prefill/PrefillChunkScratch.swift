@@ -75,29 +75,29 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
 
 struct PrefillChunkScratchBuffers {
     let layout: PrefillChunkScratchLayout
-    let hidden: MTLBuffer
-    let normed: MTLBuffer
-    let q: MTLBuffer
-    let kStage: MTLBuffer
-    let vStage: MTLBuffer
-    let attentionOutput: MTLBuffer
-    let denseX: MTLBuffer
-    let routedX: MTLBuffer
-    let routerX: MTLBuffer
-    let h1: MTLBuffer
-    let h2: MTLBuffer
-    let routePartials: MTLBuffer
-    let routeIDs: MTLBuffer
-    let routeWeights: MTLBuffer
-    let sharedGateScratch: MTLBuffer
-    let sharedUpScratch: MTLBuffer
-    let sharedActScratch: MTLBuffer
-    let routedGateUpActScratch: MTLBuffer
-    let routedDownScratch: MTLBuffer
+    let hidden: any MTLBuffer
+    let normed: any MTLBuffer
+    let q: any MTLBuffer
+    let kStage: any MTLBuffer
+    let vStage: any MTLBuffer
+    let attentionOutput: any MTLBuffer
+    let denseX: any MTLBuffer
+    let routedX: any MTLBuffer
+    let routerX: any MTLBuffer
+    let h1: any MTLBuffer
+    let h2: any MTLBuffer
+    let routePartials: any MTLBuffer
+    let routeIDs: any MTLBuffer
+    let routeWeights: any MTLBuffer
+    let sharedGateScratch: any MTLBuffer
+    let sharedUpScratch: any MTLBuffer
+    let sharedActScratch: any MTLBuffer
+    let routedGateUpActScratch: any MTLBuffer
+    let routedDownScratch: any MTLBuffer
 
-    static func allocate(device: MTLDevice,
+    static func allocate(device: any MTLDevice,
                          layout: PrefillChunkScratchLayout) throws -> PrefillChunkScratchBuffers {
-        func privateBuffer(_ elements: Int, label: String) throws -> MTLBuffer {
+        func privateBuffer(_ elements: Int, label: String) throws -> any MTLBuffer {
             guard let buffer = device.makeBuffer(
                 length: max(elements, 1) * MemoryLayout<Float16>.stride,
                 options: .storageModePrivate)
@@ -108,7 +108,7 @@ struct PrefillChunkScratchBuffers {
             return buffer
         }
 
-        func sharedBuffer(_ bytes: Int, label: String) throws -> MTLBuffer {
+        func sharedBuffer(_ bytes: Int, label: String) throws -> any MTLBuffer {
             guard let buffer = device.makeBuffer(length: max(bytes, 1),
                                                 options: .storageModeShared) else {
                 throw ModelError.residentBufferWrapFailed

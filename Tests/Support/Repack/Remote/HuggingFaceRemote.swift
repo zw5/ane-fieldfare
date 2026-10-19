@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 
 public struct RemoteFileInfo: Sendable, Hashable {
     public let filename: String

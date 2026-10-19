@@ -10,16 +10,16 @@ final class PrefillQKVEpilogue {
         self.rope = try PrefillRoPE(context: context)
     }
 
-    func encode(commandBuffer: MTLCommandBuffer,
-                       q: MTLBuffer,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       q: any MTLBuffer,
                        qOffset: Int = 0,
-                       k: MTLBuffer,
+                       k: any MTLBuffer,
                        kOffset: Int = 0,
-                       v: MTLBuffer,
+                       v: any MTLBuffer,
                        vOffset: Int = 0,
-                       qWeight: MTLBuffer,
+                       qWeight: any MTLBuffer,
                        qWeightOffset: Int = 0,
-                       kWeight: MTLBuffer,
+                       kWeight: any MTLBuffer,
                        kWeightOffset: Int = 0,
                        startPosition: UInt32,
                        queryCount: UInt32,

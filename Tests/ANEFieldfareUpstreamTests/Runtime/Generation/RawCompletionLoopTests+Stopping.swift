@@ -4,6 +4,7 @@ import Testing
 import ANEFieldfareValidationSupport
 
 @testable import ANEFieldfareHotpath
+import Tokenizers
 
 extension RawCompletionLoopTests {
   @Test func stopsOnEOS() async throws {

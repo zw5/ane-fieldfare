@@ -24,9 +24,9 @@ final class DequantInt4GEMV {
     /// Input rows one `encodeRows` dispatch handles; matches the kernel.
     static let maxBatchRows = 16
 
-    private let pipeline: MTLComputePipelineState
+    private let pipeline: any MTLComputePipelineState
     private let context: MetalContext
-    private let specializedPipelines: [Shape: MTLComputePipelineState]
+    private let specializedPipelines: [Shape: any MTLComputePipelineState]
 
     init(context: MetalContext) throws {
         self.pipeline = try context.pipeline(
@@ -34,7 +34,7 @@ final class DequantInt4GEMV {
             constants: [],
             maxTotalThreadsPerThreadgroup: 512)
 
-        var specializedPipelines: [Shape: MTLComputePipelineState] = [:]
+        var specializedPipelines: [Shape: any MTLComputePipelineState] = [:]
         for shape in Self.realDecodeShapes {
             specializedPipelines[shape] = try context.pipeline(
                 "dequant_int4_gemv_simd",
@@ -70,12 +70,12 @@ final class DequantInt4GEMV {
     /// count and width. Below `matrixMinRows` rows, row r's result is bitwise
     /// the single-row GEMV's; from there (when `n % 128 == 0`, not BF16) the
     /// SIMD-group matrix kernel runs and matches it to FP32 rounding only.
-    func encodeRows(commandBuffer: MTLCommandBuffer,
-                    weights: MTLBuffer, weightsOffset: Int,
-                    scales: MTLBuffer, scalesOffset: Int,
-                    biases: MTLBuffer, biasesOffset: Int,
-                    x: MTLBuffer, xOffset: Int = 0,
-                    y: MTLBuffer, yOffset: Int = 0,
+    func encodeRows(commandBuffer: any MTLCommandBuffer,
+                    weights: any MTLBuffer, weightsOffset: Int,
+                    scales: any MTLBuffer, scalesOffset: Int,
+                    biases: any MTLBuffer, biasesOffset: Int,
+                    x: any MTLBuffer, xOffset: Int = 0,
+                    y: any MTLBuffer, yOffset: Int = 0,
                     m: UInt32, n: UInt32, rows: Int,
                     xStrideElements: Int, yStrideElements: Int,
                     types: RowsTypes = .f16) throws {
@@ -122,11 +122,11 @@ final class DequantInt4GEMV {
     /// ALU-bound past them.
     static let matrixMinRows = 5
 
-    private func encodeRowsMatrix(commandBuffer: MTLCommandBuffer,
-                                  weights: MTLBuffer, weightsOffset: Int,
-                                  scales: MTLBuffer, scalesOffset: Int,
-                                  biases: MTLBuffer, biasesOffset: Int,
-                                  x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int,
+    private func encodeRowsMatrix(commandBuffer: any MTLCommandBuffer,
+                                  weights: any MTLBuffer, weightsOffset: Int,
+                                  scales: any MTLBuffer, scalesOffset: Int,
+                                  biases: any MTLBuffer, biasesOffset: Int,
+                                  x: any MTLBuffer, xOffset: Int, y: any MTLBuffer, yOffset: Int,
                                   m: UInt32, n: UInt32, rows: Int,
                                   xStrideElements: Int, yStrideElements: Int, f32: Bool) throws {
         let pipeline = try context.pipeline(
@@ -152,16 +152,16 @@ final class DequantInt4GEMV {
         encoder.endEncoding()
     }
 
-    func encode(commandBuffer: MTLCommandBuffer,
-                weights: MTLBuffer,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                weights: any MTLBuffer,
                 weightsOffset: Int = 0,
-                scales: MTLBuffer,
+                scales: any MTLBuffer,
                 scalesOffset: Int = 0,
-                biases: MTLBuffer,
+                biases: any MTLBuffer,
                 biasesOffset: Int = 0,
-                x: MTLBuffer,
+                x: any MTLBuffer,
                 xOffset: Int = 0,
-                y: MTLBuffer,
+                y: any MTLBuffer,
                 yOffset: Int = 0,
                 m: UInt32,
                 n: UInt32) {

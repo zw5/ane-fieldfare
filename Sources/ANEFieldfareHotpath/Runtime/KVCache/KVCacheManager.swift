@@ -1,6 +1,6 @@
 import Foundation
 import Darwin
-import Metal
+public import Metal
 
 /// Which attention variant a layer runs. Gemma 4 interleaves 25 sliding-window
 /// layers with 5 full-attention layers (the latter carry the K=V shared-tensor
@@ -11,7 +11,7 @@ public enum LayerKind: Sendable { case swa, full }
 /// layers expose the physical start slot for diagnostics while kernels map
 /// logical positions with the supplied ring capacity.
 public struct KVView {
-    public let buffer: MTLBuffer
+    public let buffer: any MTLBuffer
     /// Byte offset of logical position 0. Always 0 under linear storage.
     public let offset: Int
     /// Bytes per token (numKVHeads * headDim * sizeof(FP16)).
@@ -52,8 +52,8 @@ public final class KVCacheManager {
     public let maxContext: Int
     public let fp16RingEnabled: Bool
 
-    private let kBuffers: [MTLBuffer]
-    private let vBuffers: [MTLBuffer]
+    private let kBuffers: [any MTLBuffer]
+    private let vBuffers: [any MTLBuffer]
     private let strides:  [Int]         // bytes per token, per layer
     private let kinds:    [LayerKind]
     private let capacityTokens: [Int]
@@ -64,7 +64,7 @@ public final class KVCacheManager {
 
     private static let fp16Size = 2
 
-    public init(device: MTLDevice,
+    public init(device: any MTLDevice,
                 config: ArchConfig,
                 maxContext: Int,
                 fp16RingEnabled: Bool = false,
@@ -85,8 +85,8 @@ public final class KVCacheManager {
                                   ?? ((slidingWindow ?? config.slidingWindow) + maxPrefillChunkTokens)))
         self.slidingWindowTokens = slidingWindow ?? config.slidingWindow
 
-        var ks: [MTLBuffer] = []
-        var vs: [MTLBuffer] = []
+        var ks: [any MTLBuffer] = []
+        var vs: [any MTLBuffer] = []
         var st: [Int] = []
         var kd: [LayerKind] = []
         var caps: [Int] = []
@@ -146,7 +146,7 @@ public final class KVCacheManager {
     }
 
     /// Write target for this layer's K projection at `position`.
-    public func kSlot(layer: Int, position: Int) -> (buffer: MTLBuffer, offset: Int) {
+    public func kSlot(layer: Int, position: Int) -> (buffer: any MTLBuffer, offset: Int) {
         validateRange(start: position, count: 1)
         return (kBuffers[layer], physicalSlot(layer: layer, position: position) * strides[layer])
     }
@@ -154,18 +154,18 @@ public final class KVCacheManager {
     /// Write target for this layer's V projection at `position`. Always
     /// distinct from `kSlot` — full layers no longer alias K and V (Gemma 4
     /// applies different per-head norms + RoPE to K vs V; gemma4-block.md §2.2).
-    public func vSlot(layer: Int, position: Int) -> (buffer: MTLBuffer, offset: Int) {
+    public func vSlot(layer: Int, position: Int) -> (buffer: any MTLBuffer, offset: Int) {
         validateRange(start: position, count: 1)
         return (vBuffers[layer], physicalSlot(layer: layer, position: position) * strides[layer])
     }
 
-    public func kRange(layer: Int, start: Int, count: Int) -> (buffer: MTLBuffer, offset: Int, stride: Int) {
+    public func kRange(layer: Int, start: Int, count: Int) -> (buffer: any MTLBuffer, offset: Int, stride: Int) {
         validateRange(start: start, count: count)
         validateContiguousPhysicalRange(layer: layer, start: start, count: count)
         return (kBuffers[layer], physicalSlot(layer: layer, position: start) * strides[layer], strides[layer])
     }
 
-    public func vRange(layer: Int, start: Int, count: Int) -> (buffer: MTLBuffer, offset: Int, stride: Int) {
+    public func vRange(layer: Int, start: Int, count: Int) -> (buffer: any MTLBuffer, offset: Int, stride: Int) {
         validateRange(start: start, count: count)
         validateContiguousPhysicalRange(layer: layer, start: start, count: count)
         return (vBuffers[layer], physicalSlot(layer: layer, position: start) * strides[layer], strides[layer])
@@ -186,11 +186,11 @@ public final class KVCacheManager {
         valueView(layer: layer, validTokenCount: position)
     }
 
-    func keyBuffer(layer: Int, validTokenCount: Int) -> MTLBuffer {
+    func keyBuffer(layer: Int, validTokenCount: Int) -> any MTLBuffer {
         keyView(layer: layer, validTokenCount: validTokenCount).buffer
     }
 
-    func valueBuffer(layer: Int, validTokenCount: Int) -> MTLBuffer {
+    func valueBuffer(layer: Int, validTokenCount: Int) -> any MTLBuffer {
         valueView(layer: layer, validTokenCount: validTokenCount).buffer
     }
 
@@ -282,7 +282,7 @@ public final class KVCacheManager {
                      "range \(start)..<\(start + count) wraps FP16 KV ring capacity \(capacity)")
     }
 
-    private func advise(_ buffer: MTLBuffer, pageSize: Int, seen: inout Set<ObjectIdentifier>) {
+    private func advise(_ buffer: any MTLBuffer, pageSize: Int, seen: inout Set<ObjectIdentifier>) {
         let id = ObjectIdentifier(buffer)
         if seen.contains(id) { return }
         seen.insert(id)

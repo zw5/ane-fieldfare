@@ -1,4 +1,4 @@
-import Metal
+public import Metal
 
 /// Produces next-token logits for the `Generator`. The production
 /// implementation is `RealForwardRunner`; tests use scripted logits so decode
@@ -10,7 +10,7 @@ public protocol LogitProducer: AnyObject {
     /// Clear any per-generation state, such as KV cache.
     func reset()
     /// Run one token at `position`, leaving FP16 logits in `logits`.
-    func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws
+    func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws
 }
 
 /// A producer whose head leaves the greedy next token on the device instead of
@@ -51,7 +51,7 @@ protocol ChunkedPrefillRunner: LogitProducer {
                         startPosition: Int,
                         outputMode: PrefillOutputMode,
                         config: PrefillRuntimeConfig,
-                        into logits: MTLBuffer,
+                        into logits: any MTLBuffer,
                         onProgress: (Int) -> Void) async throws -> PrefillResult
 }
 
@@ -60,6 +60,6 @@ protocol MultimodalPrefillRunner: LogitProducer {
                            startPosition: Int,
                            outputMode: PrefillOutputMode,
                            config: PrefillRuntimeConfig,
-                           into logits: MTLBuffer,
+                           into logits: any MTLBuffer,
                            onProgress: (Int) -> Void) async throws -> PrefillResult
 }

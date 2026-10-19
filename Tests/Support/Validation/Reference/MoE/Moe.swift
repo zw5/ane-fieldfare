@@ -1,6 +1,6 @@
 import Foundation
 import Accelerate
-import ANEFieldfareHotpath
+public import ANEFieldfareHotpath
 
 /// FP32 reference for the fused MoE FFN: top-k routed experts + 1 shared
 /// expert, each with gate / up / down projections, GeGLU activation, and a

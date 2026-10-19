@@ -23,7 +23,7 @@ final class PrefillSIMDAttentionTests: XCTestCase {
                         v[i] = Float16(sin(Float(key * 13 + h * 7 + c) * 0.071) * 2)
                     } }
                 }
-                func buffer(_ values: [Float16]) throws -> MTLBuffer {
+                func buffer(_ values: [Float16]) throws -> any MTLBuffer {
                     try values.withUnsafeBytes { try XCTUnwrap(context.device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)) }
                 }
                 let qb = try buffer(q), kb = try buffer(k), vb = try buffer(v)

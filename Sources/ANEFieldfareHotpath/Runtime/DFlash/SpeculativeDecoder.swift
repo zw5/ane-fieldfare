@@ -1,5 +1,5 @@
 import Foundation
-import Metal
+public import Metal
 
 /// Chooses each step's draft length and verify length from measured cost,
 /// online acceptance and the drafter's own confidence.
@@ -225,9 +225,9 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
     }
 
     func prefillChunked(tokens: ArraySlice<Int32>, startPosition: Int, outputMode: PrefillOutputMode,
-                        config: PrefillRuntimeConfig, into logits: MTLBuffer,
+                        config: PrefillRuntimeConfig, into logits: any MTLBuffer,
                         onProgress: (Int) -> Void) async throws -> PrefillResult {
-        var failure: Error?
+        var failure: any Error?
         let drafter = self.drafter
         runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { chunk in
             do {
@@ -243,7 +243,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         return result
     }
 
-    public func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {
+    public func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
         if let next = accepted.first, next.position == position, next.token == token {
             accepted.removeFirst()
             lastGreedyToken = next.next
@@ -288,7 +288,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
                             stepSeconds: Date().timeIntervalSince(started))
     }
 
-    private func plainStep(token: Int32, position: Int, into logits: MTLBuffer) async throws {
+    private func plainStep(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
         let layers = drafter.config.contextLayers.count, D = drafter.config.hiddenSize
         runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { [self] chunk in
             pendingContext.append(contentsOf: chunk.hidden.prefix(layers * D))

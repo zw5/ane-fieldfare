@@ -6,13 +6,13 @@ import Testing
 /// a performance choice; whether images work at all is not, so an image turn is
 /// coerced rather than refused after every image has already been encoded.
 @Suite struct ImagePrefillCoercionTests {
-    @Test func anImagePromptCoercesPrefillOffToChunked() {
+    @Test func anImagePromptCoercesPrefillOffToChunked() throws {
         let off = PrefillRuntimeConfig.off
         #expect(!off.servesImagePrompt)
 
-        let coerced = try? #require(off.coercedForImagePrompt())
-        #expect(coerced?.mode == .chunked)
-        #expect(coerced?.servesImagePrompt == true)
+        let coerced = try #require(off.coercedForImagePrompt())
+        #expect(coerced.mode == .chunked)
+        #expect(coerced.servesImagePrompt)
     }
 
     @Test func aChunkedConfigIsAlreadyFineAndIsNotRewritten() {

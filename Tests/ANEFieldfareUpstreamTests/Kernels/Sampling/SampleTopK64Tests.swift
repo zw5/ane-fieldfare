@@ -43,9 +43,9 @@ import Testing
         let context: MetalContext
         let current: Sample
         let candidate: SampleTopK64
-        let probs: MTLBuffer
-        let currentOutput: MTLBuffer
-        let candidateOutput: MTLBuffer
+        let probs: any MTLBuffer
+        let currentOutput: any MTLBuffer
+        let candidateOutput: any MTLBuffer
         let vocab: Int
 
         init(vocab: Int) throws {

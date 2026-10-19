@@ -1,4 +1,4 @@
-import Metal
+public import Metal
 
 public struct VisionImagePlan {
     public let metadata: VisionImageMetadata
@@ -8,8 +8,8 @@ public struct VisionImagePlan {
 }
 
 public struct VisionPixelBuffer {
-    public let patchesBF16: MTLBuffer
-    public let positionsInt32x2: MTLBuffer
+    public let patchesBF16: any MTLBuffer
+    public let positionsInt32x2: any MTLBuffer
     public let metadata: VisionImageMetadata
     public let geometry: Gemma4ImageGeometry
     public let wallNanoseconds: UInt64

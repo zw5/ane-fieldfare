@@ -1,5 +1,5 @@
 import Foundation
-import Metal
+public import Metal
 import Synchronization
 
 enum MetalError: Error, CustomStringConvertible {
@@ -60,7 +60,7 @@ func metalCommandBufferFailureDetail(label: String?,
     return parts.joined(separator: " ")
 }
 
-func checkCommandBufferError(_ commandBuffer: MTLCommandBuffer) throws {
+func checkCommandBufferError(_ commandBuffer: any MTLCommandBuffer) throws {
     guard let detail = metalCommandBufferFailureDetail(label: commandBuffer.label,
                                                        status: commandBuffer.status,
                                                        error: commandBuffer.error) else {
@@ -92,9 +92,9 @@ public struct MetalFunctionConstant: Hashable, Sendable {
 /// Device, queue, library and pipeline states are `Sendable` Metal objects;
 /// the pipeline cache is the only mutable state and its `Mutex` owns it.
 public final class MetalContext: Sendable {
-    public let device:  MTLDevice
-    public let queue:   MTLCommandQueue
-    public let library: MTLLibrary
+    public let device:  any MTLDevice
+    public let queue:   any MTLCommandQueue
+    public let library: any MTLLibrary
 
     private struct PipelineCacheKey: Hashable, Sendable {
         var name: String
@@ -116,7 +116,7 @@ public final class MetalContext: Sendable {
 
     /// Routes every production device creation through the watchdog mitigation
     /// before the AGX driver's process-wide one-time environment read.
-    public static func makeSystemDefaultDevice() -> MTLDevice? {
+    public static func makeSystemDefaultDevice() -> any MTLDevice? {
         relaxInteractivityWatchdog()
         return MTLCreateSystemDefaultDevice()
     }
@@ -171,7 +171,7 @@ public final class MetalContext: Sendable {
                                  subdirectory: subdirectory)
     }
 
-    private static func compileShaderLibrary(device: MTLDevice) throws -> MTLLibrary {
+    private static func compileShaderLibrary(device: any MTLDevice) throws -> any MTLLibrary {
         var combined = ""
         for name in shaderModules {
             guard let url = shaderURL(module: name) else {
@@ -196,9 +196,9 @@ public final class MetalContext: Sendable {
     /// Cached per device, module and source variant: libraries are immutable,
     /// and one `VisionRuntime` init otherwise compiles the identical tensorops
     /// source twice (attention, projector) on every load.
-    public static func privateLibrary(device: MTLDevice, module: String,
+    public static func privateLibrary(device: any MTLDevice, module: String,
                                       includeVisionTensorOps: Bool = false) throws
-        -> MTLLibrary {
+        -> any MTLLibrary {
         let key = "\(ObjectIdentifier(device).hashValue)#\(module)#\(includeVisionTensorOps)"
         // Compiling inside the lock keeps concurrent first loads from
         // compiling the same source twice.
@@ -238,18 +238,18 @@ public final class MetalContext: Sendable {
         return commandBuffer
     }
 
-    public func pipeline(_ name: String) throws -> MTLComputePipelineState {
+    public func pipeline(_ name: String) throws -> any MTLComputePipelineState {
         try pipeline(name, constants: [])
     }
 
     public func pipeline(_ name: String,
-                         constants: [MetalFunctionConstant]) throws -> MTLComputePipelineState {
+                         constants: [MetalFunctionConstant]) throws -> any MTLComputePipelineState {
         try pipeline(name, constants: constants, maxTotalThreadsPerThreadgroup: nil)
     }
 
     public func pipeline(_ name: String,
                          constants: [MetalFunctionConstant],
-                         maxTotalThreadsPerThreadgroup hint: Int?) throws -> MTLComputePipelineState {
+                         maxTotalThreadsPerThreadgroup hint: Int?) throws -> any MTLComputePipelineState {
         if let hint {
             precondition(hint > 0, "maxTotalThreadsPerThreadgroup must be positive")
         }
@@ -282,7 +282,7 @@ public final class MetalContext: Sendable {
         }
 
         let fn = try library.makeFunction(name: name, constantValues: values)
-        let p: MTLComputePipelineState
+        let p: any MTLComputePipelineState
         if let hint {
             let descriptor = MTLComputePipelineDescriptor()
             descriptor.computeFunction = fn

@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 
 public enum SupportedModelSource {
     public static let displayName = "Gemma 4 26B-A4B IT 4-bit"

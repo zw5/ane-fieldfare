@@ -115,13 +115,13 @@ final class Sampler {
     /// FP16 [vocab] scratch. `outToken` holds one UInt32. `position` indexes the
     /// per-position seed advance. Returns the path taken.
     @discardableResult
-    func sample(commandBuffer: MTLCommandBuffer,
-                       logits: MTLBuffer,
-                       probs: MTLBuffer,
+    func sample(commandBuffer: any MTLCommandBuffer,
+                       logits: any MTLBuffer,
+                       probs: any MTLBuffer,
                        history: [Int32],
                        config: GenerationConfig,
                        position: Int,
-                       outToken: MTLBuffer) -> SamplePath {
+                       outToken: any MTLBuffer) -> SamplePath {
         let v = UInt32(vocab)
 
         let appliedPenalty = config.repetitionPenalty != 1.0 && !history.isEmpty
@@ -173,7 +173,7 @@ final class Sampler {
     /// high-confidence tokens that form repetition loops. So: softcap the raw
     /// value, penalize, and invert through atanh so the downstream
     /// softcap+softmax kernel reproduces the penalized capped logit.
-    private func applyRepetitionPenaltyInPlace(logits: MTLBuffer,
+    private func applyRepetitionPenaltyInPlace(logits: any MTLBuffer,
                                                history: [Int32],
                                                penalty: Float) {
         let ptr = logits.contents().bindMemory(to: Float16.self, capacity: vocab)

@@ -1,6 +1,7 @@
 import Foundation
 import Hub
 import Testing
+import Tokenizers
 @testable import ANEFieldfareHotpath
 
 /// First run downloads the Gemma 4 IT tokenizer (~32 MB) from Hugging Face

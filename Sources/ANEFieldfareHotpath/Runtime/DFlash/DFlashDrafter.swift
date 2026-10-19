@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 import Metal
 
 public enum DFlashError: Error, CustomStringConvertible {
@@ -70,7 +70,7 @@ public final class DFlashDrafter {
     private let ctx: MetalContext
     private let model: Model
     /// BF16 tensors the context append and the norms read.
-    private let weights: MTLBuffer
+    private let weights: any MTLBuffer
     private let tensorOffsets: [String: Int]
     private let gemm: VisionLinearBF16
     /// Every projection a draft step reads, quantized at load to the target's
@@ -78,23 +78,23 @@ public final class DFlashDrafter {
     /// weight-bandwidth bound at a handful of rows, so this cuts its weight
     /// traffic about 3.6x and the drafter's resident memory from ~860 MB to
     /// ~360 MB, which the expert page cache gets back.
-    private let int4Weights: MTLBuffer
+    private let int4Weights: any MTLBuffer
     private let int4Views: [String: (weights: Int, scales: Int, biases: Int)]
     private let int4: DequantInt4GEMV
     private let head: LMHeadChainInt4
     private let embedPSO, normF32PSO, normBF16PSO, headNormRopePSO, attentionPSO,
-                siluPSO, residualPSO, toF16PSO, gatherPSO: MTLComputePipelineState
-    private let kCache: [MTLBuffer]
-    private let vCache: [MTLBuffer]
+                siluPSO, residualPSO, toF16PSO, gatherPSO: any MTLComputePipelineState
+    private let kCache: [any MTLBuffer]
+    private let vCache: [any MTLBuffer]
 
     private static let appendRows = 512
     private static let gemmRowPad = 64
     // Context-append scratch.
-    private let staging: MTLBuffer
-    private let feature, contextHidden, contextK, contextV, contextKRoped: MTLBuffer
+    private let staging: any MTLBuffer
+    private let feature, contextHidden, contextK, contextV, contextKRoped: any MTLBuffer
     // Block scratch.
     private let residual, normed, q, kBlock, vBlock, attention, delta, gate, up, act, headRows,
-                ids, draftTokens: MTLBuffer
+                ids, draftTokens: any MTLBuffer
 
     public init(directory: URL, model: Model, context: MetalContext, maxContext: Int) throws {
         let config = try DFlashDrafterConfig.load(directory.appendingPathComponent("config.json"))
@@ -133,7 +133,7 @@ public final class DFlashDrafter {
         gatherPSO = try context.pipeline("dflash_gather_context")
 
         let device = context.device
-        func buffer(_ bytes: Int, _ label: String, shared: Bool = false) throws -> MTLBuffer {
+        func buffer(_ bytes: Int, _ label: String, shared: Bool = false) throws -> any MTLBuffer {
             guard let made = device.makeBuffer(length: max(bytes, 16),
                                                options: shared ? .storageModeShared : .storageModePrivate) else {
                 throw DFlashError.invalidState("allocation failed: \(label)")
@@ -334,7 +334,7 @@ public final class DFlashDrafter {
 
     // MARK: - Encoding helpers
 
-    private func project(_ cb: MTLCommandBuffer, input: MTLBuffer, _ name: String, output: MTLBuffer,
+    private func project(_ cb: any MTLCommandBuffer, input: any MTLBuffer, _ name: String, output: any MTLBuffer,
                          rows: Int, n: Int, k: Int) throws {
         guard let view = int4Views[name] else { throw DFlashError.invalidCheckpoint("missing tensor \(name)") }
         try int4.encodeRows(commandBuffer: cb,
@@ -357,9 +357,9 @@ public final class DFlashDrafter {
     /// Quantizes every draft-step projection, `[out][in]` BF16, to INT4 affine
     /// with the same rounding as the target's installer: per 64-wide group,
     /// scale = (max - min) / 15 and bias = min, both rounded to BF16 first.
-    static func quantizeDraftProjections(_ source: MTLBuffer, ranges: [String: Range<Int>],
-                                         config: DFlashDrafterConfig, device: MTLDevice) throws
-        -> (MTLBuffer, [String: (weights: Int, scales: Int, biases: Int)]) {
+    static func quantizeDraftProjections(_ source: any MTLBuffer, ranges: [String: Range<Int>],
+                                         config: DFlashDrafterConfig, device: any MTLDevice) throws
+        -> (any MTLBuffer, [String: (weights: Int, scales: Int, biases: Int)]) {
         let D = config.hiddenSize, F = config.intermediateSize
         let q = config.heads * config.headDim, kv = config.kvHeads * config.headDim
         var shapes: [(String, Int, Int)] = []
@@ -427,8 +427,8 @@ public final class DFlashDrafter {
     }
 
     /// A buffer holding only the tensors not in `dropping`.
-    static func compact(_ source: MTLBuffer, ranges: [String: Range<Int>], dropping: Set<String>,
-                        device: MTLDevice) throws -> (MTLBuffer, [String: Int]) {
+    static func compact(_ source: any MTLBuffer, ranges: [String: Range<Int>], dropping: Set<String>,
+                        device: any MTLDevice) throws -> (any MTLBuffer, [String: Int]) {
         var offsets: [String: Int] = [:]
         var cursor = 0
         for (name, range) in ranges.sorted(by: { $0.key < $1.key }) where !dropping.contains(name) {
@@ -452,7 +452,7 @@ public final class DFlashDrafter {
         return value
     }
 
-    private func dispatch(_ cb: MTLCommandBuffer, _ pso: MTLComputePipelineState, _ buffers: [MTLBuffer],
+    private func dispatch(_ cb: any MTLCommandBuffer, _ pso: any MTLComputePipelineState, _ buffers: [any MTLBuffer],
                           _ constants: [UInt32], grid: MTLSize) {
         guard let enc = cb.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)
@@ -463,8 +463,8 @@ public final class DFlashDrafter {
         enc.endEncoding()
     }
 
-    private func encodeNorm(_ cb: MTLCommandBuffer, _ pso: MTLComputePipelineState, x: MTLBuffer,
-                            weight: String, out: MTLBuffer, rows: Int) throws {
+    private func encodeNorm(_ cb: any MTLCommandBuffer, _ pso: any MTLComputePipelineState, x: any MTLBuffer,
+                            weight: String, out: any MTLBuffer, rows: Int) throws {
         guard let enc = cb.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(x, offset: 0, index: 0)
@@ -478,7 +478,7 @@ public final class DFlashDrafter {
         enc.endEncoding()
     }
 
-    private func encodeHeadNormRope(_ cb: MTLCommandBuffer, x: MTLBuffer, weight: String, out: MTLBuffer,
+    private func encodeHeadNormRope(_ cb: any MTLCommandBuffer, x: any MTLBuffer, weight: String, out: any MTLBuffer,
                                     outOffset: Int, rows: Int, heads: Int, pos0: Int) throws {
         guard let enc = cb.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(headNormRopePSO)
@@ -496,7 +496,7 @@ public final class DFlashDrafter {
     }
 
     /// Reads every BF16 tensor of a safetensors file into one shared buffer.
-    static func loadSafetensors(_ url: URL, device: MTLDevice) throws -> (MTLBuffer, [String: Range<Int>]) {
+    static func loadSafetensors(_ url: URL, device: any MTLDevice) throws -> (any MTLBuffer, [String: Range<Int>]) {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         guard let lengthData = try handle.read(upToCount: 8), lengthData.count == 8 else {

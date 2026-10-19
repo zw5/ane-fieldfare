@@ -2,16 +2,16 @@ import Foundation
 import Metal
 
 final class PrefillRoPE {
-    private let psoDefaultNeox: MTLComputePipelineState
-    private let psoProportionalNeox: MTLComputePipelineState
+    private let psoDefaultNeox: any MTLComputePipelineState
+    private let psoProportionalNeox: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.psoDefaultNeox = try context.pipeline("prefill_rope_default_neox_block")
         self.psoProportionalNeox = try context.pipeline("prefill_rope_proportional_neox_block")
     }
 
-    func encodeDefaultNeox(commandBuffer: MTLCommandBuffer,
-                                  data: MTLBuffer,
+    func encodeDefaultNeox(commandBuffer: any MTLCommandBuffer,
+                                  data: any MTLBuffer,
                                   dataOffset: Int = 0,
                                   startPosition: UInt32,
                                   queryCount: UInt32,
@@ -46,8 +46,8 @@ final class PrefillRoPE {
         enc.endEncoding()
     }
 
-    func encodeProportionalNeox(commandBuffer: MTLCommandBuffer,
-                                       data: MTLBuffer,
+    func encodeProportionalNeox(commandBuffer: any MTLCommandBuffer,
+                                       data: any MTLBuffer,
                                        dataOffset: Int = 0,
                                        startPosition: UInt32,
                                        queryCount: UInt32,

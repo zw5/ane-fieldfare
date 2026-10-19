@@ -6,7 +6,7 @@ import Metal
 /// one shared `MTLBuffer`. All resident `TensorView`s alias byte offsets
 /// inside `buffer`.
 final class ResidentBuffer {
-    let buffer: MTLBuffer
+    let buffer: any MTLBuffer
     let residentSize: UInt64
     let mappedLength: Int
 
@@ -17,7 +17,7 @@ final class ResidentBuffer {
     init(fileURL: URL,
                 fileOffset: UInt64,
                 residentSize: UInt64,
-                device: MTLDevice,
+                device: any MTLDevice,
                 fileDescriptor: Int32? = nil) throws {
         let pageSize = Int(getpagesize())
 

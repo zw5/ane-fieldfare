@@ -117,7 +117,7 @@ import ANEFieldfareValidationSupport
         count * MemoryLayout<Float16>.size
     }
 
-    private static func bufferBytes(_ buffer: MTLBuffer) -> [UInt8] {
+    private static func bufferBytes(_ buffer: any MTLBuffer) -> [UInt8] {
         let ptr = buffer.contents().assumingMemoryBound(to: UInt8.self)
         return Array(UnsafeBufferPointer(start: ptr, count: Self.bytes(Self.d)))
     }

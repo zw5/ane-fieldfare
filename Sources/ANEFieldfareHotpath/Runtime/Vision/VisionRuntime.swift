@@ -1,6 +1,6 @@
 import Darwin
-import Foundation
-import Metal
+public import Foundation
+public import Metal
 import ANEFieldfareImportedFormat
 
 public enum VisionRuntimeError: Error, CustomStringConvertible {
@@ -20,7 +20,7 @@ public enum VisionRuntimeError: Error, CustomStringConvertible {
 }
 
 public struct VisionFeatures {
-    public let buffer: MTLBuffer
+    public let buffer: any MTLBuffer
     public let tokenCount: Int
     public let hiddenSize: Int
     public let gpuNanoseconds: UInt64
@@ -100,11 +100,11 @@ public final class VisionRuntime {
         return try VisionRuntime(context: context, store: store, useLease: useLease)
     }
 
-    public static func isSupported(on device: MTLDevice) -> Bool {
+    public static func isSupported(on device: any MTLDevice) -> Bool {
         device.supportsFamily(.apple8)
     }
 
-    public static func requireSupportedDevice(_ device: MTLDevice) throws {
+    public static func requireSupportedDevice(_ device: any MTLDevice) throws {
         try requireSupportedDevice(supportsApple8: isSupported(on: device))
     }
 
@@ -221,8 +221,8 @@ public final class VisionRuntime {
     }
 
     private func encodePreparedPatches(
-        patchesBF16: MTLBuffer,
-        positionsInt32x2: MTLBuffer,
+        patchesBF16: any MTLBuffer,
+        positionsInt32x2: any MTLBuffer,
         patchGridWidth: Int,
         patchGridHeight: Int,
         expertResidencyTransition: VisionExpertResidencyTransition?,
@@ -258,7 +258,7 @@ public final class VisionRuntime {
         // mapped weight region alive until its buffer completes, and the
         // window bounds `.onDemand` residency to `pipelineDepth + 1` regions
         // instead of the whole tower.
-        var inFlight: [(buffer: MTLCommandBuffer, region: VisionMappedWeightRegion?)] = []
+        var inFlight: [(buffer: any MTLCommandBuffer, region: VisionMappedWeightRegion?)] = []
         let pipelineDepth = 2
         func drainOldest() throws {
             let entry = inFlight.removeFirst()
@@ -272,7 +272,7 @@ public final class VisionRuntime {
                 max(0, entry.buffer.gpuEndTime - entry.buffer.gpuStartTime)
                     * 1_000_000_000)
         }
-        func commitPipelined(_ buffer: MTLCommandBuffer,
+        func commitPipelined(_ buffer: any MTLCommandBuffer,
                              retaining region: VisionMappedWeightRegion?) throws {
             buffer.commit()
             inFlight.append((buffer, region))
@@ -465,7 +465,7 @@ public final class VisionRuntime {
                               preprocessing: preprocessing)
     }
 
-    private func makeCommandBuffer() throws -> MTLCommandBuffer {
+    private func makeCommandBuffer() throws -> any MTLCommandBuffer {
         guard let value = context.queue.makeCommandBuffer() else { throw MetalError.noQueue }
         return value
     }

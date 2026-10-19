@@ -48,28 +48,28 @@ final class MoE {
         MetalFunctionConstant(index: 43, value: .bool(true)),
     ]
 
-    private let routerGemvPSO: MTLComputePipelineState
-    private let routerGemvSpecializedPSO: MTLComputePipelineState
-    private let routerSelectK8PSO: MTLComputePipelineState
-    private let routerSelectK8SIMDPSO: MTLComputePipelineState
-    private let routerGemvPairSpecializedPSO: MTLComputePipelineState
-    private let routerGemvPairRowsSpecializedPSO: MTLComputePipelineState
-    private let routerSelectK8SIMDRowsPSO: MTLComputePipelineState
+    private let routerGemvPSO: any MTLComputePipelineState
+    private let routerGemvSpecializedPSO: any MTLComputePipelineState
+    private let routerSelectK8PSO: any MTLComputePipelineState
+    private let routerSelectK8SIMDPSO: any MTLComputePipelineState
+    private let routerGemvPairSpecializedPSO: any MTLComputePipelineState
+    private let routerGemvPairRowsSpecializedPSO: any MTLComputePipelineState
+    private let routerSelectK8SIMDRowsPSO: any MTLComputePipelineState
     /// `[maxRouterRows][256]` FP32 logits for `encodeRouterRowsGemma4`: the
     /// router's, then the next layer's guess.
-    private let routerRowsLogits: MTLBuffer
-    private let guessRowsLogits: MTLBuffer
+    private let routerRowsLogits: any MTLBuffer
+    private let guessRowsLogits: any MTLBuffer
     static let maxRouterRows = 16
-    private let routerLogits: MTLBuffer
-    private let phase1U16PSO: MTLComputePipelineState
-    private let phase1U16SpecializedPSO: MTLComputePipelineState
-    private let phase1SubsetU16PSO: MTLComputePipelineState
-    private let phase1SubsetU16SpecializedPSO: MTLComputePipelineState
-    private let phase2ReduceK8PSO: MTLComputePipelineState
-    private let phase2ReduceK8SpecializedPSO: MTLComputePipelineState
-    private let gatherRoutedSlotsPSO: MTLComputePipelineState
-    private let routedArgEncoder: MTLArgumentEncoder
-    private let reusableRoutedArgBuffer: MTLBuffer
+    private let routerLogits: any MTLBuffer
+    private let phase1U16PSO: any MTLComputePipelineState
+    private let phase1U16SpecializedPSO: any MTLComputePipelineState
+    private let phase1SubsetU16PSO: any MTLComputePipelineState
+    private let phase1SubsetU16SpecializedPSO: any MTLComputePipelineState
+    private let phase2ReduceK8PSO: any MTLComputePipelineState
+    private let phase2ReduceK8SpecializedPSO: any MTLComputePipelineState
+    private let gatherRoutedSlotsPSO: any MTLComputePipelineState
+    private let routedArgEncoder: any MTLArgumentEncoder
+    private let reusableRoutedArgBuffer: any MTLBuffer
 
     init(context: MetalContext) throws {
         let routerName = "router_gemv_gemma4_r4"
@@ -139,13 +139,13 @@ final class MoE {
     /// with no top-k. `encodeRouterGemma4` runs this into its own logits
     /// buffer; the next-layer early read runs it with the next layer's
     /// weights over this layer's router input.
-    func encodeRouterLogitsGemma4(commandBuffer: MTLCommandBuffer,
-                                  weights: MTLBuffer, weightsOffset: Int = 0,
-                                  scales: MTLBuffer, scalesOffset: Int = 0,
-                                  biases: MTLBuffer, biasesOffset: Int = 0,
-                                  hidden: MTLBuffer,
-                                  effectiveScale: MTLBuffer, effectiveScaleOffset: Int = 0,
-                                  outLogits: MTLBuffer,
+    func encodeRouterLogitsGemma4(commandBuffer: any MTLCommandBuffer,
+                                  weights: any MTLBuffer, weightsOffset: Int = 0,
+                                  scales: any MTLBuffer, scalesOffset: Int = 0,
+                                  biases: any MTLBuffer, biasesOffset: Int = 0,
+                                  hidden: any MTLBuffer,
+                                  effectiveScale: any MTLBuffer, effectiveScaleOffset: Int = 0,
+                                  outLogits: any MTLBuffer,
                                   numExperts: UInt32,
                                   d: UInt32) {
         precondition(d.isMultiple(of: UInt32(Quantization.groupSize)))
@@ -176,22 +176,22 @@ final class MoE {
 
     /// A second router-shaped GEMV over the same input, run with the router.
     struct RouterLogitsTarget {
-        let weights: MTLBuffer, weightsOffset: Int
-        let scales: MTLBuffer, scalesOffset: Int
-        let biases: MTLBuffer, biasesOffset: Int
-        let effectiveScale: MTLBuffer
-        let outLogits: MTLBuffer
+        let weights: any MTLBuffer, weightsOffset: Int
+        let scales: any MTLBuffer, scalesOffset: Int
+        let biases: any MTLBuffer, biasesOffset: Int
+        let effectiveScale: any MTLBuffer
+        let outLogits: any MTLBuffer
     }
 
-    func encodeRouterGemma4(commandBuffer: MTLCommandBuffer,
-                                   weights: MTLBuffer, weightsOffset: Int = 0,
-                                   scales: MTLBuffer, scalesOffset: Int = 0,
-                                   biases: MTLBuffer, biasesOffset: Int = 0,
-                                   hidden: MTLBuffer,
-                                   effectiveScale: MTLBuffer, effectiveScaleOffset: Int = 0,
-                                   perExpertScale: MTLBuffer, perExpertScaleOffset: Int = 0,
-                                   outIndices: MTLBuffer,
-                                   outWeights: MTLBuffer,
+    func encodeRouterGemma4(commandBuffer: any MTLCommandBuffer,
+                                   weights: any MTLBuffer, weightsOffset: Int = 0,
+                                   scales: any MTLBuffer, scalesOffset: Int = 0,
+                                   biases: any MTLBuffer, biasesOffset: Int = 0,
+                                   hidden: any MTLBuffer,
+                                   effectiveScale: any MTLBuffer, effectiveScaleOffset: Int = 0,
+                                   perExpertScale: any MTLBuffer, perExpertScaleOffset: Int = 0,
+                                   outIndices: any MTLBuffer,
+                                   outWeights: any MTLBuffer,
                                    numExperts: UInt32,
                                    d: UInt32,
                                    topK: UInt32,
@@ -266,18 +266,18 @@ final class MoE {
     /// indices and weights. `next` (its `outLogits` unused) also scores each
     /// row with the next layer's guess and selects its top 8 into
     /// `nextIndices`/`nextWeights`.
-    func encodeRouterRowsGemma4(commandBuffer: MTLCommandBuffer,
-                                weights: MTLBuffer, weightsOffset: Int,
-                                scales: MTLBuffer, scalesOffset: Int,
-                                biases: MTLBuffer, biasesOffset: Int,
-                                hidden: MTLBuffer, hiddenStrideElements: UInt32, rows: Int,
-                                effectiveScale: MTLBuffer,
-                                perExpertScale: MTLBuffer, perExpertScaleOffset: Int,
-                                outIndices: MTLBuffer, outWeights: MTLBuffer,
+    func encodeRouterRowsGemma4(commandBuffer: any MTLCommandBuffer,
+                                weights: any MTLBuffer, weightsOffset: Int,
+                                scales: any MTLBuffer, scalesOffset: Int,
+                                biases: any MTLBuffer, biasesOffset: Int,
+                                hidden: any MTLBuffer, hiddenStrideElements: UInt32, rows: Int,
+                                effectiveScale: any MTLBuffer,
+                                perExpertScale: any MTLBuffer, perExpertScaleOffset: Int,
+                                outIndices: any MTLBuffer, outWeights: any MTLBuffer,
                                 numExperts: UInt32, d: UInt32,
                                 next: RouterLogitsTarget?,
-                                nextPerExpertScale: MTLBuffer?, nextPerExpertScaleOffset: Int = 0,
-                                nextIndices: MTLBuffer?, nextWeights: MTLBuffer?) {
+                                nextPerExpertScale: any MTLBuffer?, nextPerExpertScaleOffset: Int = 0,
+                                nextIndices: any MTLBuffer?, nextWeights: any MTLBuffer?) {
         precondition(Self.routesRows(numExperts: numExperts, d: d, rows: rows))
         var expertCount = numExperts
         var dimension = d
@@ -304,7 +304,7 @@ final class MoE {
                 threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             encoder.endEncoding()
         }
-        let selects: [(MTLBuffer, MTLBuffer?, Int, MTLBuffer?, MTLBuffer?)] = [
+        let selects: [(any MTLBuffer, any MTLBuffer?, Int, any MTLBuffer?, any MTLBuffer?)] = [
             (routerRowsLogits, perExpertScale, perExpertScaleOffset, outIndices, outWeights),
             (guessRowsLogits, nextPerExpertScale, nextPerExpertScaleOffset, nextIndices, nextWeights),
         ]
@@ -323,8 +323,8 @@ final class MoE {
         }
     }
 
-    func makeRoutedArgumentBuffer(routedBlobs: [MTLBuffer],
-                                         topK: UInt32) -> MTLBuffer? {
+    func makeRoutedArgumentBuffer(routedBlobs: [any MTLBuffer],
+                                         topK: UInt32) -> any MTLBuffer? {
         validate(routedBlobs: routedBlobs, topK: topK)
         guard let buffer = routedBlobs.first?.device.makeBuffer(
             length: routedArgEncoder.encodedLength,
@@ -336,7 +336,7 @@ final class MoE {
     }
 
     func makeRoutedArgumentBuffer(routedViews: [TensorView],
-                                  topK: UInt32) -> MTLBuffer? {
+                                  topK: UInt32) -> any MTLBuffer? {
         let blobs = routedViews.map(\.buffer)
         validate(routedBlobs: blobs, topK: topK)
         guard let buffer = blobs.first?.device.makeBuffer(
@@ -346,27 +346,27 @@ final class MoE {
         return buffer
     }
 
-    func makeReusedRoutedArgumentBuffer(routedBlobs: [MTLBuffer],
-                                               topK: UInt32) -> MTLBuffer {
+    func makeReusedRoutedArgumentBuffer(routedBlobs: [any MTLBuffer],
+                                               topK: UInt32) -> any MTLBuffer {
         validate(routedBlobs: routedBlobs, topK: topK)
         encodeRoutedArgumentBuffer(reusableRoutedArgBuffer, routedBlobs: routedBlobs)
         return reusableRoutedArgBuffer
     }
 
     func makeReusedRoutedArgumentBuffer(routedViews: [TensorView],
-                                        topK: UInt32) -> MTLBuffer {
+                                        topK: UInt32) -> any MTLBuffer {
         validate(routedBlobs: routedViews.map(\.buffer), topK: topK)
         encodeRoutedArgumentBuffer(reusableRoutedArgBuffer, routedViews: routedViews)
         return reusableRoutedArgBuffer
     }
 
     func encodeRoutedPersistentPhase1U16Load(
-        commandBuffer: MTLCommandBuffer,
-        routedArgBuffer: MTLBuffer,
-        routedBlobs: [MTLBuffer],
+        commandBuffer: any MTLCommandBuffer,
+        routedArgBuffer: any MTLBuffer,
+        routedBlobs: [any MTLBuffer],
         routedOffsets: MoEExpertOffsets,
-        x: MTLBuffer,
-        acts: MTLBuffer,
+        x: any MTLBuffer,
+        acts: any MTLBuffer,
         d: UInt32,
         f: UInt32,
         topK: UInt32
@@ -396,13 +396,13 @@ final class MoE {
     }
 
     func encodeRoutedPersistentPhase1SubsetU16Load(
-        commandBuffer: MTLCommandBuffer,
-        routedArgBuffer: MTLBuffer,
-        routedBlobs: [MTLBuffer],
+        commandBuffer: any MTLCommandBuffer,
+        routedArgBuffer: any MTLBuffer,
+        routedBlobs: [any MTLBuffer],
         routedOffsets: MoEExpertOffsets,
-        x: MTLBuffer,
-        acts: MTLBuffer,
-        activeSlots: MTLBuffer,
+        x: any MTLBuffer,
+        acts: any MTLBuffer,
+        activeSlots: any MTLBuffer,
         activeSlotsOffset: Int = 0,
         activeSlotIndices: [UInt32],
         activeCount: UInt32,
@@ -442,14 +442,14 @@ final class MoE {
     }
 
     func encodeRoutedPersistentPhase2Reduce(
-        commandBuffer: MTLCommandBuffer,
-        routedArgBuffer: MTLBuffer,
-        routedBlobs: [MTLBuffer],
+        commandBuffer: any MTLCommandBuffer,
+        routedArgBuffer: any MTLBuffer,
+        routedBlobs: [any MTLBuffer],
         routedOffsets: MoEExpertOffsets,
-        acts: MTLBuffer,
-        routingWeights: MTLBuffer,
-        residual: MTLBuffer,
-        y: MTLBuffer,
+        acts: any MTLBuffer,
+        routingWeights: any MTLBuffer,
+        residual: any MTLBuffer,
+        y: any MTLBuffer,
         d: UInt32,
         f: UInt32,
         topK: UInt32
@@ -488,11 +488,11 @@ final class MoE {
     /// `indices` and an address table of `numExperts` entries, 0 where the
     /// expert is not bound; those slots get `fallback`. Copies `hidden` into
     /// `saved`.
-    func encodeGatherRoutedSlots(commandBuffer: MTLCommandBuffer,
-                                 indices: MTLBuffer,
-                                 table: MTLBuffer, tableOffset: Int,
-                                 slots: MTLBuffer,
-                                 hidden: MTLBuffer, saved: MTLBuffer,
+    func encodeGatherRoutedSlots(commandBuffer: any MTLCommandBuffer,
+                                 indices: any MTLBuffer,
+                                 table: any MTLBuffer, tableOffset: Int,
+                                 slots: any MTLBuffer,
+                                 hidden: any MTLBuffer, saved: any MTLBuffer,
                                  topK: UInt32, numExperts: UInt32, d: UInt32,
                                  fallback: UInt64) {
         precondition(topK <= UInt32(Self.maxStreamedExperts))
@@ -515,15 +515,15 @@ final class MoE {
 
     /// Both routed phases over GPU-written `slots`, binding `resident`: every
     /// buffer a slot may point at.
-    func encodeRoutedPersistentGPUSlots(commandBuffer: MTLCommandBuffer,
-                                        slots: MTLBuffer,
-                                        resident: [MTLBuffer],
+    func encodeRoutedPersistentGPUSlots(commandBuffer: any MTLCommandBuffer,
+                                        slots: any MTLBuffer,
+                                        resident: [any MTLBuffer],
                                         routedOffsets: MoEExpertOffsets,
-                                        x: MTLBuffer,
-                                        acts: MTLBuffer,
-                                        routingWeights: MTLBuffer,
-                                        residual: MTLBuffer,
-                                        y: MTLBuffer,
+                                        x: any MTLBuffer,
+                                        acts: any MTLBuffer,
+                                        routingWeights: any MTLBuffer,
+                                        residual: any MTLBuffer,
+                                        y: any MTLBuffer,
                                         d: UInt32, f: UInt32, topK: UInt32) {
         precondition(topK > 0 && topK <= UInt32(Self.maxStreamedExperts))
         let specialized = useRealDecodeConstants(d: d, f: f, topK: topK)
@@ -562,13 +562,13 @@ final class MoE {
         }
     }
 
-    private func validate(routedBlobs: [MTLBuffer], topK: UInt32) {
+    private func validate(routedBlobs: [any MTLBuffer], topK: UInt32) {
         precondition(topK > 0 && topK <= UInt32(Self.maxStreamedExperts))
         precondition(routedBlobs.count == Int(topK))
     }
 
-    private func encodeRoutedArgumentBuffer(_ buffer: MTLBuffer,
-                                            routedBlobs: [MTLBuffer]) {
+    private func encodeRoutedArgumentBuffer(_ buffer: any MTLBuffer,
+                                            routedBlobs: [any MTLBuffer]) {
         routedArgEncoder.setArgumentBuffer(buffer, offset: 0)
         for (index, blob) in routedBlobs.enumerated() {
             routedArgEncoder.setBuffer(blob, offset: 0, index: index)
@@ -576,7 +576,7 @@ final class MoE {
     }
 
 
-    private func encodeRoutedArgumentBuffer(_ buffer: MTLBuffer,
+    private func encodeRoutedArgumentBuffer(_ buffer: any MTLBuffer,
                                             routedViews: [TensorView]) {
         routedArgEncoder.setArgumentBuffer(buffer, offset: 0)
         for (index, view) in routedViews.enumerated() {

@@ -1,4 +1,4 @@
-import Foundation
+package import Foundation
 
 package enum GTurboVisionFormatV1 {
     package static let magic = "GTURBO-VISION"

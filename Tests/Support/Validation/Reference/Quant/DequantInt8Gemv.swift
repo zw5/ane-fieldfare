@@ -1,6 +1,6 @@
 import Foundation
 import Accelerate
-import ANEFieldfareHotpath
+public import ANEFieldfareHotpath
 
 /// FP32 reference for the INT8-affine groupwise GEMV `y = W * x`.
 ///

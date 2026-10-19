@@ -29,7 +29,7 @@ import Metal
         return url
     }
 
-    static func open(_ url: URL, device: MTLDevice, stride: Int = expertStride,
+    static func open(_ url: URL, device: any MTLDevice, stride: Int = expertStride,
                      offsets: [UInt64] = offsets) throws -> MappedExpertLayer {
         let fd = Darwin.open(url.path, O_RDONLY)
         #expect(fd >= 0)

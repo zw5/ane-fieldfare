@@ -1,18 +1,18 @@
 import Foundation
-import Metal
+public import Metal
 
 public final class VisionAttention {
     public static let headDimension = 72
     public static let paddedHeadDimension = 80
     /// Native kernel for row-major Q/K/V; 8 query rows per threadgroup.
-    private let nativePipeline: MTLComputePipelineState
+    private let nativePipeline: any MTLComputePipelineState
     /// MPP tensor-op kernel over the padded head-major layout.
-    private let mppPipeline: MTLComputePipelineState
+    private let mppPipeline: any MTLComputePipelineState
     /// Padded head-major destinations the QKV projections write directly, so
     /// no pad or unpad dispatch runs.
-    public let fusedQ: MTLBuffer
-    public let fusedK: MTLBuffer
-    public let fusedV: MTLBuffer
+    public let fusedQ: any MTLBuffer
+    public let fusedK: any MTLBuffer
+    public let fusedV: any MTLBuffer
 
     public var additionalScratchBytes: Int {
         fusedQ.length + fusedK.length + fusedV.length
@@ -20,7 +20,7 @@ public final class VisionAttention {
 
     /// Zeroes the padded lanes the projections never write. Called once per image;
     /// nothing writes lanes 72 to 79 afterwards, so they stay zero across layers.
-    public func encodeClearPadding(commandBuffer: MTLCommandBuffer) {
+    public func encodeClearPadding(commandBuffer: any MTLCommandBuffer) {
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
         for buffer in [fusedQ, fusedK, fusedV] {
             blit.fill(buffer: buffer, range: 0..<buffer.length, value: 0)
@@ -53,9 +53,9 @@ public final class VisionAttention {
     /// (`fusedQ`/`fusedK`/`fusedV`) with that per-head row count, and runs the
     /// MPP kernel. Stride 0 means row-major Q/K/V and runs the native kernel;
     /// reading a row-major call as 80-stride head-major would be silent garbage.
-    public func encode(commandBuffer: MTLCommandBuffer,
-                       q: MTLBuffer, k: MTLBuffer, v: MTLBuffer,
-                       output: MTLBuffer,
+    public func encode(commandBuffer: any MTLCommandBuffer,
+                       q: any MTLBuffer, k: any MTLBuffer, v: any MTLBuffer,
+                       output: any MTLBuffer,
                        sequenceLength: Int, numHeads: Int = 16,
                        inputRowStride: Int = 0) {
         precondition(sequenceLength > 0 && numHeads > 0)
@@ -76,9 +76,9 @@ public final class VisionAttention {
             inputRowStride: inputRowStride)
     }
 
-    private func encodeNative(commandBuffer: MTLCommandBuffer,
-                              q: MTLBuffer, k: MTLBuffer, v: MTLBuffer,
-                              output: MTLBuffer,
+    private func encodeNative(commandBuffer: any MTLCommandBuffer,
+                              q: any MTLBuffer, k: any MTLBuffer, v: any MTLBuffer,
+                              output: any MTLBuffer,
                               sequenceLength: Int, numHeads: Int) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.setComputePipelineState(nativePipeline)
@@ -98,10 +98,10 @@ public final class VisionAttention {
     }
 
     private func encodeMPPTensorOps(
-        commandBuffer: MTLCommandBuffer,
+        commandBuffer: any MTLCommandBuffer,
         sequenceLength: Int, numHeads: Int,
-        paddedQ: MTLBuffer, paddedK: MTLBuffer, paddedV: MTLBuffer,
-        output: MTLBuffer,
+        paddedQ: any MTLBuffer, paddedK: any MTLBuffer, paddedV: any MTLBuffer,
+        output: any MTLBuffer,
         inputRowStride: Int
     ) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
@@ -129,7 +129,7 @@ public final class VisionAttention {
         encoder.endEncoding()
     }
 
-    private static func makePrivateBuffer(device: MTLDevice, bytes: Int) throws -> MTLBuffer {
+    private static func makePrivateBuffer(device: any MTLDevice, bytes: Int) throws -> any MTLBuffer {
         guard let buffer = device.makeBuffer(length: bytes, options: .storageModePrivate) else {
             throw MetalError.noDevice
         }

@@ -1,24 +1,24 @@
-import Metal
+package import Metal
 
 package final class VisionScratch {
     package let paddedRows: Int
     /// Live rows, so the clear can skip everything a dispatch will overwrite.
     package let rows: Int
     private let hiddenSize: Int
-    package let normalizedPatches: MTLBuffer
-    package let hiddenA: MTLBuffer
-    package let hiddenB: MTLBuffer
+    package let normalizedPatches: any MTLBuffer
+    package let hiddenA: any MTLBuffer
+    package let hiddenB: any MTLBuffer
     /// Q/K/V live in attention's padded buffers; `q` is general scratch.
-    package let q: MTLBuffer
-    package let attention: MTLBuffer
+    package let q: any MTLBuffer
+    package let attention: any MTLBuffer
     /// Gate projection output; the up projection folds GeGLU into it.
-    package let gate: MTLBuffer
+    package let gate: any MTLBuffer
 
-    package init(device: MTLDevice, rows: Int, config: VisionConfig) throws {
+    package init(device: any MTLDevice, rows: Int, config: VisionConfig) throws {
         paddedRows = ((rows + 63) / 64) * 64
         self.rows = rows
         self.hiddenSize = config.hiddenSize
-        func buffer(_ elements: Int) throws -> MTLBuffer {
+        func buffer(_ elements: Int) throws -> any MTLBuffer {
             guard let value = device.makeBuffer(
                 length: elements * MemoryLayout<UInt16>.stride,
                 options: .storageModePrivate) else {
@@ -34,7 +34,7 @@ package final class VisionScratch {
         gate = try buffer(paddedRows * config.intermediateSize + 64)
     }
 
-    private var buffers: [MTLBuffer] {
+    private var buffers: [any MTLBuffer] {
         [normalizedPatches, hiddenA, hiddenB, q, attention, gate]
     }
 
@@ -46,7 +46,7 @@ package final class VisionScratch {
     /// its own pad region. What genuinely has to start clean is the padding
     /// rows of the two buffers whose tails are read back — `hiddenB` and
     /// `attention` — which is under 300 KB.
-    package func encodeClear(commandBuffer: MTLCommandBuffer) throws {
+    package func encodeClear(commandBuffer: any MTLCommandBuffer) throws {
         guard let blit = commandBuffer.makeBlitCommandEncoder() else {
             throw MetalError.noDevice
         }

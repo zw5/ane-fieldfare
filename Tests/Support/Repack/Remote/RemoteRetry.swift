@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 
 public struct RemoteRetryPolicy: Sendable {
     public var attempts: Int
@@ -16,7 +16,7 @@ public struct RemoteRetryPolicy: Sendable {
         self.maxServerDelayNs = maxServerDelayNs
     }
 
-    public static func isRetryable(_ error: Error) -> Bool {
+    public static func isRetryable(_ error: any Error) -> Bool {
         if let e = error as? URLError {
             switch e.code {
             case .timedOut, .networkConnectionLost, .cannotConnectToHost,
@@ -38,7 +38,7 @@ public struct RemoteRetryPolicy: Sendable {
         return false
     }
 
-    public func retryDelayNs(error: Error,
+    public func retryDelayNs(error: any Error,
                              localDelayNs: UInt64,
                              now: Date = Date()) throws -> UInt64 {
         let raw: String?
@@ -74,7 +74,7 @@ public func withRemoteRetries<T>(_ policy: RemoteRetryPolicy,
                                  op: () async throws -> T) async throws -> T {
     let attempts = max(policy.attempts, 1)
     var delay = policy.baseDelayNs
-    var lastError: Error?
+    var lastError: any Error?
     for attempt in 1...attempts {
         try Task.checkCancellation()
         do {

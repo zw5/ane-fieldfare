@@ -17,17 +17,17 @@ final class LMHeadChainInt4 {
     ]
 
     private let rms: RMSNorm
-    private let rowGreedy: MTLComputePipelineState
-    private let rowGreedySpecialized: MTLComputePipelineState
-    private let rowReducer: MTLComputePipelineState
+    private let rowGreedy: any MTLComputePipelineState
+    private let rowGreedySpecialized: any MTLComputePipelineState
+    private let rowReducer: any MTLComputePipelineState
     private let rowsProjection: DequantInt4GEMV
-    private let rowsArgmax: MTLComputePipelineState
-    private let xNormedRowsBuffer: MTLBuffer
-    private let rowsLogitsBuffer: MTLBuffer
+    private let rowsArgmax: any MTLComputePipelineState
+    private let xNormedRowsBuffer: any MTLBuffer
+    private let rowsLogitsBuffer: any MTLBuffer
     /// Per-row greedy-token probability from the last `encodeGreedyRows`.
-    let rowsConfidence: MTLBuffer
-    private let xNormedBuffer: MTLBuffer
-    private let rowSummariesBuffer: MTLBuffer
+    let rowsConfidence: any MTLBuffer
+    private let xNormedBuffer: any MTLBuffer
+    private let rowSummariesBuffer: any MTLBuffer
     private let maxD: Int
     private let maxVocab: Int
 
@@ -77,19 +77,19 @@ final class LMHeadChainInt4 {
     /// Greedy tokens for `rowCount` consecutive FP16 hidden rows starting at
     /// `hiddenOffset`, written as `UInt32` to `outTokens`. Reads the INT4 table
     /// once for all rows.
-    func encodeGreedyRows(commandBuffer: MTLCommandBuffer,
-                          hidden: MTLBuffer,
+    func encodeGreedyRows(commandBuffer: any MTLCommandBuffer,
+                          hidden: any MTLBuffer,
                           hiddenOffset: Int = 0,
                           rowCount: Int,
-                          normWeight: MTLBuffer,
+                          normWeight: any MTLBuffer,
                           normOffset: Int = 0,
-                          weights: MTLBuffer,
+                          weights: any MTLBuffer,
                           weightsOffset: Int = 0,
-                          scales: MTLBuffer,
+                          scales: any MTLBuffer,
                           scalesOffset: Int = 0,
-                          biases: MTLBuffer,
+                          biases: any MTLBuffer,
                           biasesOffset: Int = 0,
-                          outTokens: MTLBuffer,
+                          outTokens: any MTLBuffer,
                           outTokensOffset: Int = 0,
                           d: UInt32,
                           vocab: UInt32,
@@ -134,18 +134,18 @@ final class LMHeadChainInt4 {
         }
     }
 
-    func encodeGreedyDecode(commandBuffer: MTLCommandBuffer,
-                            hidden: MTLBuffer,
+    func encodeGreedyDecode(commandBuffer: any MTLCommandBuffer,
+                            hidden: any MTLBuffer,
                             hiddenOffset: Int = 0,
-                            normWeight: MTLBuffer,
+                            normWeight: any MTLBuffer,
                             normOffset: Int = 0,
-                            weights: MTLBuffer,
+                            weights: any MTLBuffer,
                             weightsOffset: Int = 0,
-                            scales: MTLBuffer,
+                            scales: any MTLBuffer,
                             scalesOffset: Int = 0,
-                            biases: MTLBuffer,
+                            biases: any MTLBuffer,
                             biasesOffset: Int = 0,
-                            outToken: MTLBuffer,
+                            outToken: any MTLBuffer,
                             outTokenOffset: Int = 0,
                             d: UInt32,
                             vocab: UInt32,

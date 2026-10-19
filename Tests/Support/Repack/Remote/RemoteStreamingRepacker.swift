@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 public struct RemoteStreamingRepackOptions: Sendable {
     public let repoID: String
     public let revision: String
@@ -549,7 +549,7 @@ public final class RemoteStreamingRepacker {
         }
     }
 
-    private func isRemoteNotFound(_ error: Error) -> Bool {
+    private func isRemoteNotFound(_ error: any Error) -> Bool {
         if case RepackError.remoteHTTPStatus(_, 404) = error {
             return true
         }

@@ -8,8 +8,8 @@ final class FusedQKVGEMV {
         var n: UInt32
     }
 
-    private let pso: MTLComputePipelineState
-    private let specializedPSOs: [Shape: MTLComputePipelineState]
+    private let pso: any MTLComputePipelineState
+    private let specializedPSOs: [Shape: any MTLComputePipelineState]
 
     private static let realDecodeShapes: [Shape] = [
         Shape(qRows: 4096, kvRows: 2048, n: 2816),
@@ -20,7 +20,7 @@ final class FusedQKVGEMV {
         self.pso = try context.pipeline("dequant_int4_qkv_gemv_simd",
                                         constants: [],
                                         maxTotalThreadsPerThreadgroup: 512)
-        var variants: [Shape: MTLComputePipelineState] = [:]
+        var variants: [Shape: any MTLComputePipelineState] = [:]
         for shape in Self.realDecodeShapes {
             variants[shape] = try context.pipeline(
                 "dequant_int4_qkv_gemv_simd",
@@ -35,20 +35,20 @@ final class FusedQKVGEMV {
         self.specializedPSOs = variants
     }
 
-    func encode(commandBuffer: MTLCommandBuffer,
-                       qWeights: MTLBuffer, qWeightsOffset: Int = 0,
-                       qScales: MTLBuffer, qScalesOffset: Int = 0,
-                       qBiases: MTLBuffer, qBiasesOffset: Int = 0,
-                       kWeights: MTLBuffer, kWeightsOffset: Int = 0,
-                       kScales: MTLBuffer, kScalesOffset: Int = 0,
-                       kBiases: MTLBuffer, kBiasesOffset: Int = 0,
-                       vWeights: MTLBuffer, vWeightsOffset: Int = 0,
-                       vScales: MTLBuffer, vScalesOffset: Int = 0,
-                       vBiases: MTLBuffer, vBiasesOffset: Int = 0,
-                       x: MTLBuffer,
-                       qOut: MTLBuffer, qOutOffset: Int = 0,
-                       kOut: MTLBuffer, kOutOffset: Int = 0,
-                       vOut: MTLBuffer, vOutOffset: Int = 0,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       qWeights: any MTLBuffer, qWeightsOffset: Int = 0,
+                       qScales: any MTLBuffer, qScalesOffset: Int = 0,
+                       qBiases: any MTLBuffer, qBiasesOffset: Int = 0,
+                       kWeights: any MTLBuffer, kWeightsOffset: Int = 0,
+                       kScales: any MTLBuffer, kScalesOffset: Int = 0,
+                       kBiases: any MTLBuffer, kBiasesOffset: Int = 0,
+                       vWeights: any MTLBuffer, vWeightsOffset: Int = 0,
+                       vScales: any MTLBuffer, vScalesOffset: Int = 0,
+                       vBiases: any MTLBuffer, vBiasesOffset: Int = 0,
+                       x: any MTLBuffer,
+                       qOut: any MTLBuffer, qOutOffset: Int = 0,
+                       kOut: any MTLBuffer, kOutOffset: Int = 0,
+                       vOut: any MTLBuffer, vOutOffset: Int = 0,
                        qRows: UInt32,
                        kvRows: UInt32,
                        n: UInt32) {

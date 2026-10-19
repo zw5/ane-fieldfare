@@ -16,7 +16,7 @@ let installedCheckpointURL: URL? = {
 
 /// Fill `buffer` with FP16 NaN on the host queue, ordered after the host's
 /// own clears, as a carrier that lost its program mid-layer would leave it.
-private func poison(_ buffer: MTLBuffer, on context: MetalContext) throws {
+private func poison(_ buffer: any MTLBuffer, on context: MetalContext) throws {
     let commandBuffer = try #require(context.queue.makeCommandBuffer())
     let blit = try #require(commandBuffer.makeBlitCommandEncoder())
     blit.fill(buffer: buffer, range: 0..<buffer.length, value: 0x7E)
@@ -27,8 +27,8 @@ private func poison(_ buffer: MTLBuffer, on context: MetalContext) throws {
 
 @Suite struct DeviceSupervisorPolicyTests {
     final class NoGuest: RoutedPrefillGuest {
-        func runLayer(model: Model, layer: Int, hidden: MTLBuffer, partials: MTLBuffer,
-                      routes: PrefillMoEGroupedRoutes, pairs: MTLBuffer) async throws {}
+        func runLayer(model: Model, layer: Int, hidden: any MTLBuffer, partials: any MTLBuffer,
+                      routes: PrefillMoEGroupedRoutes, pairs: any MTLBuffer) async throws {}
         var profile: [String: Any] { [:] }
     }
     struct Injected: Error {}
@@ -75,14 +75,14 @@ struct DeviceSupervisorFailoverTests {
     /// Delegates to a real guest, then faults on `faultLayer` after
     /// corrupting the partials, as a carrier that lost its program would.
     final class FaultAtLayerGuest: RoutedPrefillGuest {
-        let inner: RoutedPrefillGuest?
+        let inner: any RoutedPrefillGuest?
         let faultLayer: Int
         let context: MetalContext
-        init(inner: RoutedPrefillGuest?, faultLayer: Int, context: MetalContext) {
+        init(inner: any RoutedPrefillGuest?, faultLayer: Int, context: MetalContext) {
             self.inner = inner; self.faultLayer = faultLayer; self.context = context
         }
-        func runLayer(model: Model, layer: Int, hidden: MTLBuffer, partials: MTLBuffer,
-                      routes: PrefillMoEGroupedRoutes, pairs: MTLBuffer) async throws {
+        func runLayer(model: Model, layer: Int, hidden: any MTLBuffer, partials: any MTLBuffer,
+                      routes: PrefillMoEGroupedRoutes, pairs: any MTLBuffer) async throws {
             guard layer == faultLayer else {
                 try await inner?.runLayer(model: model, layer: layer, hidden: hidden, partials: partials,
                                           routes: routes, pairs: pairs)
@@ -100,8 +100,8 @@ struct DeviceSupervisorFailoverTests {
         let context: MetalContext
         var calls = 0
         init(context: MetalContext) { self.context = context }
-        func runLayer(model: Model, layer: Int, hidden: MTLBuffer, partials: MTLBuffer,
-                      routes: PrefillMoEGroupedRoutes, pairs: MTLBuffer) async throws {
+        func runLayer(model: Model, layer: Int, hidden: any MTLBuffer, partials: any MTLBuffer,
+                      routes: PrefillMoEGroupedRoutes, pairs: any MTLBuffer) async throws {
             calls += 1
             try poison(partials, on: context)
             throw ANEExecutionError.rejected("injected routed fault")

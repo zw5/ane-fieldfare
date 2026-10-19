@@ -1,6 +1,6 @@
 import CoreGraphics
 import Darwin
-import Foundation
+public import Foundation
 import ImageIO
 
 public enum VisionImageError: Error, CustomStringConvertible {

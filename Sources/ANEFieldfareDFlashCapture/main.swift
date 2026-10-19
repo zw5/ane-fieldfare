@@ -1,6 +1,7 @@
 import ANEFieldfareHotpath
 import Foundation
 import Darwin
+import Metal
 
 private struct Generation: Decodable {
     let prompt_token_ids: [Int32]
@@ -234,7 +235,7 @@ private struct Generation: Decodable {
             runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
         let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
-        var failure: Error?
+        var failure: any Error?
         runner.prefillCapture = PrefillCapture(hiddenLayers: drafter.config.contextLayers) { chunk in
             do { try drafter.appendContext(captured: chunk.hidden, stride: chunk.tokenCount, rows: chunk.tokenCount) }
             catch { failure = error }

@@ -12,7 +12,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
     func registerPathProducesExpectedConstantProduct() throws {
         let context = try MetalContext()
         let m = 128, n = 256, k = 1_152
-        func buffer(count: Int, value: Float) throws -> MTLBuffer {
+        func buffer(count: Int, value: Float) throws -> any MTLBuffer {
             let bits = [UInt16](repeating: Quantization.bf16Bits(value), count: count)
             return try #require(context.device.makeBuffer(
                 bytes: bits, length: bits.count * MemoryLayout<UInt16>.stride,

@@ -1,6 +1,6 @@
 import Foundation
-import Metal
-import ANEFieldfareHotpath
+public import Metal
+public import ANEFieldfareHotpath
 
 /// Test `LogitProducer` that writes scripted logits, independent of the kernel
 /// stack. The `step` closure maps `(inputToken, callIndex)` to a logit spec, so
@@ -23,7 +23,7 @@ public final class ScriptedLogitProducer: LogitProducer {
 
     public func reset() { calls = 0 }
 
-    public func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {
+    public func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
         let spec = step(token, calls)
         calls += 1
         let ptr = logits.contents().bindMemory(to: Float16.self, capacity: vocabSize)

@@ -2,12 +2,12 @@ import Metal
 
 /// NeoX RoPE variants used by Gemma 4 attention.
 final class RoPE {
-    private let defaultNeox: MTLComputePipelineState
-    private let proportionalNeox: MTLComputePipelineState
-    private let defaultNeoxSWAQ: MTLComputePipelineState
-    private let defaultNeoxSWAK: MTLComputePipelineState
-    private let proportionalNeoxFullQ: MTLComputePipelineState
-    private let proportionalNeoxFullK: MTLComputePipelineState
+    private let defaultNeox: any MTLComputePipelineState
+    private let proportionalNeox: any MTLComputePipelineState
+    private let defaultNeoxSWAQ: any MTLComputePipelineState
+    private let defaultNeoxSWAK: any MTLComputePipelineState
+    private let proportionalNeoxFullQ: any MTLComputePipelineState
+    private let proportionalNeoxFullK: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.defaultNeox = try context.pipeline("rope_default_neox")
@@ -24,8 +24,8 @@ final class RoPE {
             headDim: 512, numHeads: 2, rotatedPairs: 64)
     }
 
-    func encodeDefaultNeox(commandBuffer: MTLCommandBuffer,
-                                  data: MTLBuffer,
+    func encodeDefaultNeox(commandBuffer: any MTLCommandBuffer,
+                                  data: any MTLBuffer,
                                   dataOffset: Int = 0,
                                   position: UInt32,
                                   headDim: UInt32,
@@ -53,8 +53,8 @@ final class RoPE {
         encoder.endEncoding()
     }
 
-    func encodeProportionalNeox(commandBuffer: MTLCommandBuffer,
-                                       data: MTLBuffer,
+    func encodeProportionalNeox(commandBuffer: any MTLCommandBuffer,
+                                       data: any MTLBuffer,
                                        dataOffset: Int = 0,
                                        position: UInt32,
                                        headDim: UInt32,
@@ -95,7 +95,7 @@ final class RoPE {
                                             headDim: UInt32,
                                             numHeads: UInt32,
                                             rotatedPairs: UInt32 = 0) throws
-        -> MTLComputePipelineState {
+        -> any MTLComputePipelineState {
         try context.pipeline(
             name,
             constants: [
@@ -107,7 +107,7 @@ final class RoPE {
     }
 
     private func defaultPipeline(headDim: UInt32,
-                                 numHeads: UInt32) -> MTLComputePipelineState {
+                                 numHeads: UInt32) -> any MTLComputePipelineState {
         if headDim == 256 && numHeads == 16 { return defaultNeoxSWAQ }
         if headDim == 256 && numHeads == 8 { return defaultNeoxSWAK }
         return defaultNeox
@@ -115,7 +115,7 @@ final class RoPE {
 
     private func proportionalPipeline(headDim: UInt32,
                                       numHeads: UInt32,
-                                      rotatedPairs: UInt32) -> MTLComputePipelineState {
+                                      rotatedPairs: UInt32) -> any MTLComputePipelineState {
         if headDim == 512 && rotatedPairs == 64 && numHeads == 16 {
             return proportionalNeoxFullQ
         }
@@ -125,8 +125,8 @@ final class RoPE {
         return proportionalNeox
     }
 
-    private func dispatch(encoder: MTLComputeCommandEncoder,
-                          pipeline: MTLComputePipelineState,
+    private func dispatch(encoder: any MTLComputeCommandEncoder,
+                          pipeline: any MTLComputePipelineState,
                           pairs: Int,
                           heads: Int,
                           tokens: Int) {

@@ -2,22 +2,22 @@ import Foundation
 import Metal
 
 final class PrefillLayerTail {
-    private let pso: MTLComputePipelineState
+    private let pso: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("prefill_layer_tail_block")
     }
 
-    func encode(commandBuffer: MTLCommandBuffer,
-                       h2: MTLBuffer,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       h2: any MTLBuffer,
                        h2Offset: Int = 0,
-                       h1: MTLBuffer,
+                       h1: any MTLBuffer,
                        h1Offset: Int = 0,
-                       hidden: MTLBuffer,
+                       hidden: any MTLBuffer,
                        hiddenOffset: Int = 0,
-                       postFFN2Weight: MTLBuffer,
+                       postFFN2Weight: any MTLBuffer,
                        postFFN2WeightOffset: Int = 0,
-                       postFFNWeight: MTLBuffer,
+                       postFFNWeight: any MTLBuffer,
                        postFFNWeightOffset: Int = 0,
                        queryCount: UInt32,
                        d: UInt32,

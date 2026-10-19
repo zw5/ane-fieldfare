@@ -146,14 +146,14 @@ import ANEFieldfareValidationSupport
     }
 
     private struct RouterBuffers {
-        let weights: MTLBuffer
-        let scales: MTLBuffer
-        let biases: MTLBuffer
-        let hidden: MTLBuffer
-        let effectiveScale: MTLBuffer
-        let perExpertScale: MTLBuffer
-        let blockIndices: MTLBuffer
-        let blockWeights: MTLBuffer
+        let weights: any MTLBuffer
+        let scales: any MTLBuffer
+        let biases: any MTLBuffer
+        let hidden: any MTLBuffer
+        let effectiveScale: any MTLBuffer
+        let perExpertScale: any MTLBuffer
+        let blockIndices: any MTLBuffer
+        let blockWeights: any MTLBuffer
     }
 
     private static func makeBuffers(ctx: MetalContext,
@@ -299,7 +299,7 @@ import ANEFieldfareValidationSupport
         return (packed, scales, biases)
     }
 
-    private static func readUInt32(_ buffer: MTLBuffer, count: Int) -> [UInt32] {
+    private static func readUInt32(_ buffer: any MTLBuffer, count: Int) -> [UInt32] {
         (0..<count).map {
             buffer.contents().load(fromByteOffset: $0 * MemoryLayout<UInt32>.size,
                                    as: UInt32.self)
@@ -316,7 +316,7 @@ import ANEFieldfareValidationSupport
         #expect(maxAbs <= tolerance, "route weight maxAbsDiff=\(maxAbs)")
     }
 
-    private static func assertPaddingUnchanged(buffer: MTLBuffer,
+    private static func assertPaddingUnchanged(buffer: any MTLBuffer,
                                                original: [Float16],
                                                rows: Int,
                                                rowStride: Int,

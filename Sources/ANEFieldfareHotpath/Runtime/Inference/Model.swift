@@ -1,5 +1,5 @@
-import Foundation
-import Metal
+public import Foundation
+public import Metal
 import Darwin
 import ANEFieldfareImportedFormat
 
@@ -21,7 +21,7 @@ public struct ModelLoadStats: Sendable {
 /// `MTLBuffer`; routed expert weights are per-layer mappings, opened lazily
 /// on first touch and served from the OS page cache (`MappedExpertLayer`).
 public struct Model {
-    public let device: MTLDevice
+    public let device: any MTLDevice
     public let config: ArchConfig
     public let integrityPolicy: ModelIntegrityPolicy
     public var modelID: String { manifest.modelID }
@@ -38,7 +38,7 @@ public struct Model {
     /// Routed-expert layer mappings, shared by every copy of this value.
     let routedLayers: RoutedExpertLayers
 
-    init(device: MTLDevice,
+    init(device: any MTLDevice,
          config: ArchConfig,
          integrityPolicy: ModelIntegrityPolicy,
          residentBuffer: ResidentBuffer,
@@ -265,7 +265,7 @@ extension Model {
     /// SHA-256 of `model_weights.bin` and `packed_experts/layout.json`; layer
     /// files are verified lazily on first `routedExpert(...)` touch.
     public static func load(directoryURL: URL,
-                            device: MTLDevice,
+                            device: any MTLDevice,
                             expecting: ArchConfig = .gemma4_26B_A4B,
                             integrityPolicy: ModelIntegrityPolicy? = nil,
                             loadStats: UnsafeMutablePointer<ModelLoadStats>? = nil) throws -> Model {

@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 
 public enum MultimodalContentPart: Sendable, Equatable {
     case text(String)

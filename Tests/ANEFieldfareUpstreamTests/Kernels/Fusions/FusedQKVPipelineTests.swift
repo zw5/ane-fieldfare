@@ -153,7 +153,7 @@ import ANEFieldfareValidationSupport
         return (weights, scales, biases)
     }
 
-    private static func bytes(_ buffer: MTLBuffer, count: Int) -> [UInt8] {
+    private static func bytes(_ buffer: any MTLBuffer, count: Int) -> [UInt8] {
         Array(UnsafeBufferPointer(
             start: buffer.contents().assumingMemoryBound(to: UInt8.self),
             count: count * MemoryLayout<Float16>.size))

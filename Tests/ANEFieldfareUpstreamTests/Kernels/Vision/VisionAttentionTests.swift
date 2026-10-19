@@ -29,7 +29,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
             k[index] = Float((index * 7) % 19 - 9) / 32
             v[index] = Float((index * 5) % 23 - 11) / 16
         }
-        func make(_ values: [Float]) throws -> MTLBuffer {
+        func make(_ values: [Float]) throws -> any MTLBuffer {
             let bits = values.map(Quantization.bf16Bits)
             return try #require(context.device.makeBuffer(
                 bytes: bits, length: bits.count * MemoryLayout<UInt16>.stride,
@@ -38,7 +38,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         // The same values laid out head-major with the 80-lane stride, which is
         // what the fused branch expects.
         let padded = VisionAttention.paddedHeadDimension
-        func makePadded(_ values: [Float]) throws -> MTLBuffer {
+        func makePadded(_ values: [Float]) throws -> any MTLBuffer {
             var laid = [Float](repeating: 0, count: heads * length * padded)
             for row in 0..<length {
                 for head in 0..<heads {
@@ -109,7 +109,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
             k[index] = Float((index * 7) % 19 - 9) / 32
             v[index] = Float((index * 5) % 23 - 11) / 16
         }
-        func make(_ values: [Float]) throws -> MTLBuffer {
+        func make(_ values: [Float]) throws -> any MTLBuffer {
             let bits = values.map(Quantization.bf16Bits)
             return try #require(context.device.makeBuffer(
                 bytes: bits, length: bits.count * MemoryLayout<UInt16>.stride,
@@ -121,7 +121,7 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         // Head-major [head][row][80] copies for the fused layout, which reads the
         // padding the projections would otherwise have written.
         let padded = VisionAttention.paddedHeadDimension
-        func makePadded(_ values: [Float]) throws -> MTLBuffer {
+        func makePadded(_ values: [Float]) throws -> any MTLBuffer {
             var laid = [Float](repeating: 0, count: heads * length * padded)
             for row in 0..<length {
                 for head in 0..<heads {

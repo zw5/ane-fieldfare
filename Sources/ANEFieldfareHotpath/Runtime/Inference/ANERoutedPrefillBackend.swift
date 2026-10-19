@@ -91,7 +91,7 @@ final class ANERoutedPrefillBackend {
     /// Upcoming expert groups read concurrently. SSD throughput rises from
     /// 4.7 GB/s at queue depth 1 to 6.7 GB/s at depth 2.
     let fetchLookahead = 4
-    private let argumentEncoder: MTLArgumentEncoder
+    private let argumentEncoder: any MTLArgumentEncoder
     struct Job {
         let view: TensorView
         let start: Int, count: Int
@@ -102,10 +102,10 @@ final class ANERoutedPrefillBackend {
     /// the host queue's shared FFN. The host clears `partials` and completes
     /// the producer of `hidden` before `runLayer`, and reads `partials` only
     /// after `runLayer` has waited for every consumer.
-    private let carrierQueue: MTLCommandQueue
-    private let weightsPipeline: MTLComputePipelineState
-    private let inputsPipeline: MTLComputePipelineState
-    private let outputsPipeline: MTLComputePipelineState
+    private let carrierQueue: any MTLCommandQueue
+    private let weightsPipeline: any MTLComputePipelineState
+    private let inputsPipeline: any MTLComputePipelineState
+    private let outputsPipeline: any MTLComputePipelineState
     // SAFETY: a dedicated serial queue, not a task. Each evaluation blocks
     // for up to the carrier's 5 s timeout and evaluations must not overlap;
     // a serial queue gives both without parking a cooperative-pool thread.
@@ -118,17 +118,17 @@ final class ANERoutedPrefillBackend {
     private var terminalFailure: String?
 
     final class Bank {
-        let input: MTLBuffer, output: MTLBuffer, event: MTLSharedEvent
-        let arguments: MTLBuffer, metadata: MTLBuffer, validation: MTLBuffer
-        var producer: MTLCommandBuffer?
-        var consumer: MTLCommandBuffer?
-        var pairs: MTLBuffer?
+        let input: any MTLBuffer, output: any MTLBuffer, event: any MTLSharedEvent
+        let arguments: any MTLBuffer, metadata: any MTLBuffer, validation: any MTLBuffer
+        var producer: any MTLCommandBuffer?
+        var consumer: any MTLCommandBuffer?
+        var pairs: any MTLBuffer?
         var rows = 0
         var generation: UInt64 = 0
         /// Set while an evaluation is out on the submission queue.
         fileprivate var evaluation: ANEEvaluationOutcome?
         var busy: Bool { evaluation != nil }
-        init(input: MTLBuffer, output: MTLBuffer, event: MTLSharedEvent, arguments: MTLBuffer, metadata: MTLBuffer, validation: MTLBuffer) {
+        init(input: any MTLBuffer, output: any MTLBuffer, event: any MTLSharedEvent, arguments: any MTLBuffer, metadata: any MTLBuffer, validation: any MTLBuffer) {
             self.input = input; self.output = output; self.event = event
             self.arguments = arguments; self.metadata = metadata
             self.validation = validation
@@ -149,10 +149,10 @@ final class ANERoutedPrefillBackend {
         let constants = MTLFunctionConstantValues()
         var laneCount = UInt32(lanes)
         constants.setConstantValue(&laneCount, type: .uint, index: 80)
-        func function(_ name: String) throws -> MTLFunction {
+        func function(_ name: String) throws -> any MTLFunction {
             try library.makeFunction(name: name, constantValues: constants)
         }
-        func pipeline(_ name: String) throws -> MTLComputePipelineState {
+        func pipeline(_ name: String) throws -> any MTLComputePipelineState {
             try context.device.makeComputePipelineState(function: try function(name))
         }
         weightsPipeline = try pipeline("ane_expert_weights")
@@ -164,7 +164,7 @@ final class ANERoutedPrefillBackend {
             let message = error.map { String(cString: $0) } ?? "device carrier construction failed"
             free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
         }
-        func wrap(_ raw: Unmanaged<IOSurfaceRef>?, minimum: Int) throws -> MTLBuffer {
+        func wrap(_ raw: Unmanaged<IOSurfaceRef>?, minimum: Int) throws -> any MTLBuffer {
             guard let surface = raw?.takeUnretainedValue() else { throw ModelError.residentBufferWrapFailed }
             let base = IOSurfaceGetBaseAddress(surface), bytes = IOSurfaceGetAllocSize(surface)
             guard bytes >= minimum, bytes % Int(getpagesize()) == 0,
@@ -210,7 +210,7 @@ final class ANERoutedPrefillBackend {
     }
 
     func prepareBatch(bank index: Int, jobs: [Job], offsets: MoEExpertOffsets,
-                      hidden: MTLBuffer, pairs: MTLBuffer) throws -> MTLCommandBuffer {
+                      hidden: any MTLBuffer, pairs: any MTLBuffer) throws -> any MTLCommandBuffer {
         if let terminalFailure { throw ANEExecutionError.rejected("backend requires reconstruction after: \(terminalFailure)") }
         guard banks.indices.contains(index), !banks[index].busy, banks[index].producer == nil,
               !jobs.isEmpty, jobs.count <= batchExperts else {
@@ -269,8 +269,8 @@ final class ANERoutedPrefillBackend {
         return cb
     }
 
-    func submit(bank index: Int, producer: MTLCommandBuffer, partials: MTLBuffer,
-                pairs: MTLBuffer) throws -> MTLCommandBuffer {
+    func submit(bank index: Int, producer: any MTLCommandBuffer, partials: any MTLBuffer,
+                pairs: any MTLBuffer) throws -> any MTLCommandBuffer {
         guard banks.indices.contains(index), !banks[index].busy,
               banks[index].producer === producer, banks[index].pairs === pairs else {
             throw ANEExecutionError.rejected("routed request bank is busy or invalid")
@@ -319,7 +319,7 @@ final class ANERoutedPrefillBackend {
         return cb // The scheduler commits this AFTER the next input producer.
     }
 
-    func finish(bank index: Int, consumer: MTLCommandBuffer) throws {
+    func finish(bank index: Int, consumer: any MTLCommandBuffer) throws {
         guard banks.indices.contains(index), let evaluation = banks[index].evaluation,
               banks[index].consumer === consumer else {
             throw ANEExecutionError.rejected("routed bank is not pending for this consumer")
@@ -342,10 +342,10 @@ final class ANERoutedPrefillBackend {
         evaluatedRows += UInt64(bank.rows)
     }
 
-    func runLayer(model: Model, layer: Int, hidden: MTLBuffer, partials: MTLBuffer,
-                  routes: PrefillMoEGroupedRoutes, pairs: MTLBuffer) async throws {
+    func runLayer(model: Model, layer: Int, hidden: any MTLBuffer, partials: any MTLBuffer,
+                  routes: PrefillMoEGroupedRoutes, pairs: any MTLBuffer) async throws {
         struct Pending {
-            let bank: Int, consumer: MTLCommandBuffer, jobs: [Job]
+            let bank: Int, consumer: any MTLCommandBuffer, jobs: [Job]
             var committed = false
         }
         var pending: [Pending] = []

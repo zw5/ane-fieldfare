@@ -15,9 +15,9 @@ final class FusedQKVEpilogue {
         var rotatedPairs: UInt32
     }
 
-    private let pso: MTLComputePipelineState
-    private let specializedPSOs: [Shape: MTLComputePipelineState]
-    private let rowsPSOs: [Shape: MTLComputePipelineState]
+    private let pso: any MTLComputePipelineState
+    private let specializedPSOs: [Shape: any MTLComputePipelineState]
+    private let rowsPSOs: [Shape: any MTLComputePipelineState]
     private static let realDecodeShapes: [Shape] = [
         Shape(headDim: 256, numQHeads: 16, numKVHeads: 8, rotatedPairs: 128),
         Shape(headDim: 512, numQHeads: 16, numKVHeads: 2, rotatedPairs: 64),
@@ -25,7 +25,7 @@ final class FusedQKVEpilogue {
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("fused_qkv_epilogue")
-        var variants: [Shape: MTLComputePipelineState] = [:]
+        var variants: [Shape: any MTLComputePipelineState] = [:]
         for shape in Self.realDecodeShapes {
             variants[shape] = try context.pipeline(
                 "fused_qkv_epilogue",
@@ -38,7 +38,7 @@ final class FusedQKVEpilogue {
                 ])
         }
         self.specializedPSOs = variants
-        var rowVariants: [Shape: MTLComputePipelineState] = [:]
+        var rowVariants: [Shape: any MTLComputePipelineState] = [:]
         for shape in Self.realDecodeShapes {
             rowVariants[shape] = try context.pipeline(
                 "fused_qkv_epilogue_rows",
@@ -56,10 +56,10 @@ final class FusedQKVEpilogue {
     /// `encode` over `rows` tokens of a block in one dispatch: token r is at
     /// `position + r`, its Q `qStrideElements` and K/V `kvStrideElements`
     /// past token r - 1. Real decode shapes only.
-    func encodeRows(commandBuffer cb: MTLCommandBuffer,
-                    q: MTLBuffer, k: MTLBuffer, v: MTLBuffer,
-                    qWeight: MTLBuffer, qWeightOffset: Int,
-                    kWeight: MTLBuffer, kWeightOffset: Int,
+    func encodeRows(commandBuffer cb: any MTLCommandBuffer,
+                    q: any MTLBuffer, k: any MTLBuffer, v: any MTLBuffer,
+                    qWeight: any MTLBuffer, qWeightOffset: Int,
+                    kWeight: any MTLBuffer, kWeightOffset: Int,
                     headDim: UInt32, numQHeads: UInt32, numKVHeads: UInt32,
                     position: UInt32, rows: Int,
                     qStrideElements: UInt32, kvStrideElements: UInt32,
@@ -89,16 +89,16 @@ final class FusedQKVEpilogue {
         return true
     }
 
-    func encode(commandBuffer cb: MTLCommandBuffer,
-                       q: MTLBuffer,
+    func encode(commandBuffer cb: any MTLCommandBuffer,
+                       q: any MTLBuffer,
                        qOffset: Int = 0,
-                       k: MTLBuffer,
+                       k: any MTLBuffer,
                        kOffset: Int = 0,
-                       v: MTLBuffer,
+                       v: any MTLBuffer,
                        vOffset: Int = 0,
-                       qWeight: MTLBuffer,
+                       qWeight: any MTLBuffer,
                        qWeightOffset: Int = 0,
-                       kWeight: MTLBuffer,
+                       kWeight: any MTLBuffer,
                        kWeightOffset: Int = 0,
                        headDim: UInt32,
                        numQHeads: UInt32,

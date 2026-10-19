@@ -53,7 +53,7 @@ public enum DFlashGeneration {
         defer { runner.prefillCapture = nil }
 
         // Prefill: every prompt row's features enter the drafter context.
-        var captureError: Error?
+        var captureError: any Error?
         runner.prefillCapture = PrefillCapture(hiddenLayers: layers) { chunk in
             let started = Date()
             do {

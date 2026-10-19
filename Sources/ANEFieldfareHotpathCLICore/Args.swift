@@ -1,5 +1,5 @@
 import Foundation
-import ANEFieldfareHotpath
+public import ANEFieldfareHotpath
 
 public struct Args: Equatable, Sendable {
     public var model: String

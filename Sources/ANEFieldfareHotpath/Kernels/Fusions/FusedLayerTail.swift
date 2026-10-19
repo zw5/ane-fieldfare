@@ -9,8 +9,8 @@ import Metal
 ///   h12 = rmsnorm_bf16w(h12, post_feedforward_layernorm)
 ///   hidden = (hidden + h12) * layer_scalar
 final class FusedLayerTail {
-    private let pso: MTLComputePipelineState
-    private let specializedPSO: MTLComputePipelineState?
+    private let pso: any MTLComputePipelineState
+    private let specializedPSO: any MTLComputePipelineState?
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("fused_layer_tail")
@@ -22,13 +22,13 @@ final class FusedLayerTail {
             ])
     }
 
-    func encode(commandBuffer cb: MTLCommandBuffer,
-                       h2: MTLBuffer,
-                       h1: MTLBuffer,
-                       hidden: MTLBuffer,
-                       postFFN2Weight: MTLBuffer,
+    func encode(commandBuffer cb: any MTLCommandBuffer,
+                       h2: any MTLBuffer,
+                       h1: any MTLBuffer,
+                       hidden: any MTLBuffer,
+                       postFFN2Weight: any MTLBuffer,
                        postFFN2WeightOffset: Int = 0,
-                       postFFNWeight: MTLBuffer,
+                       postFFNWeight: any MTLBuffer,
                        postFFNWeightOffset: Int = 0,
                        d: UInt32,
                        eps: Float,

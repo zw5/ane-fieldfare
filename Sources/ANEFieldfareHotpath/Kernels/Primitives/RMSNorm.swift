@@ -12,16 +12,16 @@ import Metal
 /// at decode: a token at a time, 61 norm dispatches per token before fusion.
 final class RMSNorm {
 
-    private let psoBF16: MTLComputePipelineState
-    private let psoNoScale: MTLComputePipelineState
-    private let psoBF16PerHead: MTLComputePipelineState
-    private let psoNoScalePerHead: MTLComputePipelineState
-    private let psoBF16D2816: MTLComputePipelineState
-    private let psoNoScaleD2816: MTLComputePipelineState
-    private let psoBF16PerHead256: MTLComputePipelineState
-    private let psoBF16PerHead512: MTLComputePipelineState
-    private let psoNoScalePerHead256: MTLComputePipelineState
-    private let psoNoScalePerHead512: MTLComputePipelineState
+    private let psoBF16: any MTLComputePipelineState
+    private let psoNoScale: any MTLComputePipelineState
+    private let psoBF16PerHead: any MTLComputePipelineState
+    private let psoNoScalePerHead: any MTLComputePipelineState
+    private let psoBF16D2816: any MTLComputePipelineState
+    private let psoNoScaleD2816: any MTLComputePipelineState
+    private let psoBF16PerHead256: any MTLComputePipelineState
+    private let psoBF16PerHead512: any MTLComputePipelineState
+    private let psoNoScalePerHead256: any MTLComputePipelineState
+    private let psoNoScalePerHead512: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.psoBF16     = try context.pipeline("rmsnorm_bf16w")
@@ -49,10 +49,10 @@ final class RMSNorm {
     }
 
     /// Encode the BF16-weight variant (Gemma 4 norms).
-    func encodeBF16W(commandBuffer: MTLCommandBuffer,
-                            x: MTLBuffer, xOffset: Int = 0,
-                            weight: MTLBuffer, weightOffset: Int = 0,
-                            out: MTLBuffer, outOffset: Int = 0,
+    func encodeBF16W(commandBuffer: any MTLCommandBuffer,
+                            x: any MTLBuffer, xOffset: Int = 0,
+                            weight: any MTLBuffer, weightOffset: Int = 0,
+                            out: any MTLBuffer, outOffset: Int = 0,
                             d: UInt32,
                             eps: Float) {
         encodeWeighted(commandBuffer: commandBuffer,
@@ -64,9 +64,9 @@ final class RMSNorm {
     }
 
     /// Encode the no-scale variant (v_norm, router internal norm).
-    func encodeNoScale(commandBuffer: MTLCommandBuffer,
-                              x: MTLBuffer, xOffset: Int = 0,
-                              out: MTLBuffer, outOffset: Int = 0,
+    func encodeNoScale(commandBuffer: any MTLCommandBuffer,
+                              x: any MTLBuffer, xOffset: Int = 0,
+                              out: any MTLBuffer, outOffset: Int = 0,
                               d: UInt32,
                               eps: Float) {
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
@@ -86,10 +86,10 @@ final class RMSNorm {
     /// `headDim` in one dispatch. `weight` is the shared
     /// [headDim] per-head gain. In-place safe (each head's threadgroup touches
     /// only its own region).
-    func encodeBF16WPerHead(commandBuffer: MTLCommandBuffer,
-                                   x: MTLBuffer, xOffset: Int = 0,
-                                   weight: MTLBuffer, weightOffset: Int = 0,
-                                   out: MTLBuffer, outOffset: Int = 0,
+    func encodeBF16WPerHead(commandBuffer: any MTLCommandBuffer,
+                                   x: any MTLBuffer, xOffset: Int = 0,
+                                   weight: any MTLBuffer, weightOffset: Int = 0,
+                                   out: any MTLBuffer, outOffset: Int = 0,
                                    headDim: UInt32, numHeads: Int,
                                    eps: Float) {
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
@@ -112,9 +112,9 @@ final class RMSNorm {
     }
 
     /// No-scale RMSNorm over `numHeads` contiguous heads (v_norm), one dispatch.
-    func encodeNoScalePerHead(commandBuffer: MTLCommandBuffer,
-                                     x: MTLBuffer, xOffset: Int = 0,
-                                     out: MTLBuffer, outOffset: Int = 0,
+    func encodeNoScalePerHead(commandBuffer: any MTLCommandBuffer,
+                                     x: any MTLBuffer, xOffset: Int = 0,
+                                     out: any MTLBuffer, outOffset: Int = 0,
                                      headDim: UInt32, numHeads: Int,
                                      eps: Float) {
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
@@ -135,11 +135,11 @@ final class RMSNorm {
         enc.endEncoding()
     }
 
-    private func encodeWeighted(commandBuffer: MTLCommandBuffer,
-                                pso: MTLComputePipelineState,
-                                x: MTLBuffer, xOffset: Int,
-                                weight: MTLBuffer, weightOffset: Int,
-                                out: MTLBuffer, outOffset: Int,
+    private func encodeWeighted(commandBuffer: any MTLCommandBuffer,
+                                pso: any MTLComputePipelineState,
+                                x: any MTLBuffer, xOffset: Int,
+                                weight: any MTLBuffer, weightOffset: Int,
+                                out: any MTLBuffer, outOffset: Int,
                                 d: UInt32,
                                 eps: Float) {
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
@@ -155,8 +155,8 @@ final class RMSNorm {
         enc.endEncoding()
     }
 
-    private func dispatchOneRow(enc: MTLComputeCommandEncoder,
-                                pso: MTLComputePipelineState) {
+    private func dispatchOneRow(enc: any MTLComputeCommandEncoder,
+                                pso: any MTLComputePipelineState) {
         // One threadgroup, 256 threads. 256 is a multiple of the 32-lane SIMD
         // width on Apple silicon — no trailing partial SIMD-group to special-case.
         let threadsPerGroup = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
@@ -167,7 +167,7 @@ final class RMSNorm {
 
     private static func specializedPipeline(_ context: MetalContext,
                                             _ name: String,
-                                            d: UInt32) throws -> MTLComputePipelineState {
+                                            d: UInt32) throws -> any MTLComputePipelineState {
         try context.pipeline(
             name,
             constants: [
@@ -177,9 +177,9 @@ final class RMSNorm {
     }
 
     private func perHeadPipeline(headDim: UInt32,
-                                 base: MTLComputePipelineState,
-                                 p256: MTLComputePipelineState,
-                                 p512: MTLComputePipelineState) -> MTLComputePipelineState {
+                                 base: any MTLComputePipelineState,
+                                 p256: any MTLComputePipelineState,
+                                 p512: any MTLComputePipelineState) -> any MTLComputePipelineState {
         switch headDim {
         case 256: return p256
         case 512: return p512

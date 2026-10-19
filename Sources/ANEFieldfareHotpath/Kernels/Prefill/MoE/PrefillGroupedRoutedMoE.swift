@@ -13,11 +13,11 @@ enum PrefillGroupedRoutedMoEBufferIndex {
 }
 
 struct PrefillGroupedRoutedMoEStreamedMetadataBuffers {
-    let sortedPairs: MTLBuffer
+    let sortedPairs: any MTLBuffer
 }
 
 struct PrefillStreamedTileArgumentBuffer {
-    let buffer: MTLBuffer
+    let buffer: any MTLBuffer
 }
 
 struct PrefillGroupedRoutedMoEStreamedParams: Equatable, Sendable {
@@ -210,19 +210,19 @@ enum PrefillGroupedRoutedMoEError: Error, Equatable, CustomStringConvertible {
 }
 
 final class PrefillGroupedRoutedMoE {
-    private let batchedPhase1PSO: MTLComputePipelineState
-    private let batchedDownPSO: MTLComputePipelineState
-    private let streamedArgEncoder: MTLArgumentEncoder
-    private let reusableStreamedArgumentBuffers: [MTLBuffer]
+    private let batchedPhase1PSO: any MTLComputePipelineState
+    private let batchedDownPSO: any MTLComputePipelineState
+    private let streamedArgEncoder: any MTLArgumentEncoder
+    private let reusableStreamedArgumentBuffers: [any MTLBuffer]
     static let streamedArgumentBufferCount = 8
-    private let reusableSortedPairsBuffer: MTLBuffer
+    private let reusableSortedPairsBuffer: any MTLBuffer
     private let context: MetalContext
     /// Verify activations, `[pair][F]` by the pair's index in the layer.
-    private var verifyActs: MTLBuffer?
+    private var verifyActs: any MTLBuffer?
     /// Pairs per expert one verify dispatch takes (`FC_VERIFY_ROWS` <= 16).
     static let verifyMaxRows = 16
 
-    func makeStreamedArgumentBuffer(device: MTLDevice,
+    func makeStreamedArgumentBuffer(device: any MTLDevice,
                                     binding: PrefillStreamedTileBinding,
                                     reuseSlot: Int = 0) throws -> PrefillStreamedTileArgumentBuffer {
         precondition(reusableStreamedArgumentBuffers.indices.contains(reuseSlot))
@@ -245,7 +245,7 @@ final class PrefillGroupedRoutedMoE {
         }
         self.streamedArgEncoder = streamedFn.makeArgumentEncoder(
             bufferIndex: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
-        var argumentBuffers: [MTLBuffer] = []
+        var argumentBuffers: [any MTLBuffer] = []
         // Two alternate for drained prefill tiles; verify commits up to eight
         // tiles of one layer before waiting, each with its own buffer.
         for index in 0..<Self.streamedArgumentBufferCount {
@@ -270,7 +270,7 @@ final class PrefillGroupedRoutedMoE {
     }
 
     func makeStreamedMetadataBuffers(
-        device: MTLDevice,
+        device: any MTLDevice,
         routes: PrefillMoEGroupedRoutes
     ) throws -> PrefillGroupedRoutedMoEStreamedMetadataBuffers {
         _ = device // Buffer ownership is fixed at runtime construction.
@@ -288,16 +288,16 @@ final class PrefillGroupedRoutedMoE {
     }
 
     @discardableResult
-    func encodeStreamedBatched(commandBuffer: MTLCommandBuffer,
-                                      hidden: MTLBuffer,
+    func encodeStreamedBatched(commandBuffer: any MTLCommandBuffer,
+                                      hidden: any MTLBuffer,
                                       hiddenOffset: Int = 0,
-                                      sortedPairs: MTLBuffer,
+                                      sortedPairs: any MTLBuffer,
                                       sortedPairsOffset: Int = 0,
-                                      routePartials: MTLBuffer,
+                                      routePartials: any MTLBuffer,
                                       routePartialsOffset: Int = 0,
-                                      gateUpActScratch: MTLBuffer,
+                                      gateUpActScratch: any MTLBuffer,
                                       gateUpActScratchOffset: Int = 0,
-                                      downScratch: MTLBuffer,
+                                      downScratch: any MTLBuffer,
                                       downScratchOffset: Int = 0,
                                       argumentBuffer: PrefillStreamedTileArgumentBuffer,
                                       binding: PrefillStreamedTileBinding,
@@ -368,10 +368,10 @@ final class PrefillGroupedRoutedMoE {
     /// A verify tile's routed experts: per live expert, gate + up + GELU then
     /// down, each weight row read once for all of the expert's tokens.
     /// Writes `routePartials` like `encodeStreamedBatched`.
-    func encodeVerifyRows(commandBuffer: MTLCommandBuffer,
-                          hidden: MTLBuffer,
-                          sortedPairs: MTLBuffer,
-                          routePartials: MTLBuffer,
+    func encodeVerifyRows(commandBuffer: any MTLCommandBuffer,
+                          hidden: any MTLBuffer,
+                          sortedPairs: any MTLBuffer,
+                          routePartials: any MTLBuffer,
                           argumentBuffer: PrefillStreamedTileArgumentBuffer,
                           binding: PrefillStreamedTileBinding,
                           params: PrefillGroupedRoutedMoEStreamedParams,
@@ -384,7 +384,7 @@ final class PrefillGroupedRoutedMoE {
         precondition(maxRows <= Self.verifyMaxRows, "\(maxRows) pairs for one expert")
         let rows = maxRows <= 1 ? 1 : maxRows <= 2 ? 2 : maxRows <= 4 ? 4 : maxRows <= 8 ? 8 : 16
         let actBytes = totalPairs * Int(params.routedIntermediate) * MemoryLayout<Float16>.stride
-        let acts: MTLBuffer
+        let acts: any MTLBuffer
         if let existing = verifyActs, existing.length >= actBytes {
             acts = existing
         } else {

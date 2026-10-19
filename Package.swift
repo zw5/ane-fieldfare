@@ -3,6 +3,18 @@ import PackageDescription
 
 // Gemma 4 MoE runtime on Metal, with routed prefill experts on the ANE
 // through a small Objective-C carrier over the private ANE runtime.
+
+// Every target builds in Swift 6 mode with complete concurrency checking, and
+// every warning is an error: a diagnostic is fixed by changing the code, not
+// by suppressing it. `Scripts/lint_escape_hatches.py` covers what the
+// compiler cannot reject on its own.
+let strictSwiftSettings: [SwiftSetting] = [
+    .enableUpcomingFeature("ExistentialAny"),
+    .enableUpcomingFeature("InternalImportsByDefault"),
+    .enableUpcomingFeature("MemberImportVisibility"),
+    .treatAllWarnings(as: .error),
+]
+
 let package = Package(
     name: "ANEFieldfareHotpath",
     platforms: [.macOS(.v26)],
@@ -22,12 +34,14 @@ let package = Package(
         .target(
             name: "ANEFieldfareRepackTestSupport",
             dependencies: ["ANEFieldfareImportedFormat"],
-            path: "Tests/Support/Repack"
+            path: "Tests/Support/Repack",
+            swiftSettings: strictSwiftSettings
         ),
         .target(
             name: "ANEFieldfareValidationSupport",
             dependencies: ["ANEFieldfareHotpath"],
-            path: "Tests/Support/Validation"
+            path: "Tests/Support/Validation",
+            swiftSettings: strictSwiftSettings
         ),
         .testTarget(
             name: "ANEFieldfareUpstreamTests",
@@ -36,19 +50,23 @@ let package = Package(
                 "ANEFieldfareImportedFormat", "ANEFieldfareValidationSupport",
                 "ANEFieldfareRepackTestSupport",
                 .product(name: "Hub", package: "swift-transformers"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
             ],
             path: "Tests/ANEFieldfareUpstreamTests",
-            resources: [.copy("Runtime/Vision/Fixtures/images")]
+            resources: [.copy("Runtime/Vision/Fixtures/images")],
+            swiftSettings: strictSwiftSettings
         ),
         .testTarget(
             name: "ANEFieldfareFormatTests",
             dependencies: ["ANEFieldfareImportedFormat"],
-            path: "Tests/ANEFieldfareFormatTests"
+            path: "Tests/ANEFieldfareFormatTests",
+            swiftSettings: strictSwiftSettings
         ),
         .testTarget(
             name: "ANEFieldfareHotpathTests",
             dependencies: ["ANEFieldfareHotpath", "ANEFieldfareHotpathCLICore"],
-            path: "Tests/ANEFieldfareHotpathTests"
+            path: "Tests/ANEFieldfareHotpathTests",
+            swiftSettings: strictSwiftSettings
         ),
         .target(
             name: "ANEFieldfareANECarrier",
@@ -62,7 +80,8 @@ let package = Package(
         ),
         .target(
             name: "ANEFieldfareImportedFormat",
-            path: "Sources/ANEFieldfareImportedFormat"
+            path: "Sources/ANEFieldfareImportedFormat",
+            swiftSettings: strictSwiftSettings
         ),
         .target(
             name: "ANEFieldfareHotpath",
@@ -73,33 +92,40 @@ let package = Package(
                 .product(name: "Hub", package: "swift-transformers"),
             ],
             path: "Sources/ANEFieldfareHotpath",
-            resources: [.copy("Metal"), .copy("NextLayerGuess")]
+            resources: [.copy("Metal"), .copy("NextLayerGuess")],
+            swiftSettings: strictSwiftSettings
         ),
         .target(
             name: "ANEFieldfareHotpathCLICore",
             dependencies: ["ANEFieldfareHotpath"],
-            path: "Sources/ANEFieldfareHotpathCLICore"
+            path: "Sources/ANEFieldfareHotpathCLICore",
+            swiftSettings: strictSwiftSettings
         ),
         .executableTarget(
             name: "ANEFieldfareHotpathCLI",
             dependencies: ["ANEFieldfareHotpathCLICore"],
             path: "Sources/ANEFieldfareHotpathCLI",
-            resources: [.copy("Fixtures")]
+            resources: [.copy("Fixtures")],
+            swiftSettings: strictSwiftSettings
         ),
         .executableTarget(
             name: "ANEFieldfareQualityGate",
             dependencies: ["ANEFieldfareHotpath"],
-            path: "Sources/ANEFieldfareQualityGate"
+            path: "Sources/ANEFieldfareQualityGate",
+            swiftSettings: strictSwiftSettings
         ),
         .executableTarget(
             name: "ANEFieldfareDFlashCapture",
             dependencies: ["ANEFieldfareHotpath"],
-            path: "Sources/ANEFieldfareDFlashCapture"
+            path: "Sources/ANEFieldfareDFlashCapture",
+            swiftSettings: strictSwiftSettings
         ),
         .executableTarget(
             name: "ANEFieldfareBench",
             dependencies: ["ANEFieldfareHotpath"],
-            path: "Sources/ANEFieldfareBench"
+            path: "Sources/ANEFieldfareBench",
+            swiftSettings: strictSwiftSettings
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )

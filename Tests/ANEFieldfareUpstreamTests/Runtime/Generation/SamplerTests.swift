@@ -17,9 +17,9 @@ import ANEFieldfareValidationSupport
         let ctx: MetalContext
         let sampler: Sampler
         let vocab: Int
-        let logits: MTLBuffer
-        let probs: MTLBuffer
-        let outToken: MTLBuffer
+        let logits: any MTLBuffer
+        let probs: any MTLBuffer
+        let outToken: any MTLBuffer
 
         init(vocab: Int) throws {
             self.ctx = try MetalContext()

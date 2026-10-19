@@ -161,9 +161,9 @@ public struct RawDecodeResult: Sendable {
 /// per-token Metal buffer allocation. Not `Sendable`: one generation owns it
 /// at a time, inside that generation's task.
 public struct RawCompletionScratch {
-    let logits: MTLBuffer
-    let probs: MTLBuffer
-    let outToken: MTLBuffer
+    let logits: any MTLBuffer
+    let probs: any MTLBuffer
+    let outToken: any MTLBuffer
     let sampler: Sampler
 
     public init(context: MetalContext, vocab: Int) throws {

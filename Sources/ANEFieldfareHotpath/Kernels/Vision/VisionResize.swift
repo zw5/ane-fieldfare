@@ -1,5 +1,5 @@
 import Foundation
-import Metal
+public import Metal
 
 /// GPU separable bicubic resize, byte-identical to `TorchBicubicResize`.
 ///
@@ -25,8 +25,8 @@ public final class VisionResize {
     }
 
     private let context: MetalContext
-    private let horizontal: MTLComputePipelineState
-    private let vertical: MTLComputePipelineState
+    private let horizontal: any MTLComputePipelineState
+    private let vertical: any MTLComputePipelineState
 
     public init(context: MetalContext) throws {
         self.context = context
@@ -99,7 +99,7 @@ public final class VisionResize {
     /// path — 192 MB for a 48 MP source — and copying it into a buffer doubled
     /// that. Callers that can decode straight into an `MTLBuffer` should.
     public func resize(
-        sourceBuffer: MTLBuffer,
+        sourceBuffer: any MTLBuffer,
         sourceWidth: Int,
         sourceHeight: Int,
         sourceRowBytes: Int,
@@ -184,11 +184,11 @@ public final class VisionResize {
     }
 
     private func encode(
-        commandBuffer: MTLCommandBuffer,
-        pipeline: MTLComputePipelineState,
+        commandBuffer: any MTLCommandBuffer,
+        pipeline: any MTLComputePipelineState,
         table: TorchBicubicResize.WeightTable,
-        source: MTLBuffer,
-        destination: MTLBuffer,
+        source: any MTLBuffer,
+        destination: any MTLBuffer,
         params: Params,
         gridWidth: Int,
         gridHeight: Int

@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 
 public enum ModelIntegrityPolicy: Sendable, Equatable {
     case fullSha256

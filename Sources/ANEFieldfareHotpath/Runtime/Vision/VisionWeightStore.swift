@@ -1,5 +1,5 @@
 import Darwin
-import Foundation
+public import Foundation
 import Metal
 import ANEFieldfareImportedFormat
 
@@ -201,7 +201,7 @@ final class VisionWeightStore {
     deinit { close(weightsFD) }
 
     func mapRegion(executionPosition: Int,
-                           device: MTLDevice) throws -> ResidentBuffer {
+                           device: any MTLDevice) throws -> ResidentBuffer {
         guard manifest.tensors.indices.contains(executionPosition) else {
             throw VisionPackError.invalidMetadata(
                 "missing execution position \(executionPosition)")
@@ -219,7 +219,7 @@ final class VisionWeightStore {
     }
 
     func mapRegion(tensorNames: [String],
-                           device: MTLDevice) throws -> VisionMappedWeightRegion {
+                           device: any MTLDevice) throws -> VisionMappedWeightRegion {
         let byName = Dictionary(uniqueKeysWithValues: manifest.tensors.map { ($0.name, $0) })
         let tensors = try tensorNames.map { name -> GTurboVisionTensorRegionV1 in
             guard let tensor = byName[name] else {
@@ -268,7 +268,7 @@ struct VisionMappedWeightRegion {
     let tensors: [GTurboVisionTensorRegionV1]
     let offsets: [String: Int]
 
-    var buffer: MTLBuffer { resident.buffer }
+    var buffer: any MTLBuffer { resident.buffer }
 
     func offset(of name: String) throws -> Int {
         guard let value = offsets[name] else {

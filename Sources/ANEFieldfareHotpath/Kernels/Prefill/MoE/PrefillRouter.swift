@@ -28,28 +28,28 @@ public struct PrefillTokenExpertPair: Equatable, Sendable {
 }
 
 final class PrefillRouter {
-    private let pso: MTLComputePipelineState
+    private let pso: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("prefill_router_gemma4_block")
     }
 
-    func encodeGemma4Block(commandBuffer: MTLCommandBuffer,
-                                  weights: MTLBuffer,
+    func encodeGemma4Block(commandBuffer: any MTLCommandBuffer,
+                                  weights: any MTLBuffer,
                                   weightsOffset: Int = 0,
-                                  scales: MTLBuffer,
+                                  scales: any MTLBuffer,
                                   scalesOffset: Int = 0,
-                                  biases: MTLBuffer,
+                                  biases: any MTLBuffer,
                                   biasesOffset: Int = 0,
-                                  hidden: MTLBuffer,
+                                  hidden: any MTLBuffer,
                                   hiddenOffset: Int = 0,
-                                  effectiveScale: MTLBuffer,
+                                  effectiveScale: any MTLBuffer,
                                   effectiveScaleOffset: Int = 0,
-                                  perExpertScale: MTLBuffer,
+                                  perExpertScale: any MTLBuffer,
                                   perExpertScaleOffset: Int = 0,
-                                  outIndices: MTLBuffer,
+                                  outIndices: any MTLBuffer,
                                   outIndicesOffset: Int = 0,
-                                  outWeights: MTLBuffer,
+                                  outWeights: any MTLBuffer,
                                   outWeightsOffset: Int = 0,
                                   queryCount: UInt32,
                                   numExperts: UInt32,

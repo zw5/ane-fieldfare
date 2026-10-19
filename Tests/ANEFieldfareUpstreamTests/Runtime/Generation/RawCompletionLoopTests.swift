@@ -47,7 +47,7 @@ import ANEFieldfareValidationSupport
             produceCalls = 0
         }
 
-        func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {
+        func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
             produceCalls += 1
             let spec = step(token, calls)
             calls += 1
@@ -93,7 +93,7 @@ import ANEFieldfareValidationSupport
             lastConfig = nil
         }
 
-        func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {
+        func produce(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
             produceCalls += 1
         }
 
@@ -101,7 +101,7 @@ import ANEFieldfareValidationSupport
                             startPosition: Int,
                             outputMode: PrefillOutputMode,
                             config: PrefillRuntimeConfig,
-                            into logits: MTLBuffer,
+                            into logits: any MTLBuffer,
                             onProgress: (Int) -> Void) async throws -> PrefillResult {
             chunkedCalls += 1
             lastOutputMode = outputMode

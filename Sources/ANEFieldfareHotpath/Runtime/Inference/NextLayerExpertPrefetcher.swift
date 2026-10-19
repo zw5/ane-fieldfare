@@ -48,7 +48,7 @@ final class NextLayerExpertPrefetcher {
     /// Early reads to issue for the next layer.
     let readsPerLayer: Int
 
-    init(model: Model, guess: RuntimeEarlyExpertRead, device: MTLDevice,
+    init(model: Model, guess: RuntimeEarlyExpertRead, device: any MTLDevice,
          environment: [String: String] = ProcessInfo.processInfo.environment) throws {
         readsPerLayer = environment[Self.readsEnvironmentKey].flatMap(Int.init)
             .flatMap { (1...Self.maxReadsPerLayer).contains($0) ? $0 : nil } ?? Self.defaultReadsPerLayer

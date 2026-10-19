@@ -4,7 +4,7 @@ import Metal
 final class PrefillFinalRowHeadInt4 {
     private let rms: RMSNorm
     private let int4: DequantInt4GEMV
-    private let normed: MTLBuffer
+    private let normed: any MTLBuffer
     private let maxD: Int
 
     init(context: MetalContext, maxD: Int = 2816) throws {
@@ -19,19 +19,19 @@ final class PrefillFinalRowHeadInt4 {
         self.normed = normed
     }
 
-    func encodeLogits(commandBuffer: MTLCommandBuffer,
-                             hiddenBlock: MTLBuffer,
+    func encodeLogits(commandBuffer: any MTLCommandBuffer,
+                             hiddenBlock: any MTLBuffer,
                              row: Int,
                              rowStrideElements: Int,
-                             normWeight: MTLBuffer,
+                             normWeight: any MTLBuffer,
                              normWeightOffset: Int = 0,
-                             weights: MTLBuffer,
+                             weights: any MTLBuffer,
                              weightsOffset: Int = 0,
-                             scales: MTLBuffer,
+                             scales: any MTLBuffer,
                              scalesOffset: Int = 0,
-                             biases: MTLBuffer,
+                             biases: any MTLBuffer,
                              biasesOffset: Int = 0,
-                             logits: MTLBuffer,
+                             logits: any MTLBuffer,
                              logitsOffset: Int = 0,
                              d: UInt32,
                              vocab: UInt32,

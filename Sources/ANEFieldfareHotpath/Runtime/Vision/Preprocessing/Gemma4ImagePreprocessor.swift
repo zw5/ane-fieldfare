@@ -1,14 +1,14 @@
 import CoreGraphics
-import Foundation
+public import Foundation
 import ImageIO
-import Metal
+public import Metal
 
 public final class Gemma4ImagePreprocessor {
     private static let unitBF16 = (0...255).map {
         Quantization.bf16Bits(Float($0) / 255)
     }
 
-    private let device: MTLDevice
+    private let device: any MTLDevice
     private let config: VisionConfig
     private let metadataReader: ImageMetadataReader
     /// Set when the reduction runs on the GPU. Building it needs a full
@@ -16,7 +16,7 @@ public final class Gemma4ImagePreprocessor {
     private let gpuResize: VisionResize?
 
     public init(
-        device: MTLDevice,
+        device: any MTLDevice,
         config: VisionConfig = VisionConfig(),
         limits: VisionImageLimits = VisionImageLimits(),
         gpuResize: VisionResize? = nil
@@ -202,8 +202,8 @@ public final class Gemma4ImagePreprocessor {
         rgba: UnsafePointer<UInt8>,
         rowBytes: Int,
         geometry: Gemma4ImageGeometry,
-        patches: MTLBuffer,
-        positions: MTLBuffer
+        patches: any MTLBuffer,
+        positions: any MTLBuffer
     ) {
         let patchPointer = patches.contents().bindMemory(
             to: UInt16.self, capacity: geometry.patchCount * config.patchDimension)

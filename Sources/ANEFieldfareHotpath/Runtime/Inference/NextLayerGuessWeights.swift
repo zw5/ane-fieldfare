@@ -31,9 +31,9 @@ final class NextLayerGuessWeights {
     }
 
     /// The whole mapped file; `Matrix` offsets index into it.
-    let buffer: MTLBuffer
+    let buffer: any MTLBuffer
     /// `hiddenSize` BF16 ones, the effective scale the guess runs with.
-    let unitScale: MTLBuffer
+    let unitScale: any MTLBuffer
     /// File name and SHA-256 of the mapped bytes, for logs.
     let name: String
     let sha256: String
@@ -42,7 +42,7 @@ final class NextLayerGuessWeights {
     private let groupBytes: Int
 
     init(fileURL: URL, numLayers: Int, numExperts: Int, hiddenSize: Int,
-         device: MTLDevice) throws {
+         device: any MTLDevice) throws {
         let groups = hiddenSize / Quantization.groupSize
         weightBytes = numExperts * hiddenSize
         groupBytes = numExperts * groups * MemoryLayout<UInt16>.size
@@ -97,7 +97,7 @@ final class NextLayerGuessWeights {
     /// `sourceSnapshotHash`, or nil when it ships none. Throws when the
     /// shipped file is damaged: its hash must match the index.
     static func bundled(sourceSnapshotHash: String?, numLayers: Int, numExperts: Int,
-                        hiddenSize: Int, device: MTLDevice,
+                        hiddenSize: Int, device: any MTLDevice,
                         bundle: Bundle = .module) throws -> NextLayerGuessWeights? {
         guard let sourceSnapshotHash,
               let indexURL = bundle.url(forResource: "index", withExtension: "json",

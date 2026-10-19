@@ -61,9 +61,9 @@ private let mppTensorOpsAvailable: Bool = {
         return Inputs(packed: packed, scales: scales, biases: biases, x: x)
     }
 
-    private static func makeBuffer<T>(device: MTLDevice,
+    private static func makeBuffer<T>(device: any MTLDevice,
                                       values: [T],
-                                      prefixBytes: Int = 0) -> MTLBuffer? {
+                                      prefixBytes: Int = 0) -> any MTLBuffer? {
         let byteCount = values.count * MemoryLayout<T>.stride
         guard let buffer = device.makeBuffer(length: prefixBytes + byteCount,
                                              options: .storageModeShared) else {

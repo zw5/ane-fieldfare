@@ -1,5 +1,5 @@
 import Darwin
-import Foundation
+public import Foundation
 import ANEFieldfareImportedFormat
 
 /// A shared `flock` on the vision pack's use lock, held for as long as this

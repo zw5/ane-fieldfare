@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 import Synchronization
 
 /// Turns install progress into one terse stderr line, rate-limited so a

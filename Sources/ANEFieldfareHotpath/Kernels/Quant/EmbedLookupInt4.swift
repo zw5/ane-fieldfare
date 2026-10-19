@@ -10,7 +10,7 @@ import Metal
 /// post-embedding scale so the per-token dequant + scale
 /// is one pass.
 final class EmbedLookupInt4 {
-    private let pso: MTLComputePipelineState
+    private let pso: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("embed_lookup_int4")
@@ -19,11 +19,11 @@ final class EmbedLookupInt4 {
     /// Encodes the lookup. `table`, `scales`, `biases` typically live inside
     /// one resident blob — pass that buffer with the per-region offsets.
     /// Pass `outScale = 1.0` to write the raw dequantized row.
-    func encode(commandBuffer: MTLCommandBuffer,
-                       table:  MTLBuffer, tableOffset:  Int = 0,
-                       scales: MTLBuffer, scalesOffset: Int = 0,
-                       biases: MTLBuffer, biasesOffset: Int = 0,
-                       out:    MTLBuffer, outOffset: Int = 0,
+    func encode(commandBuffer: any MTLCommandBuffer,
+                       table:  any MTLBuffer, tableOffset:  Int = 0,
+                       scales: any MTLBuffer, scalesOffset: Int = 0,
+                       biases: any MTLBuffer, biasesOffset: Int = 0,
+                       out:    any MTLBuffer, outOffset: Int = 0,
                        tokenId: UInt32,
                        d: UInt32,
                        outScale: Float) {

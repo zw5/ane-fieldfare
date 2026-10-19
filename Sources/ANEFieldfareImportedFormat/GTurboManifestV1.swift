@@ -1,4 +1,4 @@
-import Foundation
+package import Foundation
 
 package struct GTurboManifestFileV1: Codable, Equatable, Sendable {
     package let size: UInt64

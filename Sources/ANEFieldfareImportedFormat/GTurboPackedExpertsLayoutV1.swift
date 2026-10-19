@@ -1,4 +1,4 @@
-import Foundation
+package import Foundation
 
 package struct GTurboSubTensorV1: Codable, Equatable, Sendable {
     package let offset: UInt64

@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 import Metal
 import ANEFieldfareHotpath
 
@@ -12,7 +12,7 @@ private enum MessageContentJSON: Decodable {
     case text(String)
     case parts([MessagePartJSON])
 
-    init(from decoder: Decoder) throws {
+    init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let text = try? container.decode(String.self) {
             self = .text(text)
@@ -54,7 +54,7 @@ public func run(args: Args,
         let environment = ProcessInfo.processInfo.environment
         let modelURL = URL(fileURLWithPath: args.model)
         let input = try parseInput(args: args)
-        var selectedDevice: MTLDevice?
+        var selectedDevice: any MTLDevice?
         if input.hasImages {
             guard let device = MetalContext.makeSystemDefaultDevice() else {
                 return errored(stderr, "no Metal device", 1)
@@ -420,7 +420,7 @@ func orderedImageIDs(messages: [MultimodalMessage],
 func estimatedPromptTokens(
     input: PromptInput,
     tokenizer: GFTokenizer,
-    device: MTLDevice
+    device: any MTLDevice
 ) throws -> Int {
     switch input {
     case .raw(let text):

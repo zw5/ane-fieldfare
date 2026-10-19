@@ -1,4 +1,4 @@
-import Metal
+public import Metal
 
 /// BF16 linear layers of the image tower, on the register-tiled GEMM. The
 /// QKV projections can store straight into attention's padded head-major
@@ -19,8 +19,8 @@ public final class VisionLinearBF16 {
         }
     }
 
-    private let registerPipeline: MTLComputePipelineState
-    private let registerGeGLUPipeline: MTLComputePipelineState
+    private let registerPipeline: any MTLComputePipelineState
+    private let registerGeGLUPipeline: any MTLComputePipelineState
 
     public init(context: MetalContext) throws {
         let library = try MetalContext.privateLibrary(
@@ -35,10 +35,10 @@ public final class VisionLinearBF16 {
             function: geglu)
     }
 
-    public func encode(commandBuffer: MTLCommandBuffer,
-                       input: MTLBuffer, inputOffset: Int = 0,
-                       weights: MTLBuffer, weightsOffset: Int = 0,
-                       output: MTLBuffer, outputOffset: Int = 0,
+    public func encode(commandBuffer: any MTLCommandBuffer,
+                       input: any MTLBuffer, inputOffset: Int = 0,
+                       weights: any MTLBuffer, weightsOffset: Int = 0,
+                       output: any MTLBuffer, outputOffset: Int = 0,
                        m: Int, n: Int, k: Int,
                        paddedHeadStore: PaddedHeadStore? = nil,
                        fusesGeGLU: Bool = false) {
@@ -55,13 +55,13 @@ public final class VisionLinearBF16 {
     }
 
     private func encodeRegisterGEMM(
-        commandBuffer: MTLCommandBuffer,
-        input: MTLBuffer, inputOffset: Int,
-        weights: MTLBuffer, weightsOffset: Int,
-        output: MTLBuffer, outputOffset: Int,
+        commandBuffer: any MTLCommandBuffer,
+        input: any MTLBuffer, inputOffset: Int,
+        weights: any MTLBuffer, weightsOffset: Int,
+        output: any MTLBuffer, outputOffset: Int,
         m: Int, n: Int, k: Int,
         paddedHeadStore: PaddedHeadStore?,
-        pipeline: MTLComputePipelineState
+        pipeline: any MTLComputePipelineState
     ) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.setBuffer(input, offset: inputOffset, index: 0)

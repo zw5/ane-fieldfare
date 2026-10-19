@@ -10,8 +10,8 @@ import Metal
 ///   routed_x = rmsnorm_bf16w(hidden, pre_feedforward_layernorm_2)
 ///   router_x = rmsnorm_no_scale(hidden)
 final class FusedPostAttentionSetup {
-    private let pso: MTLComputePipelineState
-    private let specializedPSO: MTLComputePipelineState?
+    private let pso: any MTLComputePipelineState
+    private let specializedPSO: any MTLComputePipelineState?
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("fused_post_attn_setup")
@@ -23,17 +23,17 @@ final class FusedPostAttentionSetup {
             ])
     }
 
-    func encode(commandBuffer cb: MTLCommandBuffer,
-                       hidden: MTLBuffer,
-                       attn: MTLBuffer,
-                       denseX: MTLBuffer,
-                       routedX: MTLBuffer,
-                       routerX: MTLBuffer,
-                       postAttentionWeight: MTLBuffer,
+    func encode(commandBuffer cb: any MTLCommandBuffer,
+                       hidden: any MTLBuffer,
+                       attn: any MTLBuffer,
+                       denseX: any MTLBuffer,
+                       routedX: any MTLBuffer,
+                       routerX: any MTLBuffer,
+                       postAttentionWeight: any MTLBuffer,
                        postAttentionWeightOffset: Int = 0,
-                       preFFNWeight: MTLBuffer,
+                       preFFNWeight: any MTLBuffer,
                        preFFNWeightOffset: Int = 0,
-                       preFFN2Weight: MTLBuffer,
+                       preFFN2Weight: any MTLBuffer,
                        preFFN2WeightOffset: Int = 0,
                        d: UInt32,
                        eps: Float) {

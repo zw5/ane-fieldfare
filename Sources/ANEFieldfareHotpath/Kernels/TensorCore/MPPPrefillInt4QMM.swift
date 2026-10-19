@@ -1,5 +1,5 @@
 import Foundation
-import Metal
+public import Metal
 
 public final class MPPPrefillInt4QMM {
     public enum Variant: String, Sendable {
@@ -37,18 +37,18 @@ public final class MPPPrefillInt4QMM {
     public static let cooperativeValueBytesEstimate = 2 * tileM * tileN * MemoryLayout<Float>.stride
 
     private let context: MetalContext
-    private var controlPSO: MTLComputePipelineState?
-    private var apple10PSO: MTLComputePipelineState?
-    private var apple10BF16PSO: MTLComputePipelineState?
+    private var controlPSO: any MTLComputePipelineState?
+    private var apple10PSO: any MTLComputePipelineState?
+    private var apple10BF16PSO: any MTLComputePipelineState?
     private let variant: Variant
     public let unavailableReason: String?
 
     public init(context: MetalContext, variant: Variant = .control) {
         self.context = context
         self.variant = variant
-        var controlPSO: MTLComputePipelineState?
-        var apple10PSO: MTLComputePipelineState?
-        var apple10BF16PSO: MTLComputePipelineState?
+        var controlPSO: any MTLComputePipelineState?
+        var apple10PSO: any MTLComputePipelineState?
+        var apple10BF16PSO: any MTLComputePipelineState?
         var unavailableReason: String?
         let apple10FunctionName: String? = switch variant {
         case .control:
@@ -117,12 +117,12 @@ public final class MPPPrefillInt4QMM {
     }
 
     @discardableResult
-    public func encode(commandBuffer: MTLCommandBuffer,
-                       weights: MTLBuffer, weightsOffset: Int = 0,
-                       scales: MTLBuffer, scalesOffset: Int = 0,
-                       biases: MTLBuffer, biasesOffset: Int = 0,
-                       x: MTLBuffer, xOffset: Int = 0,
-                       y: MTLBuffer, yOffset: Int = 0,
+    public func encode(commandBuffer: any MTLCommandBuffer,
+                       weights: any MTLBuffer, weightsOffset: Int = 0,
+                       scales: any MTLBuffer, scalesOffset: Int = 0,
+                       biases: any MTLBuffer, biasesOffset: Int = 0,
+                       x: any MTLBuffer, xOffset: Int = 0,
+                       y: any MTLBuffer, yOffset: Int = 0,
                        m: Int,
                        n: Int,
                        k: Int) -> PathMetadata {

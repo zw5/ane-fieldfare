@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 import Darwin
 
 /// Thin POSIX helpers used by the writer hot path. The shapes here are picked

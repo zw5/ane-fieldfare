@@ -245,7 +245,7 @@ import ANEFieldfareValidationSupport
         #expect(maxAbs <= 1e-3, "\(label) maxAbs=\(maxAbs) rel=\(rel)")
     }
 
-    private static func assertPaddingUnchanged(_ buffer: MTLBuffer,
+    private static func assertPaddingUnchanged(_ buffer: any MTLBuffer,
                                                original: [Float16],
                                                rows: Int,
                                                rowStride: Int,

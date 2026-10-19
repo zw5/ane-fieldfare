@@ -36,7 +36,7 @@ import ANEFieldfareValidationSupport
                                weight: Float16(0.125 + Float(rank) * 0.0625))
     }
 
-    static func fakeTensorViews(device: MTLDevice, count: Int) throws -> [TensorView] {
+    static func fakeTensorViews(device: any MTLDevice, count: Int) throws -> [TensorView] {
         guard let buffer = device.makeBuffer(length: max(count, 1) * 64,
                                              options: .storageModeShared) else {
             throw PrefillGroupedRoutedMoEError.allocationFailed("fake tensor view buffer")
@@ -77,7 +77,7 @@ import ANEFieldfareValidationSupport
             .load(as: UInt8.self)
     }
 
-    static func streamedViewsWithNonzeroOffsets(device: MTLDevice,
+    static func streamedViewsWithNonzeroOffsets(device: any MTLDevice,
                                                         pool: SyntheticExpertPool,
                                                         expertIDs: [Int]) throws -> [TensorView] {
         try expertIDs.enumerated().map { index, expertID in

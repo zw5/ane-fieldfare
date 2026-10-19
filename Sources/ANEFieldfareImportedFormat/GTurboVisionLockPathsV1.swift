@@ -1,5 +1,5 @@
 import Darwin
-import Foundation
+package import Foundation
 
 /// Lock-file path derivation shared by every process that synchronizes on a
 /// vision companion pack. The reader's shared use lease and a writer's

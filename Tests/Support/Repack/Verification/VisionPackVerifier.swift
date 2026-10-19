@@ -1,5 +1,5 @@
 import Darwin
-import Foundation
+public import Foundation
 import ANEFieldfareImportedFormat
 
 public struct VisionPackVerification: Sendable, Equatable {

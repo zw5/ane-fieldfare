@@ -9,10 +9,10 @@ final class PrefillSharedExpert {
     private let shared: SharedExpertRuntime
     private let context: MetalContext
     private let batched: MPPPrefillInt4QMM?
-    private let geluMulPSO: MTLComputePipelineState?
+    private let geluMulPSO: any MTLComputePipelineState?
     /// Multi-row GEMV for small INT4 batches such as speculative verification.
     private let multiRow: DequantInt4GEMV?
-    private var batchScratch: (gate: MTLBuffer, up: MTLBuffer, act: MTLBuffer, tokens: Int, intermediate: Int)?
+    private var batchScratch: (gate: any MTLBuffer, up: any MTLBuffer, act: any MTLBuffer, tokens: Int, intermediate: Int)?
 
     /// `batched` selects the INT4 tensor-op GEMM path for 4-bit weights. It
     /// changes accumulation order relative to the per-token GEMV reference.
@@ -33,12 +33,12 @@ final class PrefillSharedExpert {
 
     var usesBatchedGEMM: Bool { batched != nil }
 
-    private func scratch(tokens: Int, intermediate: Int) throws -> (gate: MTLBuffer, up: MTLBuffer, act: MTLBuffer) {
+    private func scratch(tokens: Int, intermediate: Int) throws -> (gate: any MTLBuffer, up: any MTLBuffer, act: any MTLBuffer) {
         if let existing = batchScratch, existing.tokens >= tokens, existing.intermediate == intermediate {
             return (existing.gate, existing.up, existing.act)
         }
         let bytes = tokens * intermediate * MemoryLayout<Float16>.stride
-        func make(_ label: String) throws -> MTLBuffer {
+        func make(_ label: String) throws -> any MTLBuffer {
             guard let buffer = context.device.makeBuffer(length: bytes, options: .storageModePrivate) else {
                 throw SharedExpertError.scratchTooSmall("cannot allocate \(bytes) bytes for \(label)")
             }
@@ -53,8 +53,8 @@ final class PrefillSharedExpert {
 
     /// Returns false when the batched path does not apply and the caller's
     /// per-token loop must run.
-    private func encodeBatched(commandBuffer cb: MTLCommandBuffer, x: MTLBuffer, xOffset: Int,
-                               y: MTLBuffer, yOffset: Int,
+    private func encodeBatched(commandBuffer cb: any MTLCommandBuffer, x: any MTLBuffer, xOffset: Int,
+                               y: any MTLBuffer, yOffset: Int,
                                gate: SharedExpertInt8Proj, up: SharedExpertInt8Proj, down: SharedExpertInt8Proj,
                                queryCount: Int, d: Int, intermediate: Int,
                                xStrideElements: Int, yStrideElements: Int,
@@ -63,7 +63,7 @@ final class PrefillSharedExpert {
         guard let batched, let geluMulPSO, useMultiRow || queryCount >= Self.batchedMinimumTokens,
               xStrideElements == d, yStrideElements == d else { return false }
         let buffers = try scratch(tokens: queryCount, intermediate: intermediate)
-        func project(_ p: SharedExpertInt8Proj, x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int) throws -> Bool {
+        func project(_ p: SharedExpertInt8Proj, x: any MTLBuffer, xOffset: Int, y: any MTLBuffer, yOffset: Int) throws -> Bool {
             if useMultiRow, let multiRow {
                 try multiRow.encodeRows(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                                     scales: p.scales, scalesOffset: p.scalesOffset,
@@ -102,19 +102,19 @@ final class PrefillSharedExpert {
         return true
     }
 
-    func encodeBlock(commandBuffer cb: MTLCommandBuffer,
-                            x: MTLBuffer,
+    func encodeBlock(commandBuffer cb: any MTLCommandBuffer,
+                            x: any MTLBuffer,
                             xOffset: Int = 0,
-                            y: MTLBuffer,
+                            y: any MTLBuffer,
                             yOffset: Int = 0,
                             gate: SharedExpertInt8Proj,
                             up: SharedExpertInt8Proj,
                             down: SharedExpertInt8Proj,
-                            scratchGate: MTLBuffer,
+                            scratchGate: any MTLBuffer,
                             scratchGateOffset: Int = 0,
-                            scratchUp: MTLBuffer,
+                            scratchUp: any MTLBuffer,
                             scratchUpOffset: Int = 0,
-                            scratchAct: MTLBuffer,
+                            scratchAct: any MTLBuffer,
                             scratchActOffset: Int = 0,
                             queryCount: Int,
                             d: Int,

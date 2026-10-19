@@ -1,5 +1,5 @@
 import Darwin
-import Foundation
+package import Foundation
 import ANEFieldfareImportedFormat
 
 package final class GTurboModelDirectory: Sendable {
