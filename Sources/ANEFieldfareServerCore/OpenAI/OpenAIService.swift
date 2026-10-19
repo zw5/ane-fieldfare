@@ -43,6 +43,7 @@ public struct OpenAIService: Sendable {
     // MARK: - Routing
 
     enum Route: Equatable {
+        case chatPage
         case health
         case models
         case model(String)
@@ -57,6 +58,7 @@ public struct OpenAIService: Sendable {
         if path.hasPrefix("/api/v1/") || path == "/api/v1" { path.removeFirst(4) }
         while path.count > 1, path.hasSuffix("/") { path.removeLast() }
         switch path {
+        case "/", "/chat": return .chatPage
         case "/health", "/v1/health": return .health
         case "/v1/models": return .models
         case "/v1/chat/completions": return .chatCompletions
@@ -72,7 +74,7 @@ public struct OpenAIService: Sendable {
 
     static func allowedMethods(_ route: Route) -> [String] {
         switch route {
-        case .health, .models, .model: return ["GET", "HEAD", "OPTIONS"]
+        case .chatPage, .health, .models, .model: return ["GET", "HEAD", "OPTIONS"]
         case .chatCompletions, .completions: return ["POST", "OPTIONS"]
         case .notFound: return []
         }
@@ -150,7 +152,8 @@ public struct OpenAIService: Sendable {
                                        message: "\(request.method) is not allowed on \(request.path)"),
                               headers: headers)
         }
-        if route != .health, !Self.authorized(request, apiKey: configuration.apiKey) {
+        // The page holds no data; its requests carry the key the user enters.
+        if route != .health, route != .chatPage, !Self.authorized(request, apiKey: configuration.apiKey) {
             var headers = HTTPHeaders()
             headers.add("WWW-Authenticate", "Bearer")
             return await fail(APIError(status: 401, code: "invalid_api_key",
@@ -159,6 +162,11 @@ public struct OpenAIService: Sendable {
         }
 
         switch route {
+        case .chatPage:
+            var headers = HTTPHeaders()
+            headers.add("Content-Type", "text/html; charset=utf-8")
+            headers.add("Cache-Control", "no-cache")
+            return await send(HTTPResponse(status: 200, headers: headers, body: Data(ChatPage.html.utf8)))
         case .health:
             let status = backend.queueStatus
             let body: [String: any Sendable] = [

@@ -177,8 +177,11 @@ import ANEFieldfareHotpath
         func error(_ body: String) throws -> [String: Any] {
             try #require(try jsonObject(body)["error"] as? [String: Any])
         }
-        // Health needs no key; the API does.
+        // Health and the chat page need no key; the API does.
         #expect(try await get(server, "/health").0 == 200)
+        let (page, pageBody) = try await get(server, "/")
+        #expect(page == 200 && pageBody.contains("<title>Fieldfare Chat</title>"))
+        #expect(pageBody.contains("/v1/chat/completions"))
         let (unauthorized, unauthorizedBody) = try await get(server, "/v1/models")
         #expect(unauthorized == 401)
         #expect(try error(unauthorizedBody)["code"] as? String == "invalid_api_key")

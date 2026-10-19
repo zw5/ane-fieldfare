@@ -146,6 +146,8 @@ import ANEFieldfareHotpath
         #expect(OpenAIService.route("/v1/models") == .models)
         #expect(OpenAIService.route("/api/v1/models/gemma%2Dx") == .model("gemma-x"))
         #expect(OpenAIService.route("/health") == .health)
+        #expect(OpenAIService.route("/") == .chatPage)
+        #expect(OpenAIService.route("/chat/") == .chatPage)
         #expect(OpenAIService.route("/v2/chat/completions") == .notFound)
         #expect(OpenAIService.route("/api/v1") == .notFound)
     }
