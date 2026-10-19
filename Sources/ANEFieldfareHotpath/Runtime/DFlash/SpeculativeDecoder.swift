@@ -237,6 +237,8 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
             } catch { failure = error }
         }
         defer { runner.prefillCapture = nil }
+        // A prompt's tokens are likely drafts.
+        drafter.hotVocabulary?.insert(tokens.map { UInt32(bitPattern: $0) })
         let result = try await runner.prefillChunked(tokens: tokens, startPosition: startPosition,
                                                      outputMode: outputMode, config: config, into: logits,
                                                      onProgress: onProgress)
@@ -344,6 +346,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         stats.contextSeconds += Date().timeIntervalSince(started)
 
         lastGreedyToken = UInt32(bitPattern: verified[0])
+        drafter.hotVocabulary?.insert(verified.prefix(count + 1).map { UInt32(bitPattern: $0) })
         accepted = (0..<count).map { i in
             (position: position + 1 + i, token: drafts[i], next: UInt32(bitPattern: verified[i + 1]))
         }

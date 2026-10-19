@@ -82,6 +82,17 @@ public final class DFlashDrafter {
     private let int4Views: [String: (weights: Int, scales: Int, biases: Int)]
     private let int4: DequantInt4GEMV
     private let head: LMHeadChainInt4
+    /// The vocabulary the draft head scores, 1/16 of the target's, plus the
+    /// prompt's and accepted tokens: a draft outside it is a rejected draft,
+    /// which verify catches. nil scores all.
+    let hotVocabulary: HotVocabulary?
+    /// Measured on the quick suite, 8k to 56k listed tokens left acceptance
+    /// unchanged within noise.
+    static let hotVocabularyCount = 16 * 1024
+    /// The last context append, committed but not waited: the next propose
+    /// on the same queue runs after it, and the next append waits for it
+    /// before reusing `staging`.
+    private var pendingAppend: (any MTLCommandBuffer)?
     private let embedPSO, normF32PSO, normBF16PSO, headNormRopePSO, attentionPSO,
                 siluPSO, residualPSO, toF16PSO, gatherPSO: any MTLComputePipelineState
     private let kCache: [any MTLBuffer]
@@ -122,6 +133,12 @@ public final class DFlashDrafter {
         self.gemm = try VisionLinearBF16(context: context)
         self.head = try LMHeadChainInt4(context: context, maxD: config.hiddenSize,
                                         maxVocab: model.config.vocabSize)
+        self.hotVocabulary = try ProcessInfo.processInfo.environment["ANE_FIELDFARE_DRAFT_HOT_HEAD"] == "0"
+            ? nil
+            : HotVocabulary.shipped(vocab: model.config.vocabSize).map {
+                try HotVocabulary(url: $0, vocab: model.config.vocabSize, device: context.device,
+                                          shipped: Self.hotVocabularyCount)
+            }
         embedPSO = try context.pipeline("dflash_embed_int4")
         normF32PSO = try context.pipeline("dflash_rmsnorm_rows_f32")
         normBF16PSO = try context.pipeline("dflash_rmsnorm_rows_bf16")
@@ -186,6 +203,13 @@ public final class DFlashDrafter {
 
     public func reset() { contextLength = 0 }
 
+    private func finishAppend() throws {
+        guard let cb = pendingAppend else { return }
+        pendingAppend = nil
+        cb.waitUntilCompleted()
+        if let error = cb.error { throw DFlashError.invalidState("append failed: \(error)") }
+    }
+
     /// Appends target features for positions `[contextLength, contextLength + rows)`.
     /// `captured` is `[contextLayers][stride][hidden]` FP16 as `PrefillCapture`
     /// delivers it; only its first `rows` rows per layer are used.
@@ -197,6 +221,7 @@ public final class DFlashDrafter {
         }
         var done = 0
         while done < rows {
+            try finishAppend()
             let n = min(Self.appendRows, rows - done)
             // The guard above bounds every source row by `captured.count`, and
             // `staging` holds `appendRows` rows per layer.
@@ -220,15 +245,27 @@ public final class DFlashDrafter {
         cb.label = "dflash append ctx=\(contextLength) rows=\(n)"
         dispatch(cb, gatherPSO, [staging, feature], [UInt32(n), UInt32(layers), UInt32(D)],
                  grid: MTLSize(width: layers * D, height: n, depth: 1))
-        gemm.encode(commandBuffer: cb, input: feature, weights: weights, weightsOffset: try offset("fc.weight"),
-                    output: contextHidden, m: n, n: D, k: layers * D)
+        // A few rows (after a verify or plain steps) read the INT4 copies; a
+        // prompt's chunks run the BF16 GEMM.
+        let small = n <= DequantInt4GEMV.maxBatchRows
+        if small {
+            try project(cb, input: feature, "fc.weight", output: contextHidden, rows: n, n: D, k: layers * D)
+        } else {
+            gemm.encode(commandBuffer: cb, input: feature, weights: weights, weightsOffset: try offset("fc.weight"),
+                        output: contextHidden, m: n, n: D, k: layers * D)
+        }
         try encodeNorm(cb, normBF16PSO, x: contextHidden, weight: "hidden_norm.weight", out: contextHidden, rows: n)
         for l in 0..<config.layers {
             let p = "layers.\(l).self_attn."
-            gemm.encode(commandBuffer: cb, input: contextHidden, weights: weights,
-                        weightsOffset: try offset(p + "k_proj.weight"), output: contextK, m: n, n: kvWidth, k: D)
-            gemm.encode(commandBuffer: cb, input: contextHidden, weights: weights,
-                        weightsOffset: try offset(p + "v_proj.weight"), output: contextV, m: n, n: kvWidth, k: D)
+            if small {
+                try project(cb, input: contextHidden, p + "k_proj.weight", output: contextK, rows: n, n: kvWidth, k: D)
+                try project(cb, input: contextHidden, p + "v_proj.weight", output: contextV, rows: n, n: kvWidth, k: D)
+            } else {
+                gemm.encode(commandBuffer: cb, input: contextHidden, weights: weights,
+                            weightsOffset: try offset(p + "k_proj.weight"), output: contextK, m: n, n: kvWidth, k: D)
+                gemm.encode(commandBuffer: cb, input: contextHidden, weights: weights,
+                            weightsOffset: try offset(p + "v_proj.weight"), output: contextV, m: n, n: kvWidth, k: D)
+            }
             try encodeHeadNormRope(cb, x: contextK, weight: p + "k_norm.weight",
                                    out: kCache[l], outOffset: contextLength * kvWidth * 2,
                                    rows: n * config.kvHeads, heads: config.kvHeads, pos0: contextLength)
@@ -238,8 +275,7 @@ public final class DFlashDrafter {
             blit.endEncoding()
         }
         cb.commit()
-        cb.waitUntilCompleted()
-        if let error = cb.error { throw DFlashError.invalidState("append failed: \(error)") }
+        pendingAppend = cb
         contextLength += n
     }
 
@@ -317,20 +353,36 @@ public final class DFlashDrafter {
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
-        try head.encodeGreedyRows(commandBuffer: cb, hidden: headRows, rowCount: R - 1,
-                              normWeight: weights, normOffset: try offset("norm.weight"),
-                              weights: emb.buffer, weightsOffset: Int(emb.offset),
-                              scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
-                              biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
-                              outTokens: draftTokens, d: UInt32(D), vocab: UInt32(model.config.vocabSize),
-                              rmsEps: config.rmsEps,
-                              softcap: Float(model.config.finalLogitSoftcap))
+        if let hot = hotVocabulary {
+            try head.encodeHotGreedyRows(commandBuffer: cb, hidden: headRows, rowCount: R - 1,
+                                         normWeight: weights, normOffset: try offset("norm.weight"), table: hot,
+                                         weights: emb.buffer, weightsOffset: Int(emb.offset),
+                                         scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
+                                         biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
+                                         outIndices: draftTokens, d: UInt32(D), rmsEps: config.rmsEps,
+                                         softcap: Float(model.config.finalLogitSoftcap))
+        } else {
+            try head.encodeGreedyRows(commandBuffer: cb, hidden: headRows, rowCount: R - 1,
+                                      normWeight: weights, normOffset: try offset("norm.weight"),
+                                      weights: emb.buffer, weightsOffset: Int(emb.offset),
+                                      scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
+                                      biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
+                                      outTokens: draftTokens, d: UInt32(D), vocab: UInt32(model.config.vocabSize),
+                                      rmsEps: config.rmsEps,
+                                      softcap: Float(model.config.finalLogitSoftcap))
+        }
         cb.commit()
         cb.waitUntilCompleted()
         if let error = cb.error { throw DFlashError.invalidState("propose failed: \(error)") }
+        // Queued before this propose, so already complete.
+        try finishAppend()
         let out = unsafe draftTokens.contents().assumingMemoryBound(to: UInt32.self)
         let confidence = unsafe head.rowsConfidence.contents().assumingMemoryBound(to: Float.self)
         lastConfidences = (0..<(R - 1)).map { unsafe confidence[$0] }
+        if let hot = hotVocabulary {
+            let ids = unsafe hot.ids.contents().assumingMemoryBound(to: UInt32.self)
+            return (0..<(R - 1)).map { unsafe Int32(bitPattern: ids[Int(out[$0])]) }
+        }
         return (0..<(R - 1)).map { unsafe Int32(bitPattern: out[$0]) }
     }
 
@@ -364,7 +416,9 @@ public final class DFlashDrafter {
         -> (any MTLBuffer, [String: (weights: Int, scales: Int, biases: Int)]) {
         let D = config.hiddenSize, F = config.intermediateSize
         let q = config.heads * config.headDim, kv = config.kvHeads * config.headDim
-        var shapes: [(String, Int, Int)] = []
+        // The context append's fusion of the target features, for appends of
+        // a verify's or a plain step's rows.
+        var shapes: [(String, Int, Int)] = [("fc.weight", D, config.contextLayers.count * D)]
         for l in 0..<config.layers {
             let a = "layers.\(l).self_attn.", m = "layers.\(l).mlp."
             shapes += [(a + "q_proj.weight", q, D), (a + "k_proj.weight", kv, D), (a + "v_proj.weight", kv, D),
