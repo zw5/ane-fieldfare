@@ -17,24 +17,12 @@ public struct ModelLoadStats: Sendable {
     }
 }
 
-/// Bounded routed-expert cache configuration.
-public enum ExpertStreamingMode: Sendable {
-    /// Read each expert into one of `slotCount` 2 MB-aligned cache slots.
-    case pread(slotCount: Int)
-
-    public var slotCount: Int {
-        switch self { case .pread(let slotCount): return slotCount }
-    }
-}
-
 /// Loaded `.gturbo/` model. Resident weights live behind one mmap'd
-/// `MTLBuffer`; routed expert weights live behind per-layer streaming
-/// backends opened lazily on first touch.
+/// `MTLBuffer`; routed expert weights are per-layer mappings, opened lazily
+/// on first touch and served from the OS page cache (`MappedExpertLayer`).
 public struct Model {
     public let device: MTLDevice
     public let config: ArchConfig
-    public let streamingMode: ExpertStreamingMode
-    public let expertCachePolicy: ExpertCachePolicy
     public let integrityPolicy: ModelIntegrityPolicy
     public var modelID: String { manifest.modelID }
     public var sourceSnapshotHash: String? { manifest.sourceSnapshotHash }
@@ -49,22 +37,20 @@ public struct Model {
 
     /// Lazy state. Held inside a reference box so `Model` can stay a struct
     /// while still letting accessors mutate layer state via a serial queue.
-    let streamersBox: StreamersBox
-    let streamersQueue: DispatchQueue
+    let expertLayersBox: ExpertLayersBox
+    let expertLayersQueue: DispatchQueue
 
-    final class StreamersBox: @unchecked Sendable {
-        var streamers: [PreadExpertStreamer?]
+    final class ExpertLayersBox: @unchecked Sendable {
+        var layers: [MappedExpertLayer?]
         var layerVerified: [Bool]
         init(numLayers: Int) {
-            self.streamers = Array(repeating: nil, count: numLayers)
+            self.layers = Array(repeating: nil, count: numLayers)
             self.layerVerified = Array(repeating: false, count: numLayers)
         }
     }
 
     init(device: MTLDevice,
          config: ArchConfig,
-         streamingMode: ExpertStreamingMode,
-         expertCachePolicy: ExpertCachePolicy,
          integrityPolicy: ModelIntegrityPolicy,
          residentBuffer: ResidentBuffer,
          residentIndex: ResidentIndex,
@@ -74,8 +60,6 @@ public struct Model {
          modelDirectory: GTurboModelDirectory) {
         self.device = device
         self.config = config
-        self.streamingMode = streamingMode
-        self.expertCachePolicy = expertCachePolicy
         self.integrityPolicy = integrityPolicy
         self.residentBuffer = residentBuffer
         self.residentIndex = residentIndex
@@ -83,8 +67,8 @@ public struct Model {
         self.manifest = manifest
         self.directoryURL = directoryURL
         self.modelDirectory = modelDirectory
-        self.streamersBox = StreamersBox(numLayers: packedExpertsLayout.numLayers)
-        self.streamersQueue = DispatchQueue(label: "turbo-fieldfare.expert-streamers")
+        self.expertLayersBox = ExpertLayersBox(numLayers: packedExpertsLayout.numLayers)
+        self.expertLayersQueue = DispatchQueue(label: "ane-fieldfare.expert-layers")
     }
 
     // MARK: - Resident accessors
@@ -238,41 +222,36 @@ public struct Model {
 
     // MARK: - Routed expert (lazy)
 
-    /// First touch of layer L opens its backend + verifies SHA-256; subsequent
-    /// touches reuse the open backend. The backend resolves the expert to an
-    /// cache-slot `(MTLBuffer, offset)` pair.
+    /// One expert's weights, bound zero-copy from the page cache. Absent
+    /// pages fault in when the GPU first touches them.
     public func routedExpert(layer L: Int, expert E: Int) throws -> TensorView {
-        try ensureLayerOpened(L)
-        let backend = streamersQueue.sync { streamersBox.streamers[L]! }
-        let r = try backend.loadExpert(layer: 0, expert: E)
-        return TensorView(
-            buffer: r.buffer,
-            offset: r.offset,
-            length: r.size,
-            scaleOffset: 0, scaleLength: 0,
-            biasOffset:  0, biasLength:  0,
-            shape: (UInt32(L), UInt32(E), 0, 0),
-            dtype: GTurboFormatV1.DType.u32.rawValue)
+        try routedExpertViews(layer: L, experts: [E])[0]
+    }
+
+    /// Layer L's mapping, opening and verifying its file on first touch.
+    func expertLayer(_ L: Int) throws -> MappedExpertLayer {
+        try expertLayersQueue.sync {
+            try openLayerLocked(L)
+            return expertLayersBox.layers[L]!
+        }
     }
 
     /// Open layer L's file + verify SHA, idempotent.
     func ensureLayerOpened(_ L: Int) throws {
-        try streamersQueue.sync {
-            try openLayerLocked(L)
-        }
+        _ = try expertLayer(L)
     }
 
     /// Best-effort overlap hook for prefill: starts the same lazy layer open on
-    /// the model's streamer queue without waiting for the first expert fetch.
-    public func beginOpeningRoutedExpertStreamer(layer L: Int) {
+    /// the model's queue without waiting for the first expert fetch.
+    public func beginOpeningRoutedExpertLayer(layer L: Int) {
         nonisolated(unsafe) let model = self
-        streamersQueue.async {
+        expertLayersQueue.async {
             try? model.openLayerLocked(L)
         }
     }
 
     private func openLayerLocked(_ L: Int) throws {
-        if streamersBox.streamers[L] != nil {
+        if expertLayersBox.layers[L] != nil {
             return
         }
         let basename = packedExpertsLayout.layers[L].file
@@ -282,7 +261,7 @@ public struct Model {
         let manifestRel = "packed_experts/\(basename)"
         let layerFD = try modelDirectory.openFile(manifestRel)
         defer { close(layerFD) }
-        if !streamersBox.layerVerified[L] {
+        if !expertLayersBox.layerVerified[L] {
             guard let entry = manifest.files[manifestRel] else {
                 throw ModelError.missingFile(name: manifestRel)
             }
@@ -301,27 +280,19 @@ public struct Model {
                 break
             }
         }
-        let streamSize = UInt64(packedExpertsLayout.expertsPerLayer)
-            * packedExpertsLayout.expertStride
-        let layout = StreamLayout(
+        expertLayersBox.layers[L] = try MappedExpertLayer(
+            fileDescriptor: layerFD,
             path: url.path,
-            streamOffset: 0,
-            streamSize: streamSize,
-            expertsPerLayer: packedExpertsLayout.expertsPerLayer,
-            expertStride: packedExpertsLayout.expertStride,
-            expertOffsets: packedExpertsLayout.layers[L].experts.map(\.offset))
-        streamersBox.streamers[L] = try PreadExpertStreamer(
-            layout: layout,
             device: device,
-            slotCount: streamingMode.slotCount,
-            cachePolicy: expertCachePolicy,
-            fileDescriptor: layerFD)
-        streamersBox.layerVerified[L] = true
+            expertCount: packedExpertsLayout.expertsPerLayer,
+            expertBytes: Int(packedExpertsLayout.expertStride),
+            expertOffsets: packedExpertsLayout.layers[L].experts.map(\.offset))
+        expertLayersBox.layerVerified[L] = true
     }
 
     /// Test hook: how many layer files have been opened so far.
     public func openLayerFileCount() -> Int {
-        streamersQueue.sync { streamersBox.streamers.compactMap { $0 }.count }
+        expertLayersQueue.sync { expertLayersBox.layers.compactMap { $0 }.count }
     }
 
 }
@@ -334,8 +305,6 @@ extension Model {
     public static func load(directoryURL: URL,
                             device: MTLDevice,
                             expecting: ArchConfig = .gemma4_26B_A4B,
-                            streamingMode: ExpertStreamingMode = .pread(slotCount: RuntimeConfiguration.defaultExpertCacheSlots),
-                            expertCachePolicy: ExpertCachePolicy = PreadExpertStreamer.cachePolicyDefault,
                             integrityPolicy: ModelIntegrityPolicy? = nil,
                             loadStats: UnsafeMutablePointer<ModelLoadStats>? = nil) throws -> Model {
         var stats = ModelLoadStats()
@@ -471,8 +440,6 @@ extension Model {
         return Model(
             device: device,
             config: expecting,
-            streamingMode: streamingMode,
-            expertCachePolicy: expertCachePolicy,
             integrityPolicy: resolvedIntegrityPolicy,
             residentBuffer: residentBuffer,
             residentIndex: residentIndex,
@@ -722,9 +689,10 @@ extension Model {
     }
 
 
-    /// Releases routed-expert streamers and their slot scratch before vision
-    /// encoding, so the tower's bounded scratch does not stack on top of the
-    /// expert cache on an 8 GB machine.
+    /// Unmaps routed-expert layers before vision encoding under `.onDemand`.
+    /// Expert pages live in the page cache, which the OS reclaims under
+    /// pressure either way, so this only drops the mappings; layers reopen on
+    /// next touch without re-verifying.
     ///
     /// The caller must serialize this transition against forward execution.
     public func prepareExpertResidencyForVision(
@@ -732,30 +700,17 @@ extension Model {
         gpuDrainNanoseconds: UInt64 = 0
     ) -> VisionExpertResidencyTransition {
         let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-        return streamersQueue.sync {
-            let releasedLayerCount = streamersBox.streamers.compactMap { $0 }.count
-            let releasedBytes = streamersBox.streamers.compactMap { $0 }.reduce(UInt64(0)) {
-                $0 + $1.diagnosticSlotScratchBytes
-            }
+        return expertLayersQueue.sync {
+            let openCount = expertLayersBox.layers.compactMap { $0 }.count
             if policy == .onDemand {
-                var released = streamersBox.streamers
-                streamersBox.streamers = Array(
-                    repeating: nil, count: packedExpertsLayout.numLayers)
-                // `layerVerified` deliberately survives the release. Clearing it
-                // would make every image turn from the second on re-verify all
-                // 30 packed expert files, ~12.9 GB, inside this queue.
-                released.removeAll()
+                // `layerVerified` survives, so reopening never re-hashes 13 GB.
+                expertLayersBox.layers = Array(repeating: nil, count: packedExpertsLayout.numLayers)
             }
-            let remaining = streamersBox.streamers.compactMap { $0 }
             return VisionExpertResidencyTransition(
                 policy: policy,
                 gpuDrainNanoseconds: gpuDrainNanoseconds,
-                releasedLayerCount: policy == .onDemand ? releasedLayerCount : 0,
-                releasedSlotScratchBytes: policy == .onDemand ? releasedBytes : 0,
-                remainingOpenLayerCount: remaining.count,
-                remainingSlotScratchBytes: remaining.reduce(UInt64(0)) {
-                    $0 + $1.diagnosticSlotScratchBytes
-                },
+                releasedLayerCount: policy == .onDemand ? openCount : 0,
+                remainingOpenLayerCount: expertLayersBox.layers.compactMap { $0 }.count,
                 wallNanoseconds: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
         }
     }

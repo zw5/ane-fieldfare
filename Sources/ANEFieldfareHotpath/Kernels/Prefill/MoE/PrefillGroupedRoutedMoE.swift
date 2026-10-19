@@ -20,87 +20,6 @@ struct PrefillStreamedTileArgumentBuffer {
     let buffer: MTLBuffer
 }
 
-public struct PrefillStreamedTileFetchResult {
-    public let expertIDs: [Int]
-    public let binding: PrefillStreamedTileBinding
-    public let usedPlannedFetch: Bool
-    public let plannedHits: Int
-    public let plannedMissIndices: [Int]
-    public let plannedAssignedSlots: [Int]
-    public let plannedMissSlots: [Int]
-
-    public init(expertIDs: [Int],
-                binding: PrefillStreamedTileBinding,
-                usedPlannedFetch: Bool,
-                plannedHits: Int,
-                plannedMissIndices: [Int],
-                plannedAssignedSlots: [Int],
-                plannedMissSlots: [Int]) {
-        self.expertIDs = expertIDs
-        self.binding = binding
-        self.usedPlannedFetch = usedPlannedFetch
-        self.plannedHits = plannedHits
-        self.plannedMissIndices = plannedMissIndices
-        self.plannedAssignedSlots = plannedAssignedSlots
-        self.plannedMissSlots = plannedMissSlots
-    }
-}
-
-package enum PrefillStreamedTileLifetimeError: Error, Equatable, CustomStringConvertible {
-    case duplicateSlots(tileIndex: Int, slots: [Int])
-    case slotReuseBeforeCompletion(tileIndex: Int, conflictingTileIndex: Int, slots: [Int])
-    case completeWithoutInFlightTile(tileIndex: Int)
-
-    public var description: String {
-        switch self {
-        case .duplicateSlots(let tileIndex, let slots):
-            return "prefill streamed tile \(tileIndex) has duplicate planned slots \(slots)"
-        case .slotReuseBeforeCompletion(let tileIndex, let conflictingTileIndex, let slots):
-            return "prefill streamed tile \(tileIndex) would reuse planned slots \(slots) while tile \(conflictingTileIndex) is in flight"
-        case .completeWithoutInFlightTile(let tileIndex):
-            return "prefill streamed tile \(tileIndex) completed without a matching in-flight tile"
-        }
-    }
-}
-
-package struct PrefillStreamedTileSlotLifetime: Sendable, Equatable {
-    private var inFlightSlotsByTile: [Int: Set<Int>] = [:]
-
-    package init() {}
-
-    package mutating func begin(tileIndex: Int, plannedSlots: [Int]) throws {
-        let slots = try normalizedSlots(tileIndex: tileIndex, plannedSlots: plannedSlots)
-        for (otherTile, otherSlots) in inFlightSlotsByTile {
-            let overlap = slots.intersection(otherSlots)
-            if !overlap.isEmpty {
-                throw PrefillStreamedTileLifetimeError.slotReuseBeforeCompletion(
-                    tileIndex: tileIndex,
-                    conflictingTileIndex: otherTile,
-                    slots: overlap.sorted())
-            }
-        }
-        inFlightSlotsByTile[tileIndex] = slots
-    }
-
-    package mutating func complete(tileIndex: Int) throws {
-        guard inFlightSlotsByTile.removeValue(forKey: tileIndex) != nil else {
-            throw PrefillStreamedTileLifetimeError.completeWithoutInFlightTile(tileIndex: tileIndex)
-        }
-    }
-
-    private func normalizedSlots(tileIndex: Int, plannedSlots: [Int]) throws -> Set<Int> {
-        var slots = Set<Int>()
-        for slot in plannedSlots {
-            guard slots.insert(slot).inserted else {
-                throw PrefillStreamedTileLifetimeError.duplicateSlots(
-                    tileIndex: tileIndex,
-                    slots: plannedSlots.sorted())
-            }
-        }
-        return slots
-    }
-}
-
 struct PrefillGroupedRoutedMoEStreamedParams: Equatable, Sendable {
     var pairStart: UInt32
     var pairCount: UInt32
@@ -237,52 +156,6 @@ public struct PrefillStreamedTileBinding: Sendable, Equatable {
         return routes.groups[groupStart..<(groupStart + groupCount)].map { Int($0.expert) }
     }
 
-    public static func fetchBindingForTile(model: Model,
-                                           layer: Int,
-                                           tileIndex: Int,
-                                           routes: PrefillMoEGroupedRoutes,
-                                           plannedFetch: RoutedExpertFetchPlan? = nil,
-                                           avoidingSlots: Set<Int> = []) async throws
-        -> PrefillStreamedTileFetchResult {
-        let expertIDs = try expertIDs(forTile: tileIndex, routes: routes)
-        let plan = try plannedFetch ?? model.planRoutedExperts(layer: layer,
-                                                               experts: expertIDs,
-                                                               avoidingSlots: avoidingSlots)
-        let views: [TensorView]
-        let usedPlannedFetch: Bool
-        let plannedHits: Int
-        let plannedMissIndices: [Int]
-        let plannedAssignedSlots: [Int]
-        let plannedMissSlots: [Int]
-        if let plan {
-            guard plan.layer == layer, plan.experts == expertIDs else {
-                throw PrefillGroupedRoutedMoEError.invalidStreamedTileBinding(
-                    "preplanned fetch does not match tile \(tileIndex)")
-            }
-            views = try await model.fetchRoutedExperts(plan: plan)
-            usedPlannedFetch = true
-            plannedHits = plan.hits
-            plannedMissIndices = plan.misses
-            plannedAssignedSlots = plan.assignedSlots
-            plannedMissSlots = plan.misses.map { plan.assignedSlots[$0] }
-        } else {
-            views = try await model.fetchRoutedExperts(layer: layer, experts: expertIDs)
-            usedPlannedFetch = false
-            plannedHits = 0
-            plannedMissIndices = []
-            plannedAssignedSlots = []
-            plannedMissSlots = []
-        }
-        let binding = try PrefillStreamedTileBinding(expertIDs: expertIDs, views: views)
-        return PrefillStreamedTileFetchResult(expertIDs: expertIDs,
-                                             binding: binding,
-                                             usedPlannedFetch: usedPlannedFetch,
-                                             plannedHits: plannedHits,
-                                             plannedMissIndices: plannedMissIndices,
-                                             plannedAssignedSlots: plannedAssignedSlots,
-                                             plannedMissSlots: plannedMissSlots)
-    }
-
     public func validateCoversPairs(_ pairs: [PrefillTokenExpertPair],
                                     pairStart: Int,
                                     pairCount: Int) throws {
@@ -343,6 +216,11 @@ final class PrefillGroupedRoutedMoE {
     private let reusableStreamedArgumentBuffers: [MTLBuffer]
     static let streamedArgumentBufferCount = 8
     private let reusableSortedPairsBuffer: MTLBuffer
+    private let context: MetalContext
+    /// Verify activations, `[pair][F]` by the pair's index in the layer.
+    private var verifyActs: MTLBuffer?
+    /// Pairs per expert one verify dispatch takes (`FC_VERIFY_ROWS` <= 16).
+    static let verifyMaxRows = 16
 
     func makeStreamedArgumentBuffer(device: MTLDevice,
                                     binding: PrefillStreamedTileBinding,
@@ -388,6 +266,7 @@ final class PrefillGroupedRoutedMoE {
         }
         pairBuffer.label = "prefill.groupedMoe.sortedPairs"
         self.reusableSortedPairsBuffer = pairBuffer
+        self.context = context
     }
 
     func makeStreamedMetadataBuffers(
@@ -482,6 +361,57 @@ final class PrefillGroupedRoutedMoE {
             microbatchCount += 1
         }
         return microbatchCount
+    }
+
+
+    /// A verify tile's routed experts: per live expert, gate + up + GELU then
+    /// down, each weight row read once for all of the expert's tokens.
+    /// Writes `routePartials` like `encodeStreamedBatched`.
+    func encodeVerifyRows(commandBuffer: MTLCommandBuffer,
+                          hidden: MTLBuffer,
+                          sortedPairs: MTLBuffer,
+                          routePartials: MTLBuffer,
+                          argumentBuffer: PrefillStreamedTileArgumentBuffer,
+                          binding: PrefillStreamedTileBinding,
+                          params: PrefillGroupedRoutedMoEStreamedParams,
+                          segments: [SIMD2<UInt32>],
+                          totalPairs: Int) throws {
+        let live = Int(params.liveExpertCount)
+        precondition(segments.count == live && live == binding.views.count)
+        let maxRows = Int(segments.map(\.y).max() ?? 0)
+        guard maxRows > 0 else { return }
+        precondition(maxRows <= Self.verifyMaxRows, "\(maxRows) pairs for one expert")
+        let rows = maxRows <= 1 ? 1 : maxRows <= 2 ? 2 : maxRows <= 4 ? 4 : maxRows <= 8 ? 8 : 16
+        let actBytes = totalPairs * Int(params.routedIntermediate) * MemoryLayout<Float16>.stride
+        if verifyActs == nil || verifyActs!.length < actBytes {
+            guard let buffer = context.device.makeBuffer(
+                length: max(actBytes, PrefillRuntimeConfig.maxChunkTokens * 8 * Int(params.routedIntermediate) * 2),
+                options: .storageModePrivate) else { throw MetalError.noDevice }
+            buffer.label = "prefill.groupedMoe.verifyActs"
+            verifyActs = buffer
+        }
+        let acts = verifyActs!
+        let constants = [MetalFunctionConstant(index: 90, value: .uint32(UInt32(rows)))]
+        var p = params
+        var segs = segments
+        for (name, width) in [("verify_routed_gate_up_act", Int(params.routedIntermediate)),
+                              ("verify_routed_down", (Int(params.d) + 1) / 2)] {
+            guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+            enc.setComputePipelineState(try context.pipeline(name, constants: constants))
+            enc.setBuffer(hidden, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
+            enc.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
+            enc.setBuffer(routePartials, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
+            enc.setBuffer(acts, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
+            enc.setBuffer(argumentBuffer.buffer, offset: 0,
+                          index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
+            enc.setBytes(&p, length: MemoryLayout<PrefillGroupedRoutedMoEStreamedParams>.stride,
+                         index: PrefillGroupedRoutedMoEBufferIndex.params)
+            enc.setBytes(&segs, length: segs.count * MemoryLayout<SIMD2<UInt32>>.stride, index: 11)
+            for view in binding.views { enc.useResource(view.buffer, usage: .read) }
+            enc.dispatchThreadgroups(MTLSize(width: (width + 7) / 8, height: live, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+            enc.endEncoding()
+        }
     }
 
 }

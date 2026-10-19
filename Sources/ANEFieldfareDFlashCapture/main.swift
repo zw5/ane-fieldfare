@@ -48,11 +48,8 @@ private struct Generation: Decodable {
         }
     }
 
-    static let slots = Int(ProcessInfo.processInfo.environment["SLOTS"] ?? "16")!
-
     static func loadModel(_ path: String, context: MetalContext) throws -> Model {
         try Model.load(directoryURL: URL(fileURLWithPath: path), device: context.device,
-                       streamingMode: .pread(slotCount: slots), expertCachePolicy: .lfu,
                        integrityPolicy: .sizeCheckTrustedReceipt)
     }
 
@@ -85,7 +82,7 @@ private struct Generation: Decodable {
         let D = cfg.hiddenSize, layers = cfg.numLayers, topK = cfg.topKExperts
         let runner = try RealForwardRunner(
             model: model, context: context, maxContext: 4096,
-            runtimeConfiguration: RuntimeConfiguration(expertCacheSlots: 16, prefillChunkTokens: chunk,
+            runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: chunk,
                                                        forceLogitsHead: true))
         var hidden = [Float16](repeating: 0, count: tokens.count * contextLayers.count * D)
         var routes = [UInt8](repeating: 0, count: tokens.count * layers * topK)
@@ -144,7 +141,7 @@ private struct Generation: Decodable {
         for useRewind in [false] {
             let runner = try RealForwardRunner(
                 model: model, context: context, maxContext: 4096,
-                runtimeConfiguration: RuntimeConfiguration(expertCacheSlots: slots, prefillChunkTokens: 1024))
+                runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
             guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
                                                          options: .storageModeShared) else { fail("alloc", 1) }
             let prompt = generation.prompt_token_ids
@@ -197,7 +194,7 @@ private struct Generation: Decodable {
         let model = try loadModel(modelPath, context: context)
         let runner = try RealForwardRunner(
             model: model, context: context, maxContext: 4096,
-            runtimeConfiguration: RuntimeConfiguration(expertCacheSlots: slots, prefillChunkTokens: 1024))
+            runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
         let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
         let reference = generation.generated_token_ids
@@ -206,7 +203,6 @@ private struct Generation: Decodable {
             maxNewTokens: reference.count, blockSize: block, prefillChunkTokens: 1024)
         let firstDiff = zip(tokens, reference).enumerated().first { $0.element.0 != $0.element.1 }?.offset ?? -1
         var profile = stats.profile
-        profile["slots"] = slots
         profile["block"] = block
         profile["tokens_match_plain_greedy"] = tokens == reference
         profile["first_divergence"] = firstDiff
@@ -232,7 +228,7 @@ private struct Generation: Decodable {
         let model = try loadModel(modelPath, context: context)
         let runner = try RealForwardRunner(
             model: model, context: context, maxContext: 4096,
-            runtimeConfiguration: RuntimeConfiguration(expertCacheSlots: 16, prefillChunkTokens: 1024))
+            runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
         let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
         var failure: Error?

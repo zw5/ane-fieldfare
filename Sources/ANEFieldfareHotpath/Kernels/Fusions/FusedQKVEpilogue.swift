@@ -17,6 +17,7 @@ final class FusedQKVEpilogue {
 
     private let pso: MTLComputePipelineState
     private let specializedPSOs: [Shape: MTLComputePipelineState]
+    private let rowsPSOs: [Shape: MTLComputePipelineState]
     private static let realDecodeShapes: [Shape] = [
         Shape(headDim: 256, numQHeads: 16, numKVHeads: 8, rotatedPairs: 128),
         Shape(headDim: 512, numQHeads: 16, numKVHeads: 2, rotatedPairs: 64),
@@ -37,6 +38,55 @@ final class FusedQKVEpilogue {
                 ])
         }
         self.specializedPSOs = variants
+        var rowVariants: [Shape: MTLComputePipelineState] = [:]
+        for shape in Self.realDecodeShapes {
+            rowVariants[shape] = try context.pipeline(
+                "fused_qkv_epilogue_rows",
+                constants: [
+                    MetalFunctionConstant(index: 82, value: .uint32(shape.headDim)),
+                    MetalFunctionConstant(index: 83, value: .uint32(shape.numQHeads)),
+                    MetalFunctionConstant(index: 84, value: .uint32(shape.numKVHeads)),
+                    MetalFunctionConstant(index: 85, value: .uint32(shape.rotatedPairs)),
+                    MetalFunctionConstant(index: 86, value: .bool(true)),
+                ])
+        }
+        self.rowsPSOs = rowVariants
+    }
+
+    /// `encode` over `rows` tokens of a block in one dispatch: token r is at
+    /// `position + r`, its Q `qStrideElements` and K/V `kvStrideElements`
+    /// past token r - 1. Real decode shapes only.
+    func encodeRows(commandBuffer cb: MTLCommandBuffer,
+                    q: MTLBuffer, k: MTLBuffer, v: MTLBuffer,
+                    qWeight: MTLBuffer, qWeightOffset: Int,
+                    kWeight: MTLBuffer, kWeightOffset: Int,
+                    headDim: UInt32, numQHeads: UInt32, numKVHeads: UInt32,
+                    position: UInt32, rows: Int,
+                    qStrideElements: UInt32, kvStrideElements: UInt32,
+                    theta: Float, rotatedPairs: UInt32, eps: Float) -> Bool {
+        guard let pipeline = rowsPSOs[Shape(headDim: headDim, numQHeads: numQHeads,
+                                            numKVHeads: numKVHeads, rotatedPairs: rotatedPairs)],
+              let enc = cb.makeComputeCommandEncoder() else { return false }
+        enc.setComputePipelineState(pipeline)
+        enc.setBuffer(q, offset: 0, index: 0)
+        enc.setBuffer(k, offset: 0, index: 1)
+        enc.setBuffer(v, offset: 0, index: 2)
+        enc.setBuffer(qWeight, offset: qWeightOffset, index: 3)
+        enc.setBuffer(kWeight, offset: kWeightOffset, index: 4)
+        var values: [UInt32] = [headDim, numQHeads, numKVHeads, position]
+        for i in values.indices { enc.setBytes(&values[i], length: 4, index: 5 + i) }
+        var thetaVar = theta, rotatedVar = rotatedPairs, epsVar = eps
+        var qStride = qStrideElements, kvStride = kvStrideElements
+        enc.setBytes(&thetaVar, length: 4, index: 9)
+        enc.setBytes(&rotatedVar, length: 4, index: 10)
+        enc.setBytes(&epsVar, length: 4, index: 11)
+        enc.setBytes(&qStride, length: 4, index: 12)
+        enc.setBytes(&kvStride, length: 4, index: 13)
+        let threads = min(Int(pipeline.maxTotalThreadsPerThreadgroup), 256)
+        enc.dispatchThreadgroups(MTLSize(width: Int(numQHeads + 2 * numKVHeads), height: rows, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
+        enc.endEncoding()
+        return true
     }
 
     func encode(commandBuffer cb: MTLCommandBuffer,

@@ -2,21 +2,11 @@ import Foundation
 import Metal
 import ANEFieldfareImportedFormat
 
-public struct RoutedExpertFetchPlan: Sendable {
-    public let layer: Int
-    public let cachePlan: ExpertCachePlan
-
-    public var experts: [Int] { cachePlan.experts }
-    public var misses: [Int] { cachePlan.misses }
-    public var hits: Int { cachePlan.hits }
-    public var assignedSlots: [Int] { cachePlan.assignedSlots }
-
-    public init(layer: Int, cachePlan: ExpertCachePlan) {
-        self.layer = layer
-        self.cachePlan = cachePlan
-    }
-}
-
+/// Routed-expert access. Every expert of every layer has one fixed, zero-copy
+/// buffer over the page cache, so binding never waits on storage; residency
+/// only decides how soon the GPU can run. The forward loops ask which experts
+/// are absent, bind everything at once, run what is resident, and read the
+/// rest concurrently.
 extension Model {
     public func routedExpertOffsets(layer: Int) -> MoEExpertOffsets {
         let expert = packedExpertsLayout.expert(layer: layer, expert: 0)
@@ -43,136 +33,61 @@ extension Model {
         packedExpertsLayout.layers[layer].experts.map(\.offset)
     }
 
-    public func planRoutedExperts(layer: Int,
-                                  experts: [Int],
-                                  avoidingSlots: Set<Int> = []) throws -> RoutedExpertFetchPlan? {
-        try ensureLayerOpened(layer)
-        let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
-        let validSlots = Set(avoidingSlots.filter { $0 >= 0 && $0 < streamer.slotCount })
-        return RoutedExpertFetchPlan(
-            layer: layer,
-            cachePlan: streamer.planExpertsCached(experts: experts, avoidingSlots: validSlots))
-    }
+    /// Bytes of one routed expert.
+    public var routedExpertBytes: Int { Int(packedExpertsLayout.expertStride) }
 
-    public func planRoutedExpertsIfPossible(layer: Int,
-                                            experts: [Int],
-                                            avoidingSlots: Set<Int> = []) throws
-        -> RoutedExpertFetchPlan? {
-        try ensureLayerOpened(layer)
-        let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
-        let validSlots = Set(avoidingSlots.filter { $0 >= 0 && $0 < streamer.slotCount })
-        guard let cachePlan = streamer.planExpertsCachedIfPossible(
-            experts: experts,
-            avoidingSlots: validSlots)
-        else {
-            return nil
-        }
-        return RoutedExpertFetchPlan(layer: layer, cachePlan: cachePlan)
-    }
-
-    public func routedExpertCacheSlotCount(layer _: Int) -> Int? {
-        streamingMode.slotCount
-    }
-
-    public func routedExpertBuffers(for plan: RoutedExpertFetchPlan) throws -> [TensorView] {
-        try ensureLayerOpened(plan.layer)
-        let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
-        return Self.makeExpertViews(
-            streamer.expertCachePlanBuffers(plan.cachePlan),
-            layer: plan.layer,
-            experts: plan.experts)
-    }
-
-
-    public func fetchRoutedExperts(plan: RoutedExpertFetchPlan) async throws -> [TensorView] {
-        try ensureLayerOpened(plan.layer)
-        let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
-        if plan.misses.isEmpty {
-            return Self.makeExpertViews(streamer.expertCachePlanBuffers(plan.cachePlan),
-                                        layer: plan.layer, experts: plan.experts)
-        }
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let buffers = try streamer.executeExpertCachePlan(plan.cachePlan)
-                    continuation.resume(returning: Self.makeExpertViews(
-                        buffers,
-                        layer: plan.layer,
-                        experts: plan.experts))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+    /// The experts' buffers, valid whether or not their pages are resident.
+    public func routedExpertViews(layer: Int, experts: [Int]) throws -> [TensorView] {
+        let mapped = try expertLayer(layer)
+        return try experts.map { expert in
+            guard expert >= 0, expert < mapped.expertCount else {
+                throw ExpertStoreError.expertOutOfRange(expert)
             }
-        }
-    }
-
-    /// Like `fetchRoutedExperts(plan:)`, but skips the misses at
-    /// `skippingMisses`, whose bytes an adopted early read supplies.
-    /// `beforeAdmitting` runs on the read thread after the plan's own reads and
-    /// must not return until the skipped misses' bytes are in place.
-    func fetchRoutedExperts(plan: RoutedExpertFetchPlan,
-                            skippingMisses: Set<Int>,
-                            beforeAdmitting: @escaping @Sendable () throws -> Void)
-        async throws -> [TensorView] {
-        let streamer = try routedExpertStreamer(layer: plan.layer)
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let buffers = try streamer.executeExpertCachePlan(
-                        plan.cachePlan,
-                        skippingMisses: skippingMisses,
-                        beforeAdmitting: beforeAdmitting)
-                    continuation.resume(returning: Self.makeExpertViews(
-                        buffers,
-                        layer: plan.layer,
-                        experts: plan.experts))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    /// The per-layer streamer, opening the layer's file if needed.
-    func routedExpertStreamer(layer: Int) throws -> PreadExpertStreamer {
-        try ensureLayerOpened(layer)
-        return streamersQueue.sync { streamersBox.streamers[layer]! }
-    }
-
-    public func fetchRoutedExperts(layer: Int, experts: [Int]) async throws -> [TensorView] {
-        try ensureLayerOpened(layer)
-        let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let buffers = try streamer.loadExpertsCached(experts: experts)
-                    continuation.resume(returning: Self.makeExpertViews(
-                        buffers,
-                        layer: layer,
-                        experts: experts))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    private static func makeExpertViews(
-        _ buffers: [(buffer: MTLBuffer, offset: UInt64, size: UInt64)],
-        layer: Int,
-        experts: [Int]
-    ) -> [TensorView] {
-        buffers.enumerated().map { index, entry in
-            TensorView(
-                buffer: entry.buffer,
-                offset: entry.offset,
-                length: entry.size,
+            return TensorView(
+                buffer: mapped.buffers[expert],
+                offset: 0,
+                length: UInt64(mapped.expertBytes),
                 scaleOffset: 0,
                 scaleLength: 0,
                 biasOffset: 0,
                 biasLength: 0,
-                shape: (UInt32(layer), UInt32(experts[index]), 0, 0),
+                shape: (UInt32(layer), UInt32(expert), 0, 0),
                 dtype: GTurboFormatV1.DType.u32.rawValue)
         }
+    }
+
+    /// The subset of `experts`, in order, not resident in memory.
+    public func nonResidentRoutedExperts(layer: Int, experts: [Int],
+                                         probes: Int = MappedExpertLayer.residencyProbes) throws -> [Int] {
+        let mapped = try expertLayer(layer)
+        return experts.filter { !mapped.isResident($0, probes: probes) }
+    }
+
+    /// Reads `experts` into memory, concurrently, off the caller's thread.
+    public func readRoutedExperts(layer: Int, experts: [Int]) async throws {
+        guard !experts.isEmpty else { return }
+        let mapped = try expertLayer(layer)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try mapped.read(experts)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Asks storage for `experts` and returns at once.
+    public func prefetchRoutedExperts(layer: Int, experts: [Int]) throws {
+        try expertLayer(layer).prefetch(experts)
+    }
+
+    /// Reads whatever of `experts` is absent and returns their buffers.
+    public func fetchRoutedExperts(layer: Int, experts: [Int]) async throws -> [TensorView] {
+        try await readRoutedExperts(layer: layer,
+                                    experts: nonResidentRoutedExperts(layer: layer, experts: experts))
+        return try routedExpertViews(layer: layer, experts: experts)
     }
 }

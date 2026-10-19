@@ -11,6 +11,7 @@ let package = Package(
         .executable(name: "ANEFieldfareHotpathCLI", targets: ["ANEFieldfareHotpathCLI"]),
         .executable(name: "ANEFieldfareQualityGate", targets: ["ANEFieldfareQualityGate"]),
         .executable(name: "ANEFieldfareDFlashCapture", targets: ["ANEFieldfareDFlashCapture"]),
+        .executable(name: "ANEFieldfareBench", targets: ["ANEFieldfareBench"]),
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
@@ -94,6 +95,11 @@ let package = Package(
             name: "ANEFieldfareDFlashCapture",
             dependencies: ["ANEFieldfareHotpath"],
             path: "Sources/ANEFieldfareDFlashCapture"
+        ),
+        .executableTarget(
+            name: "ANEFieldfareBench",
+            dependencies: ["ANEFieldfareHotpath"],
+            path: "Sources/ANEFieldfareBench"
         ),
     ]
 )

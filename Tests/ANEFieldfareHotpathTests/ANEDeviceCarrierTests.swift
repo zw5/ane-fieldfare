@@ -36,7 +36,7 @@ final class ANEDeviceCarrierTests: XCTestCase {
             memset(partials.contents(), 0, partials.length)
             let bank = run % 2
             let jobs = [(0,2),(2,3),(5,1),(6,1)].map {
-                ANERoutedPrefillBackend.Job(view: view, start: $0.0, count: $0.1, slots: [])
+                ANERoutedPrefillBackend.Job(view: view, start: $0.0, count: $0.1)
             }
             let producer = try backend.prepareBatch(bank: bank, jobs: jobs, offsets: offsets,
                                                     hidden: hidden, pairs: pairBuffer)

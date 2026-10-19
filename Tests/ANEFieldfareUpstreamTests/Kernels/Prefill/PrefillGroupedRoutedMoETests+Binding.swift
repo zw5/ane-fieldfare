@@ -81,153 +81,35 @@ extension PrefillGroupedRoutedMoETests {
     #expect(secondTile != Array(0..<20))
   }
 
-  @Test func streamedTileSlotLifetimeRejectsPlannedCacheSlotReuseBeforeCompletion() throws {
-    let firstPlan = ExpertCachePlan(
-      experts: [0, 1, 2, 3],
-      assignedSlots: [0, 1, 2, 3],
-      misses: [0, 1, 2, 3],
-      hits: 0)
-    let secondPlan = ExpertCachePlan(
-      experts: [4, 5, 6, 7],
-      assignedSlots: [0, 1, 2, 3],
-      misses: [0, 1, 2, 3],
-      hits: 0)
-    var lifetime = PrefillStreamedTileSlotLifetime()
-
-    try lifetime.begin(tileIndex: 0, plannedSlots: firstPlan.assignedSlots)
-    #expect {
-      try lifetime.begin(tileIndex: 1, plannedSlots: secondPlan.assignedSlots)
-    } throws: { error in
-      guard
-        case PrefillStreamedTileLifetimeError.slotReuseBeforeCompletion(
-          tileIndex: 1,
-          conflictingTileIndex: 0,
-          slots: [0, 1, 2, 3]) = error
-      else {
-        return false
-      }
-      return true
-    }
-
-    try lifetime.complete(tileIndex: 0)
-    try lifetime.begin(tileIndex: 1, plannedSlots: secondPlan.assignedSlots)
-    try lifetime.complete(tileIndex: 1)
-  }
-
-  @Test func streamedTileSlotLifetimeAllowsPinnedNonOverlappingSlots() throws {
-    var lifetime = PrefillStreamedTileSlotLifetime()
-
-    try lifetime.begin(tileIndex: 0, plannedSlots: [0, 1])
-    try lifetime.begin(tileIndex: 1, plannedSlots: [2, 3])
-
-    try lifetime.complete(tileIndex: 0)
-    try lifetime.complete(tileIndex: 1)
-
-    #expect {
-      try lifetime.begin(tileIndex: 2, plannedSlots: [4, 4])
-    } throws: { error in
-      guard
-        case PrefillStreamedTileLifetimeError.duplicateSlots(
-          tileIndex: 2,
-          slots: [4, 4]) = error
-      else {
-        return false
-      }
-      return true
-    }
-  }
-
-  @Test func streamedTileSlotLifetimeAllowsSequentialReuseAfterCompletion() throws {
-    var lifetime = PrefillStreamedTileSlotLifetime()
-    let reusedSlots = [0, 1, 2, 3, 4, 5, 6, 7]
-
-    for tile in 0..<4 {
-      try lifetime.begin(tileIndex: tile, plannedSlots: reusedSlots)
-      try lifetime.complete(tileIndex: tile)
-    }
-  }
-
-  @Test func streamedTileFetchBindingUsesPreadPlanAndCacheHits() async throws {
+  @Test func streamedTileBindingFromModelViewsCarriesEachExpertsBytes() async throws {
     let dir = try ModelLoaderTests.writeToySynthetic()
     defer { try? FileManager.default.removeItem(at: dir) }
     let device = try #require(MTLCreateSystemDefaultDevice())
     let model = try Model.load(
       directoryURL: dir,
       device: device,
-      expecting: .gemma4Toy(),
-      streamingMode: .pread(slotCount: 16))
+      expecting: .gemma4Toy())
     let routes = try Self.tileFetchRoutes()
+    let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: 0, routes: routes)
+    #expect(expertIDs == [1, 3, 5])
 
-    let first = try await PrefillStreamedTileBinding.fetchBindingForTile(
-      model: model,
-      layer: 1,
-      tileIndex: 0,
-      routes: routes)
-    let second = try await PrefillStreamedTileBinding.fetchBindingForTile(
-      model: model,
-      layer: 1,
-      tileIndex: 0,
-      routes: routes)
-
-    #expect(first.expertIDs == [1, 3, 5])
-    #expect(first.usedPlannedFetch)
-    #expect(first.plannedHits == 0)
-    #expect(first.plannedMissIndices == [0, 1, 2])
-    #expect(first.plannedMissSlots == [0, 1, 2])
-    #expect(second.usedPlannedFetch)
-    #expect(second.plannedHits == 3)
-    #expect(second.plannedMissIndices.isEmpty)
-    #expect(second.plannedMissSlots.isEmpty)
-    for result in [first, second] {
-      #expect(result.binding.views.allSatisfy { $0.offset == 0 })
-      try result.binding.validateCoversPairs(
-        routes.sortedPairs,
-        pairStart: 0,
-        pairCount: routes.sortedPairs.count)
-      for (index, expert) in result.expertIDs.enumerated() {
-        let view = result.binding.views[index]
-        #expect(Self.byte(view, at: 0) == 1)
-        #expect(Self.byte(view, at: 1) == UInt8(expert))
-      }
-    }
-  }
-
-  @Test func streamedTileFetchBindingAvoidsInFlightPlannedSlots() async throws {
-    let dir = try ModelLoaderTests.writeToySynthetic()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    let model = try Model.load(
-      directoryURL: dir,
-      device: device,
-      expecting: .gemma4Toy(),
-      streamingMode: .pread(slotCount: 16))
-    let routes = try Self.tileFetchRoutes()
-
-    let first = try await PrefillStreamedTileBinding.fetchBindingForTile(
-      model: model,
-      layer: 1,
-      tileIndex: 0,
-      routes: routes)
-    let second = try await PrefillStreamedTileBinding.fetchBindingForTile(
-      model: model,
-      layer: 1,
-      tileIndex: 0,
-      routes: routes,
-      avoidingSlots: Set(first.plannedAssignedSlots))
-
-    #expect(first.usedPlannedFetch)
-    #expect(first.plannedAssignedSlots == [0, 1, 2])
-    #expect(first.plannedMissSlots == [0, 1, 2])
-    #expect(second.usedPlannedFetch)
-    // Local ANE scheduling never shares a slot with an in-flight bank.
-    #expect(second.plannedAssignedSlots == [3, 4, 5])
-    #expect(second.plannedHits == 0)
-    #expect(second.plannedMissIndices == [0, 1, 2])
-    #expect(second.plannedMissSlots == [3, 4, 5])
-    try second.binding.validateCoversPairs(
+    let views = try await model.fetchRoutedExperts(layer: 1, experts: expertIDs)
+    #expect(try model.nonResidentRoutedExperts(layer: 1, experts: expertIDs).isEmpty)
+    let binding = try PrefillStreamedTileBinding(expertIDs: expertIDs, views: views)
+    try binding.validateCoversPairs(
       routes.sortedPairs,
       pairStart: 0,
       pairCount: routes.sortedPairs.count)
+    // Every expert has one fixed buffer: binding twice yields the same views.
+    let again = try PrefillStreamedTileBinding(
+      expertIDs: expertIDs, views: try model.routedExpertViews(layer: 1, experts: expertIDs))
+    #expect(again == binding)
+    for (index, expert) in expertIDs.enumerated() {
+      let view = binding.views[index]
+      #expect(view.offset == 0)
+      #expect(Self.byte(view, at: 0) == 1)
+      #expect(Self.byte(view, at: 1) == UInt8(expert))
+    }
   }
 
 }

@@ -48,7 +48,7 @@ final class ANEQuantizedCarrierTests: XCTestCase {
         }
         let partials = try XCTUnwrap(context.device.makeBuffer(length: rows * 8 * d * 2, options: .storageModeShared))
         memset(partials.contents(), 0x7e, partials.length)
-        let jobs = views.enumerated().map { ANERoutedPrefillBackend.Job(view: $0.element, start: $0.offset, count: 1, slots: []) }
+        let jobs = views.enumerated().map { ANERoutedPrefillBackend.Job(view: $0.element, start: $0.offset, count: 1) }
         let badOutput = try XCTUnwrap(context.device.makeBuffer(length: 16, options: .storageModeShared))
         let rejected = try backend.prepareBatch(bank: 0, jobs: jobs, offsets: offsets, hidden: hidden, pairs: pairBuffer)
         XCTAssertThrowsError(try backend.prepareBatch(bank: 0, jobs: jobs, offsets: offsets, hidden: hidden, pairs: pairBuffer))

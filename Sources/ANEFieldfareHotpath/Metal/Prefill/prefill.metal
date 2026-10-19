@@ -1250,3 +1250,195 @@ kernel void attention_prefill_full_tensorops_2d_validity_v2(
 }
 
 #endif
+
+// ============================================================================
+// Verify routed experts: one SIMD per weight row, applied to every token the
+// tile routes to that expert, so a verify block reads each expert's weights
+// once (the batched kernels above give each (row, pair) its own thread and
+// re-read the row per pair). `segments[slot]` is the slot's (first pair,
+// pair count) in `sorted_pairs`; at most FC_VERIFY_ROWS pairs per expert.
+// Row math is the decode GEMV's lane layout: 4 bytes per lane per 4-group
+// block, scale and bias factored per group, u16 weight loads.
+// ============================================================================
+constant uint FC_VERIFY_ROWS [[function_constant(90)]];
+constant constexpr uint kVerifyMaxRows = 16;
+
+static inline void verify_unpack8(uint w4, thread float* q) {
+    q[0] = float(w4 & 0x0Fu);         q[1] = float((w4 >> 4) & 0x0Fu);
+    q[2] = float((w4 >> 8) & 0x0Fu);  q[3] = float((w4 >> 12) & 0x0Fu);
+    q[4] = float((w4 >> 16) & 0x0Fu); q[5] = float((w4 >> 20) & 0x0Fu);
+    q[6] = float((w4 >> 24) & 0x0Fu); q[7] = float(w4 >> 28);
+}
+
+static inline float verify_dot8(thread const float* q, half4 xa, half4 xb, thread float& sum) {
+    const float e0 = float(xa.x), e1 = float(xa.y), e2 = float(xa.z), e3 = float(xa.w);
+    const float e4 = float(xb.x), e5 = float(xb.y), e6 = float(xb.z), e7 = float(xb.w);
+    sum = e0 + e1 + e2 + e3 + e4 + e5 + e6 + e7;
+    float dot = 0.0f;
+    dot = fma(q[0], e0, dot); dot = fma(q[1], e1, dot);
+    dot = fma(q[2], e2, dot); dot = fma(q[3], e3, dot);
+    dot = fma(q[4], e4, dot); dot = fma(q[5], e5, dot);
+    dot = fma(q[6], e6, dot); dot = fma(q[7], e7, dot);
+    return dot;
+}
+
+kernel void verify_routed_gate_up_act(
+    device const half*                                   hidden       [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs [[buffer(1)]],
+    device half*                                         acts         [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed       [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p            [[buffer(10)]],
+    constant uint2*                                      segments     [[buffer(11)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint  sg   [[simdgroup_index_in_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]]
+) {
+    const uint R = FC_VERIFY_ROWS;
+    const uint slot = tg.y;
+    const uint f = tg.x * 8u + sg;
+    if (slot >= p.live_expert_count || f >= p.F) return;
+    const uint2 seg = segments[slot];
+    const uint n = min(seg.y, R);
+    if (n == 0) return;
+
+    device const uint8_t* expert = routed.blob[slot];
+    const uint D = p.D;
+    const uint n_groups = D / kPrefillGroupSize;
+    device const uint8_t* gW = expert + p.gate_W_off + f * (D / 2u);
+    device const uint8_t* uW = expert + p.up_W_off + f * (D / 2u);
+    device const bfloat* gS = reinterpret_cast<device const bfloat*>(expert + p.gate_s_off) + f * n_groups;
+    device const bfloat* gB = reinterpret_cast<device const bfloat*>(expert + p.gate_b_off) + f * n_groups;
+    device const bfloat* uS = reinterpret_cast<device const bfloat*>(expert + p.up_s_off) + f * n_groups;
+    device const bfloat* uB = reinterpret_cast<device const bfloat*>(expert + p.up_b_off) + f * n_groups;
+
+    device const half* xrow[kVerifyMaxRows];
+    float ga[kVerifyMaxRows], ua[kVerifyMaxRows];
+    for (uint r = 0; r < R; ++r) {
+        xrow[r] = hidden + sorted_pairs[seg.x + min(r, n - 1u)].token * p.hidden_stride_elements;
+        ga[r] = 0.0f; ua[r] = 0.0f;
+    }
+
+    const uint full_blocks = n_groups / 4u;
+    for (uint blk = 0; blk < full_blocks; ++blk) {
+        const uint byte_base = blk * 128u + lane * 4u;
+        device const ushort* gp = (device const ushort*)(gW + byte_base);
+        device const ushort* up = (device const ushort*)(uW + byte_base);
+        float qg[8], qu[8];
+        verify_unpack8(uint(gp[0]) | (uint(gp[1]) << 16), qg);
+        verify_unpack8(uint(up[0]) | (uint(up[1]) << 16), qu);
+        const uint g = blk * 4u + (lane >> 3);
+        const float gs = float(gS[g]), gb = float(gB[g]);
+        const float us = float(uS[g]), ub = float(uB[g]);
+        const uint elem = byte_base * 2u;
+        for (uint r = 0; r < R; ++r) {
+            if (r < n) {
+                const half4 xa = *((device const half4*)(xrow[r] + elem));
+                const half4 xb = *((device const half4*)(xrow[r] + elem + 4u));
+                float sum;
+                const float gd = verify_dot8(qg, xa, xb, sum);
+                const float ud = verify_dot8(qu, xa, xb, sum);
+                ga[r] = fma(gs, gd, ga[r]); ga[r] = fma(gb, sum, ga[r]);
+                ua[r] = fma(us, ud, ua[r]); ua[r] = fma(ub, sum, ua[r]);
+            }
+        }
+    }
+    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+        const uint8_t gbv = gW[g * (kPrefillGroupSize / 2u) + lane];
+        const uint8_t ubv = uW[g * (kPrefillGroupSize / 2u) + lane];
+        const float gs = float(gS[g]), gb = float(gB[g]);
+        const float us = float(uS[g]), ub = float(uB[g]);
+        for (uint r = 0; r < R; ++r) {
+            if (r < n) {
+                const float x0 = float(xrow[r][g * kPrefillGroupSize + lane * 2u]);
+                const float x1 = float(xrow[r][g * kPrefillGroupSize + lane * 2u + 1u]);
+                const float gd = fma(float(uint(gbv >> 4)), x1, float(uint(gbv & 0x0Fu)) * x0);
+                const float ud = fma(float(uint(ubv >> 4)), x1, float(uint(ubv & 0x0Fu)) * x0);
+                ga[r] = fma(gs, gd, ga[r]); ga[r] = fma(gb, x0 + x1, ga[r]);
+                ua[r] = fma(us, ud, ua[r]); ua[r] = fma(ub, x0 + x1, ua[r]);
+            }
+        }
+    }
+    for (uint r = 0; r < R; ++r) {
+        if (r < n) {
+            const float gv = simd_sum(ga[r]);
+            const float uv = simd_sum(ua[r]);
+            if (lane == 0) {
+                acts[(seg.x + r) * p.F + f] = half(prefill_gelu_pytorch_tanh(gv) * uv);
+            }
+        }
+    }
+}
+
+kernel void verify_routed_down(
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device half*                                         route_partials [[buffer(5)]],
+    device const half*                                   acts           [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    constant uint2*                                      segments       [[buffer(11)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint  sg   [[simdgroup_index_in_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]]
+) {
+    // Two down rows per SIMD share each activation load and conversion.
+    const uint R = FC_VERIFY_ROWS;
+    const uint slot = tg.y;
+    const uint d0 = (tg.x * 8u + sg) * 2u;
+    if (slot >= p.live_expert_count || d0 >= p.D) return;
+    const uint2 seg = segments[slot];
+    const uint n = min(seg.y, R);
+    if (n == 0) return;
+
+    device const uint8_t* expert = routed.blob[slot];
+    const uint F = p.F;
+    const uint n_groups = F / kPrefillGroupSize;
+    const uint d1 = min(d0 + 1u, p.D - 1u);
+    device const uint8_t* W0 = expert + p.down_W_off + d0 * (F / 2u);
+    device const uint8_t* W1 = expert + p.down_W_off + d1 * (F / 2u);
+    device const bfloat* S = reinterpret_cast<device const bfloat*>(expert + p.down_s_off);
+    device const bfloat* B = reinterpret_cast<device const bfloat*>(expert + p.down_b_off);
+
+    float acc0[kVerifyMaxRows], acc1[kVerifyMaxRows];
+    for (uint r = 0; r < R; ++r) { acc0[r] = 0.0f; acc1[r] = 0.0f; }
+
+    // F = 704 is 11 groups: the last 4-group block runs with its fourth
+    // group's lanes masked, so every group takes the vector path.
+    const uint blocks = (n_groups + 3u) / 4u;
+    for (uint blk = 0; blk < blocks; ++blk) {
+        const uint g = blk * 4u + (lane >> 3);
+        if (g >= n_groups) continue;
+        const uint byte_base = blk * 128u + lane * 4u;
+        device const ushort* wp0 = (device const ushort*)(W0 + byte_base);
+        device const ushort* wp1 = (device const ushort*)(W1 + byte_base);
+        float q0[8], q1[8];
+        verify_unpack8(uint(wp0[0]) | (uint(wp0[1]) << 16), q0);
+        verify_unpack8(uint(wp1[0]) | (uint(wp1[1]) << 16), q1);
+        const float s0 = float(S[d0 * n_groups + g]), b0 = float(B[d0 * n_groups + g]);
+        const float s1 = float(S[d1 * n_groups + g]), b1 = float(B[d1 * n_groups + g]);
+        const uint elem = byte_base * 2u;
+        for (uint r = 0; r < R; ++r) {
+            if (r < n) {
+                device const half* a = acts + (seg.x + r) * F;
+                const half4 xa = *((device const half4*)(a + elem));
+                const half4 xb = *((device const half4*)(a + elem + 4u));
+                float sum;
+                const float dot0 = verify_dot8(q0, xa, xb, sum);
+                const float dot1 = verify_dot8(q1, xa, xb, sum);
+                acc0[r] = fma(s0, dot0, acc0[r]); acc0[r] = fma(b0, sum, acc0[r]);
+                acc1[r] = fma(s1, dot1, acc1[r]); acc1[r] = fma(b1, sum, acc1[r]);
+            }
+        }
+    }
+    for (uint r = 0; r < R; ++r) {
+        if (r < n) {
+            const float v0 = simd_sum(acc0[r]);
+            const float v1 = simd_sum(acc1[r]);
+            if (lane == 0) {
+                const PrefillTokenExpertPairMSL pair = sorted_pairs[seg.x + r];
+                device half* out = route_partials + (pair.token * p.top_k + pair.rank) * p.D;
+                out[d0] = half(v0);
+                if (d0 + 1u < p.D) out[d0 + 1u] = half(v1);
+            }
+        }
+    }
+}

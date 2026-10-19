@@ -109,16 +109,32 @@ import ANEFieldfareHotpath
         }
     }
 
+    @Test func drafterIsGreedyTextOnly() throws {
+        let parsed = try Args.parse([
+            "--model", "m.gturbo", "--chat-prompt", "hi", "--temperature", "0", "--drafter", "d",
+        ])
+        #expect(parsed.drafter == "d")
+        #expect(throws: ArgsError.self) {
+            _ = try Args.parse(["--model", "m.gturbo", "--chat-prompt", "hi", "--drafter", "d"])
+        }
+        #expect(throws: ArgsError.mutuallyExclusive("--drafter", "--image")) {
+            _ = try Args.parse([
+                "--model", "m.gturbo", "--chat-prompt", "hi", "--temperature", "0",
+                "--drafter", "d", "--image", "x.png",
+            ])
+        }
+    }
+
     @Test func helpListsExactlyThePublicOptions() {
         let expected: Set<String> = [
             "--model", "--prompt", "--messages-file", "--max-new", "--max-context",
             "--temperature", "--top-k", "--top-p", "--repetition-penalty",
-            "--seed", "--stop", "--quiet", "--expert-cache-slots",
-            "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
+            "--seed", "--stop", "--quiet",
+            "--prefill", "--prefill-chunk-tokens",
             "--help", "--backend", "--fault-policy", "--prompt-file",
             "--count-tokens", "--verify-weights", "--expert-top-k", "--prefill-expert-cap",
             "--chat-prompt", "--image", "--vision-pack", "--vision-residency",
-            "--early-expert-read",
+            "--early-expert-read", "--drafter",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
         let options = Set(words.map(String.init).filter { $0.hasPrefix("--") })
@@ -128,49 +144,26 @@ import ANEFieldfareHotpath
     @Test func runtimeOptionsReachTypedConfiguration() throws {
         let arguments = try Args.parse([
             "--model", "m.gturbo", "--prompt", "hi",
-            "--expert-cache-slots", "24",
-            "--expert-cache-policy", "lru",
             "--prefill", "off",
             "--prefill-chunk-tokens", "64",
         ])
 
-        #expect(arguments.expertCacheSlots == 24)
-        #expect(arguments.expertCachePolicy == .lru)
         #expect(arguments.prefillPolicy == .off)
         #expect(arguments.prefillChunkTokens == 64)
 
         let runtime = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: true)
-        #expect(runtime.expertCacheSlots == 24)
-        #expect(runtime.modelExpertCachePolicy == .lru)
         #expect(runtime.prefillPolicy == .off)
         #expect(runtime.prefillChunkTokens == 64)
         #expect(runtime.headPath == .logits)
     }
 
     @Test func everySupportedRuntimeOptionParses() throws {
-        for value in RuntimeConfiguration.allowedExpertCacheSlots {
-            let prefill = value < RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill
-                ? "off" : "on"
-            let arguments = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "hi",
-                "--expert-cache-slots", "\(value)",
-                "--prefill", prefill,
-            ])
-            #expect(arguments.expertCacheSlots == value)
-        }
         for value in RuntimeConfiguration.allowedPrefillChunkTokens {
             let arguments = try Args.parse([
                 "--model", "m.gturbo", "--prompt", "hi",
                 "--prefill-chunk-tokens", "\(value)",
             ])
             #expect(arguments.prefillChunkTokens == value)
-        }
-        for value in ["lfu", "lru"] {
-            let arguments = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "hi",
-                "--expert-cache-policy", value,
-            ])
-            #expect(arguments.expertCachePolicy.rawValue == value)
         }
         #expect(try Args.parse([
             "--model", "m.gturbo", "--prompt", "hi", "--prefill", "on",
@@ -182,8 +175,6 @@ import ANEFieldfareHotpath
 
     @Test func unsupportedRuntimeOptionValuesAreRejected() {
         let invalidValues = [
-            ("--expert-cache-slots", "7"),
-            ("--expert-cache-policy", "fifo"),
             ("--prefill", "yes"),
             ("--prefill-chunk-tokens", "8192"),
         ]
@@ -195,34 +186,22 @@ import ANEFieldfareHotpath
             }
         }
 
-        #expect(throws: ArgsError.invalidValue(
-            flag: "--expert-cache-slots", value: "8 requires --prefill off")) {
-            _ = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "hi",
-                "--expert-cache-slots", "8", "--prefill", "on",
-            ])
+    }
+
+    /// The page cache replaced the slot cache, so its knobs are gone.
+    @Test func removedExpertCacheFlagsAreUnknown() {
+        for (flag, value) in [("--expert-cache-slots", "48"), ("--expert-cache-policy", "lru")] {
+            #expect(throws: ArgsError.unknownFlag(flag)) {
+                _ = try Args.parse(["--model", "m.gturbo", "--prompt", "hi", flag, value])
+            }
         }
     }
 
     @Test func programmaticArgumentsCannotReachRuntimePreconditions() {
         var arguments = Args(model: "m.gturbo", prompt: "hi")
-        arguments.expertCacheSlots = 7
-        #expect(throws: ArgsError.invalidValue(
-            flag: "--expert-cache-slots", value: "7")) {
-            _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
-        }
-
-        arguments.expertCacheSlots = RuntimeConfiguration.production.expertCacheSlots
         arguments.prefillChunkTokens = 8192
         #expect(throws: ArgsError.invalidValue(
             flag: "--prefill-chunk-tokens", value: "8192")) {
-            _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
-        }
-
-        arguments.prefillChunkTokens = RuntimeConfiguration.production.prefillChunkTokens
-        arguments.expertCacheSlots = 8
-        #expect(throws: ArgsError.invalidValue(
-            flag: "--expert-cache-slots", value: "8 requires --prefill off")) {
             _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         }
     }

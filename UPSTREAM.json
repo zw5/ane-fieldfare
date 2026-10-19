@@ -16,7 +16,7 @@
   "All eight routed experts in ANE mode",
   "1024-token prefill default and 32/64/128/256/512/1024 selections",
   "Reference-order SIMD attention, including upstream image visibility",
-  "48-slot LFU default expert cache",
+  "Routed experts served zero-copy from the OS page cache (no app-level slot cache)",
   "32K CLI context default and legacy --prefill-chunk alias",
   "Device supervisor with ANE routed-prefill guest, local profiling and numerical oracles"
  ],
@@ -31,14 +31,13 @@
    "files": [
     "Runtime/Inference/NextLayerExpertPrefetcher.swift",
     "Runtime/Inference/NextLayerGuessWeights.swift",
-    "Infrastructure/Streaming/PreadExpertStreamer.swift (staging buffers, adoption)",
     "Kernels/MoE/MoE.swift (encodeRouterLogitsGemma4)",
     "NextLayerGuess/"
    ],
    "local_changes": [
-    "early reads never block decode: a layer with reads still in flight issues none",
-    "candidates limited to the guess's top 8, for a 48-slot cache",
-    "early reads use split concurrent preads"
+    "early reads are F_RDADVISE advisories into the page cache: no staging buffers, never blocking",
+    "candidates limited to the guess's top 8 and absent from memory",
+    "the same guess advises each verify row's next-layer experts"
    ]
   }
  ]

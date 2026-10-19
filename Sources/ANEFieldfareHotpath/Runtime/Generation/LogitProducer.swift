@@ -10,6 +10,14 @@ public protocol LogitProducer: AnyObject, Sendable {
     func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws
 }
 
+/// A producer whose head leaves the greedy next token on the device instead of
+/// writing logits; the generation loop reads `lastGreedyToken` after each
+/// `produce`.
+public protocol FusedGreedyProducer: LogitProducer {
+    var usesFusedGreedyHead: Bool { get }
+    var lastGreedyToken: UInt32 { get }
+}
+
 protocol ContextWindowReporting: Sendable {
     var maxContext: Int { get }
 }

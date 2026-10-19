@@ -22,8 +22,7 @@ retain the same Apache 2.0 attribution and license. This import does not add
 the upstream GUI, server, or installer executables.
 
 The decode early expert read (`Runtime/Inference/NextLayerExpertPrefetcher.swift`,
-`Runtime/Inference/NextLayerGuessWeights.swift`, the staging-buffer adoption in
-`Infrastructure/Streaming/PreadExpertStreamer.swift`) and the fitted next-layer
+`Runtime/Inference/NextLayerGuessWeights.swift`) and the fitted next-layer
 guess file `Sources/ANEFieldfareHotpath/NextLayerGuess/gemma-4-26b-a4b-it-4bit.bin`
 are adapted from Turbo Fieldfare pull requests #187 and #188 by maxslamdunk
 (https://github.com/maxslamdunk/turbo-fieldfare, branch

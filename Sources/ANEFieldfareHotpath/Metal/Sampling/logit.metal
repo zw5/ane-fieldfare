@@ -787,107 +787,20 @@ void lm_head_greedy_int4_rows_reduce(
 }
 
 
-// Greedy lm-head for up to kLMHeadMaxRows hidden rows at once, as speculative
-// verification and drafting need. A threadgroup of 32 SIMD groups covers 32
-// vocabulary rows; each 256-element block of the input rows is staged once in
-// threadgroup memory, so the table streams once and the inputs once per 32
-// rows. Summaries are `[row_group][rows][2]`.
-constant constexpr uint kLMHeadMaxRows = 16;
-constant constexpr uint kLMHeadMultiRowSGs = 32;
 
+
+// Greedy token per row of FP32 logits `[rows][V]`: one threadgroup per row.
+// Non-finite logits never win; ties go to the lowest index, as in the fused
+// greedy heads. Also writes the greedy token's softmax probability under the
+// final logit softcap (`softcap` 0 disables it), from an online max/sum, as a
+// drafter's per-token confidence.
 [[kernel, max_total_threads_per_threadgroup(1024)]]
-void lm_head_greedy_int4_multirow_chunk(
-    device const half*    x_normed     [[buffer(0)]],   // [rows][D]
-    device const uint8_t* W            [[buffer(1)]],
-    device const bfloat*  scales       [[buffer(2)]],
-    device const bfloat*  biases       [[buffer(3)]],
-    device       float*   summaries    [[buffer(4)]],
-    constant     uint&    D            [[buffer(5)]],
-    constant     uint&    V            [[buffer(6)]],
-    constant     uint&    rows         [[buffer(7)]],
-    uint  tg_idx         [[threadgroup_position_in_grid]],
-    uint  tid            [[thread_index_in_threadgroup]],
-    uint  simd_lane_id   [[thread_index_in_simdgroup]],
-    uint  simd_group_id  [[simdgroup_index_in_threadgroup]]
-) {
-    threadgroup half4 xs[kLMHeadMaxRows * 64];
-    threadgroup float partial_v[kLMHeadMultiRowSGs][kLMHeadMaxRows];
-    threadgroup uint  partial_i[kLMHeadMultiRowSGs][kLMHeadMaxRows];
-    const uint vrow = tg_idx * kLMHeadMultiRowSGs + simd_group_id;
-    const bool valid = vrow < V;
-    const uint R = min(rows, kLMHeadMaxRows);
-    const uint n_groups  = D / kLMHeadGroupSize;
-    device const uint8_t* W_row = W      + min(vrow, V - 1) * (D / 2u);
-    device const bfloat*  s_row = scales + min(vrow, V - 1) * n_groups;
-    device const bfloat*  b_row = biases + min(vrow, V - 1) * n_groups;
-
-    float acc[kLMHeadMaxRows];
-    for (uint r = 0; r < kLMHeadMaxRows; ++r) acc[r] = 0.0f;
-    const uint full_blocks = n_groups / 4u;   // D is a multiple of 256
-    for (uint blk = 0; blk < full_blocks; ++blk) {
-        for (uint i = tid; i < R * 64u; i += kLMHeadMultiRowSGs * 32u) {
-            const uint r = i / 64u, c = i % 64u;
-            xs[i] = *((device const half4*)(x_normed + r * D + blk * 256u) + c);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (valid) {
-            const uint byte_base = blk * 128u + simd_lane_id * 4u;
-            device const ushort* wp = (device const ushort*)(W_row + byte_base);
-            const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
-            const uint g  = blk * 4u + (simd_lane_id >> 3);
-            const float s = float(s_row[g]);
-            const float b = float(b_row[g]);
-            float w[8];
-            for (uint j = 0; j < 4; ++j) {
-                const uint byte = (w4 >> (8u * j)) & 0xFFu;
-                w[2 * j] = float(byte & 0x0Fu);
-                w[2 * j + 1] = float(byte >> 4);
-            }
-            for (uint r = 0; r < R; ++r) {
-                const float4 xa = float4(xs[r * 64u + simd_lane_id * 2u]);
-                const float4 xb = float4(xs[r * 64u + simd_lane_id * 2u + 1u]);
-                float dot = w[0] * xa.x;
-                dot = fma(w[1], xa.y, dot); dot = fma(w[2], xa.z, dot); dot = fma(w[3], xa.w, dot);
-                dot = fma(w[4], xb.x, dot); dot = fma(w[5], xb.y, dot);
-                dot = fma(w[6], xb.z, dot); dot = fma(w[7], xb.w, dot);
-                const float sum = xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
-                acc[r] = fma(b, sum, fma(s, dot, acc[r]));
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-    for (uint r = 0; r < R; ++r) {
-        const float z = simd_sum(acc[r]);
-        if (simd_lane_id == 0) {
-            const bool ok = valid && isfinite(z);
-            partial_v[simd_group_id][r] = ok ? z : -INFINITY;
-            partial_i[simd_group_id][r] = ok ? vrow : 0xFFFFFFFFu;
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (simd_group_id == 0) {
-        for (uint r = 0; r < R; ++r) {
-            const float v = partial_v[simd_lane_id][r];
-            const uint idx = partial_i[simd_lane_id][r];
-            const float v_all = simd_max(v);
-            uint i_all = (v == v_all) ? idx : 0xFFFFFFFFu;
-            i_all = simd_min(i_all);
-            if (simd_lane_id == 0) {
-                device float* slot = summaries + (tg_idx * R + r) * kLMHeadRowSummaryStride;
-                slot[0] = v_all;
-                slot[1] = as_type<float>(i_all);
-            }
-        }
-    }
-}
-
-/// One threadgroup per input row; reduces that row's column of summaries.
-[[kernel, max_total_threads_per_threadgroup(256)]]
-void lm_head_greedy_int4_multirow_reduce(
-    device const float*   summaries    [[buffer(0)]],
+void argmax_rows_f32(
+    device const float*   logits       [[buffer(0)]],
     device       uint*    out_tokens   [[buffer(1)]],
-    constant     uint&    row_groups   [[buffer(2)]],
-    constant     uint&    rows         [[buffer(3)]],
+    constant     uint&    V            [[buffer(2)]],
+    device       float*   out_conf     [[buffer(3)]],
+    constant     float&   softcap      [[buffer(4)]],
     uint  r              [[threadgroup_position_in_grid]],
     uint  lid            [[thread_position_in_threadgroup]],
     uint  lsize          [[threads_per_threadgroup]],
@@ -895,36 +808,43 @@ void lm_head_greedy_int4_multirow_reduce(
     uint  simd_group_id  [[simdgroup_index_in_threadgroup]],
     uint  simdgroups     [[simdgroups_per_threadgroup]]
 ) {
-    threadgroup float partial_v[kLogitMaxSimdGroups];
-    threadgroup uint  partial_i[kLogitMaxSimdGroups];
-    float best_v = -INFINITY;
+    threadgroup float partial_v[32];
+    threadgroup uint  partial_i[32];
+    threadgroup float partial_m[32];
+    threadgroup float partial_s[32];
+    device const float* row = logits + r * V;
+    float best = -INFINITY;
     uint best_i = 0xFFFFFFFFu;
-    for (uint i = lid; i < row_groups; i += lsize) {
-        device const float* slot = summaries + (i * rows + r) * kLMHeadRowSummaryStride;
-        const float v = slot[0];
-        const uint idx = as_type<uint>(slot[1]);
-        if (v > best_v || (v == best_v && idx < best_i)) {
-            best_v = v;
-            best_i = idx;
-        }
+    float m = -INFINITY, sum = 0.0f;   // online softmax over capped logits
+    for (uint i = lid; i < V; i += lsize) {
+        const float v = row[i];
+        if (!isfinite(v)) continue;
+        if (v > best) { best = v; best_i = i; }
+        const float c = softcap > 0.0f ? softcap * precise::tanh(v / softcap) : v;
+        if (c > m) { sum = sum * exp(m - c) + 1.0f; m = c; } else { sum += exp(c - m); }
     }
-    float v_simd = simd_max(best_v);
-    uint i_simd = (best_v == v_simd) ? best_i : 0xFFFFFFFFu;
-    i_simd = simd_min(i_simd);
+    const float bmax = simd_max(best);
+    const uint idx = simd_min(best == bmax ? best_i : 0xFFFFFFFFu);
+    const float mm = simd_max(m);
+    const float ss = simd_sum(m == -INFINITY ? 0.0f : sum * exp(m - mm));
     if (simd_lane_id == 0) {
-        partial_v[simd_group_id] = v_simd;
-        partial_i[simd_group_id] = i_simd;
+        partial_v[simd_group_id] = bmax; partial_i[simd_group_id] = idx;
+        partial_m[simd_group_id] = mm; partial_s[simd_group_id] = ss;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (simd_group_id == 0) {
-        const bool active = simd_lane_id < simdgroups;
-        const float v = active ? partial_v[simd_lane_id] : -INFINITY;
-        const uint idx = active ? partial_i[simd_lane_id] : 0xFFFFFFFFu;
-        const float v_all = simd_max(v);
-        uint i_all = (v == v_all) ? idx : 0xFFFFFFFFu;
-        i_all = simd_min(i_all);
+        const bool live = simd_lane_id < simdgroups;
+        const float v = live ? partial_v[simd_lane_id] : -INFINITY;
+        const uint i = live ? partial_i[simd_lane_id] : 0xFFFFFFFFu;
+        const float v2 = simd_max(v);
+        const uint j = simd_min(v == v2 ? i : 0xFFFFFFFFu);
+        const float pm = live ? partial_m[simd_lane_id] : -INFINITY;
+        const float m2 = simd_max(pm);
+        const float s2 = simd_sum(pm == -INFINITY ? 0.0f : partial_s[simd_lane_id] * exp(pm - m2));
         if (simd_lane_id == 0) {
-            out_tokens[r] = (i_all == 0xFFFFFFFFu) ? 0u : i_all;
+            out_tokens[r] = j;
+            const float cb = softcap > 0.0f ? softcap * precise::tanh(v2 / softcap) : v2;
+            out_conf[r] = (j == 0xFFFFFFFFu || s2 <= 0.0f) ? 0.0f : exp(cb - m2) / s2;
         }
     }
 }

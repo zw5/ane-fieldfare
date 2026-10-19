@@ -16,8 +16,8 @@ private final class SharedSurfaceOwner: @unchecked Sendable {
     init(_ surface: IOSurfaceRef) { self.surface = surface }
 }
 
-/// Expert fetches are internally locked per layer streamer, so concurrent
-/// lookahead reads may share the model value.
+/// Expert reads only fill the page cache, so concurrent lookahead reads may
+/// share the model value.
 private struct ConcurrentExpertReader: @unchecked Sendable {
     let model: Model
 }
@@ -42,7 +42,6 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
     struct Job {
         let view: TensorView
         let start: Int, count: Int
-        let slots: [Int]
     }
     private let handle: OpaquePointer
     private let context: MetalContext
@@ -327,49 +326,38 @@ final class ANERoutedPrefillBackend: @unchecked Sendable {
             staging.removeAll(keepingCapacity: true); ordinal += 1
         }
         // Ordered lookahead: up to `fetchLookahead` upcoming groups read
-        // concurrently into reserved cache slots, consumed in group order so
-        // request batches are identical to a sequential fetch.
-        struct Fetch {
-            let plan: RoutedExpertFetchPlan
-            let task: Task<[TensorView], Error>
-        }
-        var inflight: [Fetch] = []
+        // concurrently, consumed in group order so request batches are
+        // identical to a sequential fetch.
+        var inflight: [Task<[TensorView], Error>] = []
         var nextGroup = 0
-        func reservedSlots() -> Set<Int> {
-            Set(pending.flatMap { $0.jobs.flatMap(\.slots) } + staging.flatMap(\.slots)
-                + inflight.flatMap(\.plan.assignedSlots))
-        }
         func launch() throws {
             while inflight.count < fetchLookahead, nextGroup < routes.groups.count {
                 let expert = Int(routes.groups[nextGroup].expert)
-                guard let plan = try model.planRoutedExpertsIfPossible(
-                    layer: layer, experts: [expert], avoidingSlots: reservedSlots()) else { return }
                 let reader = ConcurrentExpertReader(model: model)
-                inflight.append(Fetch(plan: plan, task: Task { [reader, plan] in
-                    try await reader.model.fetchRoutedExperts(plan: plan)
-                }))
-                readBytes += UInt64(plan.misses.count) * 3_358_720
+                if try !model.nonResidentRoutedExperts(layer: layer, experts: [expert]).isEmpty {
+                    readBytes += UInt64(model.routedExpertBytes)
+                }
+                inflight.append(Task { [reader] in
+                    try await reader.model.fetchRoutedExperts(layer: layer, experts: [expert])
+                })
                 nextGroup += 1
             }
         }
         defer {
-            for fetch in inflight { fetch.task.cancel() }
+            for fetch in inflight { fetch.cancel() }
             while !pending.isEmpty { try? drain() }
         }
         for group in routes.groups {
             try Task.checkCancellation()
             try launch()
-            while inflight.isEmpty, !pending.isEmpty { try drain(); try launch() }
-            if inflight.isEmpty && !staging.isEmpty { try issue(); commitLast(); try drain(); try launch() }
-            guard !inflight.isEmpty else { throw ANEExecutionError.rejected("routed cache cannot place ANE expert") }
             let fetch = inflight.removeFirst()
             let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            let views = try await fetch.task.value
+            let views = try await fetch.value
             readNanos += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started
             guard let view = views.first else { throw ModelError.residentBufferWrapFailed }
             for offset in stride(from: 0, to: Int(group.pairCount), by: lanes) {
                 staging.append(Job(view: view, start: Int(group.pairStart) + offset,
-                                   count: min(lanes, Int(group.pairCount) - offset), slots: fetch.plan.assignedSlots))
+                                   count: min(lanes, Int(group.pairCount) - offset)))
                 if staging.count == batchExperts { try issue() }
             }
         }

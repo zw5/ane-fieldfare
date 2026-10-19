@@ -22,11 +22,6 @@ public enum RuntimePrefillAttentionPath: String, Codable, Sendable {
     case fullTensorOps2DValidityV2 = "full-tensorops-2d-validity-v2"
 }
 
-public enum RuntimeExpertCachePolicy: String, Codable, Sendable {
-    case lfu
-    case lru
-}
-
 /// What scores the next layer's experts for the decode early read, or `off`.
 /// `router` uses the next layer's own router; `fitted` uses the fitted guess
 /// shipped for this model, or the router for a model with none. See
@@ -38,13 +33,8 @@ public enum RuntimeEarlyExpertRead: String, Codable, Sendable, CaseIterable {
 }
 
 public struct RuntimeConfiguration: Sendable, Equatable {
-    public static let defaultExpertCacheSlots = 48
     public static let defaultPrefillChunkTokens = 1024
-    // Cache capacity is separate from prefill scratch and ANE carriers. Check
-    // the complete process footprint on the intended prompt and context size.
-    public static let allowedExpertCacheSlots = [8, 16, 17, 18, 24, 32, 48, 64]
     public static let allowedPrefillChunkTokens = PrefillRuntimeConfig.allowedChunkTokens
-    public static let minimumExpertCacheSlotsForChunkedPrefill = 16
     /// The one rendering shared by every help text and every rejection that
     /// names one of the arrays above, so neither can name a value the guard
     /// does not accept: the hardcoded "32, 64, or 128" outlived the widening of
@@ -69,9 +59,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
         }
     }
 
-    public let expertCacheSlots: Int
     public let backend: RuntimeBackend
-    public let expertCachePolicy: RuntimeExpertCachePolicy
     public let prefillPolicy: RuntimePrefillPolicy
     public let prefillChunkTokens: Int
     public let prefillAttentionPath: RuntimePrefillAttentionPath
@@ -89,8 +77,6 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public let earlyExpertRead: RuntimeEarlyExpertRead
 
     public init(backend: RuntimeBackend = .metal,
-                expertCacheSlots: Int = RuntimeConfiguration.defaultExpertCacheSlots,
-                expertCachePolicy: RuntimeExpertCachePolicy = .lfu,
                 prefillEnabled: Bool = true,
                 prefillChunkTokens: Int = RuntimeConfiguration.defaultPrefillChunkTokens,
                 prefillAttentionPath: RuntimePrefillAttentionPath = .causalSIMD,
@@ -99,8 +85,6 @@ public struct RuntimeConfiguration: Sendable, Equatable {
                 prefillExpertUnionCap: Int? = nil,
                 faultPolicy: RuntimeFaultPolicy = .failClosed,
                 earlyExpertRead: RuntimeEarlyExpertRead = .fitted) {
-        precondition(Self.allowedExpertCacheSlots.contains(expertCacheSlots),
-                     "unsupported expert-cache slot count")
         precondition(Self.allowedPrefillChunkTokens.contains(prefillChunkTokens),
                      "unsupported prefill chunk size")
         precondition((1...8).contains(activeRoutedExperts),
@@ -108,9 +92,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
         precondition(prefillExpertUnionCap == nil ||
                      (1...128).contains(prefillExpertUnionCap!),
                      "prefill expert union cap must be in 1...128")
-        self.expertCacheSlots = expertCacheSlots
         self.backend = backend
-        self.expertCachePolicy = expertCachePolicy
         self.prefillPolicy = prefillEnabled ? .chunked : .off
         self.prefillChunkTokens = prefillChunkTokens
         self.prefillAttentionPath = prefillAttentionPath
@@ -133,8 +115,5 @@ public struct RuntimeConfiguration: Sendable, Equatable {
         case .chunked:
             return .production(chunkTokens: prefillChunkTokens)
         }
-    }
-    public var modelExpertCachePolicy: ExpertCachePolicy {
-        expertCachePolicy == .lru ? .lru : .lfu
     }
 }

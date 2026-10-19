@@ -25,8 +25,6 @@ public struct Args: Equatable, Sendable {
     public var seed: UInt64?
     public var stops: [String]
     public var quiet: Bool
-    public var expertCacheSlots: Int
-    public var expertCachePolicy: RuntimeExpertCachePolicy
     public var prefillPolicy: RuntimePrefillPolicy
     public var prefillChunkTokens: Int
     /// `--prefill-chunk-tokens auto`: the size is decided once the prompt length
@@ -34,6 +32,8 @@ public struct Args: Equatable, Sendable {
     public var prefillChunkTokensAuto: Bool
     public var faultPolicy: RuntimeFaultPolicy
     public var earlyExpertRead: RuntimeEarlyExpertRead
+    /// DFlash drafter directory; enables speculative greedy decoding.
+    public var drafter: String?
 
     public init(model: String,
                 backend: RuntimeBackend = .metal,
@@ -57,14 +57,14 @@ public struct Args: Equatable, Sendable {
                 seed: UInt64? = nil,
                 stops: [String] = [],
                 quiet: Bool = false,
-                expertCacheSlots: Int = RuntimeConfiguration.production.expertCacheSlots,
-                expertCachePolicy: RuntimeExpertCachePolicy = RuntimeConfiguration.production.expertCachePolicy,
                 prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration.production.prefillPolicy,
                 prefillChunkTokens: Int = RuntimeConfiguration.production.prefillChunkTokens,
                 prefillChunkTokensAuto: Bool = true,
                 faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration.production.faultPolicy,
-                earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration.production.earlyExpertRead) {
+                earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration.production.earlyExpertRead,
+                drafter: String? = nil) {
         self.model = model
+        self.drafter = drafter
         self.earlyExpertRead = earlyExpertRead
         self.backend = backend
         self.faultPolicy = faultPolicy
@@ -88,8 +88,6 @@ public struct Args: Equatable, Sendable {
         self.seed = seed
         self.stops = stops
         self.quiet = quiet
-        self.expertCacheSlots = expertCacheSlots
-        self.expertCachePolicy = expertCachePolicy
         self.prefillPolicy = prefillPolicy
         self.prefillChunkTokens = prefillChunkTokens
         self.prefillChunkTokensAuto = prefillChunkTokensAuto
@@ -104,7 +102,6 @@ public enum ArgsError: Error, Equatable, CustomStringConvertible {
     case requiredMissing(String)
     case mutuallyExclusive(String, String)
     case modeMissing
-    case imagePromptNeedsExpertCacheSlots(have: Int, need: Int)
 
     public var description: String {
         switch self {
@@ -116,10 +113,6 @@ public enum ArgsError: Error, Equatable, CustomStringConvertible {
         case .mutuallyExclusive(let a, let b): return "\(a) and \(b) are mutually exclusive"
         case .modeMissing:
             return "one of --prompt, --prompt-file, --chat-prompt or --messages-file is required"
-        case .imagePromptNeedsExpertCacheSlots(let have, let need):
-            return "--image requires chunked prefill, which needs at least \(need) "
-                + "expert-cache slots; --expert-cache-slots \(have) cannot serve it: "
-                + "raise --expert-cache-slots to \(need) or more, or drop --image"
         }
     }
 }
@@ -172,13 +165,14 @@ extension Args {
       --seed <uint64>            Deterministic sampling seed (default off).
       --stop <string>            Stop substring (repeatable).
       --quiet                    Suppress the timing footer.
-      --expert-cache-slots <n>   Expert-cache slots: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedExpertCacheSlots)) (default \(RuntimeConfiguration.defaultExpertCacheSlots)).
-      --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --early-expert-read <s>    Decode early read of the next layer's likeliest
                                  experts in idle storage time: off, router or
                                  fitted (default fitted).
+      --drafter <dir>            DFlash drafter checkpoint: speculative greedy
+                                 decoding, with each step's verify length chosen
+                                 from measured cost and acceptance. Requires
+                                 --temperature 0 and a text prompt.
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
-                                 Chunked prefill requires 16 or more cache slots.
       --prefill-chunk-tokens <n|auto>
                                  Prefill chunk size: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedPrefillChunkTokens, alsoAccepting: ["auto"]))
                                  (default auto). Each chunk re-reads the routed
@@ -203,36 +197,12 @@ extension Args {
         guard backend != .hybridANE || (activeExperts == 8 && expertCap == nil) else {
             throw ArgsError.invalidValue(flag: "--backend", value: "hybrid-ane requires all eight routed experts and no prefill expert cap")
         }
-        // Images reach the runtime two ways, `--image` and `image_file` parts
-        // inside `--messages-file`, and only the first fills `images`. Asking
-        // the caller keeps the second from surviving validation and dying in
-        // the routed tile scheduler after the model load and every GPU encode.
-        guard !imagePrompt
-                || expertCacheSlots
-                >= RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill else {
-            throw ArgsError.imagePromptNeedsExpertCacheSlots(
-                have: expertCacheSlots,
-                need: RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill)
-        }
-        guard RuntimeConfiguration.allowedExpertCacheSlots.contains(expertCacheSlots) else {
-            throw ArgsError.invalidValue(
-                flag: "--expert-cache-slots", value: "\(expertCacheSlots)")
-        }
         guard RuntimeConfiguration.allowedPrefillChunkTokens.contains(prefillChunkTokens) else {
             throw ArgsError.invalidValue(
                 flag: "--prefill-chunk-tokens", value: "\(prefillChunkTokens)")
         }
-        let chunkedPrefillSupported = expertCacheSlots >=
-            RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill
-        guard prefillPolicy == .off || chunkedPrefillSupported else {
-            throw ArgsError.invalidValue(
-                flag: "--expert-cache-slots",
-                value: "\(expertCacheSlots) requires --prefill off")
-        }
         return RuntimeConfiguration(
             backend: backend,
-            expertCacheSlots: expertCacheSlots,
-            expertCachePolicy: expertCachePolicy,
             prefillEnabled: prefillPolicy == .chunked,
             prefillChunkTokens: prefillChunkTokens,
             prefillAttentionPath: attention,
@@ -268,12 +238,11 @@ extension Args {
         var stops: [String] = []
         var quiet = false
         let runtimeDefaults = RuntimeConfiguration.production
-        var expertCacheSlots = runtimeDefaults.expertCacheSlots
-        var expertCachePolicy = runtimeDefaults.expertCachePolicy
         var prefillPolicy = runtimeDefaults.prefillPolicy
         var prefillChunkTokens = runtimeDefaults.prefillChunkTokens
         var prefillChunkTokensAuto = true
         var earlyExpertRead = runtimeDefaults.earlyExpertRead
+        var drafter: String?
 
         var index = 0
         while index < argv.count {
@@ -372,25 +341,14 @@ extension Args {
                 seed = parsed
             case "--stop":
                 stops.append(try takeValue(argv, &index, flag: flag))
-            case "--expert-cache-slots":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Int(value),
-                      RuntimeConfiguration.allowedExpertCacheSlots.contains(parsed) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                expertCacheSlots = parsed
             case "--early-expert-read":
                 let value = try takeValue(argv, &index, flag: flag)
                 guard let parsed = RuntimeEarlyExpertRead(rawValue: value) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 earlyExpertRead = parsed
-            case "--expert-cache-policy":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = RuntimeExpertCachePolicy(rawValue: value) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                expertCachePolicy = parsed
+            case "--drafter":
+                drafter = try takeValue(argv, &index, flag: flag)
             case "--prefill":
                 let value = try takeValue(argv, &index, flag: flag)
                 switch value {
@@ -431,11 +389,6 @@ extension Args {
         if prompt != nil, !images.isEmpty {
             throw ArgsError.mutuallyExclusive("--prompt", "--image")
         }
-        let minimumSlots = RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill
-        if !images.isEmpty, expertCacheSlots < minimumSlots {
-            throw ArgsError.imagePromptNeedsExpertCacheSlots(
-                have: expertCacheSlots, need: minimumSlots)
-        }
         if !images.isEmpty, chatPrompt == nil {
             // Naming the flag the user actually left out. Reporting a conflict
             // with `--messages-file` sent them looking for a flag they never
@@ -452,6 +405,13 @@ extension Args {
                                     ("--messages-file", messagesFile != nil), ("--image", !images.isEmpty)] where present {
                 throw ArgsError.mutuallyExclusive("--prompt-file", flag)
             }
+        }
+        if drafter != nil, temperature != 0 || repetitionPenalty != 1 {
+            throw ArgsError.invalidValue(
+                flag: "--drafter", value: "speculative decoding is greedy: use --temperature 0")
+        }
+        if drafter != nil, !images.isEmpty {
+            throw ArgsError.mutuallyExclusive("--drafter", "--image")
         }
         if temperature > 0, topK == nil, let topP, topP < 1 {
             throw ArgsError.invalidValue(
@@ -480,13 +440,12 @@ extension Args {
                              seed: seed,
                              stops: stops,
                              quiet: quiet,
-                             expertCacheSlots: expertCacheSlots,
-                             expertCachePolicy: expertCachePolicy,
                              prefillPolicy: prefillPolicy,
                              prefillChunkTokens: prefillChunkTokens,
                              prefillChunkTokensAuto: prefillChunkTokensAuto,
                              faultPolicy: faultPolicy,
-                             earlyExpertRead: earlyExpertRead)
+                             earlyExpertRead: earlyExpertRead,
+                             drafter: drafter)
         _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         return arguments
     }

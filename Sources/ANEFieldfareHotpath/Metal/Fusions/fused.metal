@@ -82,35 +82,15 @@ inline void fused_rope_neox_pair(thread float& x0,
 // kernel boundary where RMSNorm writes FP16 and RoPE reads FP16.
 // ============================================================================
 
-[[kernel, max_total_threads_per_threadgroup(kFusedThreads)]]
-void fused_qkv_epilogue(
-    device       half*   q              [[buffer(0)]],  // [num_q_heads, head_dim]
-    device       half*   k              [[buffer(1)]],  // [num_kv_heads, head_dim]
-    device       half*   v              [[buffer(2)]],  // [num_kv_heads, head_dim]
-    device const bfloat* q_weight       [[buffer(3)]],  // [head_dim]
-    device const bfloat* k_weight       [[buffer(4)]],  // [head_dim]
-    constant     uint&   head_dim       [[buffer(5)]],
-    constant     uint&   num_q_heads    [[buffer(6)]],
-    constant     uint&   num_kv_heads   [[buffer(7)]],
-    constant     uint&   position       [[buffer(8)]],
-    constant     float&  theta_base     [[buffer(9)]],
-    constant     uint&   rotated_pairs  [[buffer(10)]],
-    constant     float&  rms_eps        [[buffer(11)]],
-    uint  lid              [[thread_position_in_threadgroup]],
-    uint  lsize            [[threads_per_threadgroup]],
-    uint  simd_lane_id     [[thread_index_in_simdgroup]],
-    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
-    uint  simdgroups       [[simdgroups_per_threadgroup]],
-    uint  head_group       [[threadgroup_position_in_grid]]
+static inline void fused_qkv_epilogue_head(
+    device half* q, device half* k, device half* v,
+    device const bfloat* q_weight, device const bfloat* k_weight,
+    uint HD, uint NQ, uint NKV, uint RP,
+    uint position, float theta_base, float rms_eps,
+    uint lid, uint lsize, uint simd_lane_id, uint simd_group_id, uint simdgroups,
+    uint head_group,
+    threadgroup half* head_tg, threadgroup float* partial
 ) {
-    threadgroup half  head_tg[kFusedMaxHeadDim];
-    threadgroup float partial[kFusedMaxSimdGroups];
-
-    const uint HD = fused_fc_head_dim(head_dim);
-    const uint NQ = fused_fc_num_q_heads(num_q_heads);
-    const uint NKV = fused_fc_num_kv_heads(num_kv_heads);
-    const uint RP = fused_fc_rotary(rotated_pairs);
-
     const bool is_q = head_group < NQ;
     const bool is_k = !is_q && head_group < (NQ + NKV);
     const bool is_v = !is_q && !is_k && head_group < (NQ + 2u * NKV);
@@ -170,6 +150,74 @@ void fused_qkv_epilogue(
         dst[pair] = half(x0);
         dst[half_dim + pair] = half(x1);
     }
+}
+
+
+[[kernel, max_total_threads_per_threadgroup(kFusedThreads)]]
+void fused_qkv_epilogue(
+    device       half*   q              [[buffer(0)]],  // [num_q_heads, head_dim]
+    device       half*   k              [[buffer(1)]],  // [num_kv_heads, head_dim]
+    device       half*   v              [[buffer(2)]],  // [num_kv_heads, head_dim]
+    device const bfloat* q_weight       [[buffer(3)]],  // [head_dim]
+    device const bfloat* k_weight       [[buffer(4)]],  // [head_dim]
+    constant     uint&   head_dim       [[buffer(5)]],
+    constant     uint&   num_q_heads    [[buffer(6)]],
+    constant     uint&   num_kv_heads   [[buffer(7)]],
+    constant     uint&   position       [[buffer(8)]],
+    constant     float&  theta_base     [[buffer(9)]],
+    constant     uint&   rotated_pairs  [[buffer(10)]],
+    constant     float&  rms_eps        [[buffer(11)]],
+    uint  lid              [[thread_position_in_threadgroup]],
+    uint  lsize            [[threads_per_threadgroup]],
+    uint  simd_lane_id     [[thread_index_in_simdgroup]],
+    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
+    uint  simdgroups       [[simdgroups_per_threadgroup]],
+    uint  head_group       [[threadgroup_position_in_grid]]
+) {
+    threadgroup half  head_tg[kFusedMaxHeadDim];
+    threadgroup float partial[kFusedMaxSimdGroups];
+    fused_qkv_epilogue_head(q, k, v, q_weight, k_weight,
+                            fused_fc_head_dim(head_dim), fused_fc_num_q_heads(num_q_heads),
+                            fused_fc_num_kv_heads(num_kv_heads), fused_fc_rotary(rotated_pairs),
+                            position, theta_base, rms_eps,
+                            lid, lsize, simd_lane_id, simd_group_id, simdgroups, head_group,
+                            head_tg, partial);
+}
+
+// fused_qkv_epilogue over the rows of a block: grid row y is token y at
+// position + y, with Q and K/V rows `q_stride` and `kv_stride` apart.
+[[kernel, max_total_threads_per_threadgroup(kFusedThreads)]]
+void fused_qkv_epilogue_rows(
+    device       half*   q              [[buffer(0)]],
+    device       half*   k              [[buffer(1)]],
+    device       half*   v              [[buffer(2)]],
+    device const bfloat* q_weight       [[buffer(3)]],
+    device const bfloat* k_weight       [[buffer(4)]],
+    constant     uint&   head_dim       [[buffer(5)]],
+    constant     uint&   num_q_heads    [[buffer(6)]],
+    constant     uint&   num_kv_heads   [[buffer(7)]],
+    constant     uint&   position       [[buffer(8)]],
+    constant     float&  theta_base     [[buffer(9)]],
+    constant     uint&   rotated_pairs  [[buffer(10)]],
+    constant     float&  rms_eps        [[buffer(11)]],
+    constant     uint&   q_stride       [[buffer(12)]],
+    constant     uint&   kv_stride      [[buffer(13)]],
+    uint2 lid              [[thread_position_in_threadgroup]],
+    uint2 lsize            [[threads_per_threadgroup]],
+    uint  simd_lane_id     [[thread_index_in_simdgroup]],
+    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
+    uint  simdgroups       [[simdgroups_per_threadgroup]],
+    uint2 tg               [[threadgroup_position_in_grid]]
+) {
+    threadgroup half  head_tg[kFusedMaxHeadDim];
+    threadgroup float partial[kFusedMaxSimdGroups];
+    fused_qkv_epilogue_head(q + tg.y * q_stride, k + tg.y * kv_stride, v + tg.y * kv_stride,
+                            q_weight, k_weight,
+                            fused_fc_head_dim(head_dim), fused_fc_num_q_heads(num_q_heads),
+                            fused_fc_num_kv_heads(num_kv_heads), fused_fc_rotary(rotated_pairs),
+                            position + tg.y, theta_base, rms_eps,
+                            lid.x, lsize.x, simd_lane_id, simd_group_id, simdgroups, tg.x,
+                            head_tg, partial);
 }
 
 // ============================================================================

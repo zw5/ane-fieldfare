@@ -130,44 +130,6 @@ import ANEFieldfareHotpath
         }
     }
 
-    /// The slot pre-flight reads `args.images`, which only `--image` fills, so
-    /// an image arriving through `--messages-file` used to survive validation
-    /// and fail inside the routed tile scheduler - after the model load and
-    /// after every image had been encoded on the GPU.
-    @Test func aMessagesFileImageIsRefusedBeforeTheModelLoadToo() throws {
-        let manager = FileManager.default
-        let directory = manager.temporaryDirectory
-            .appendingPathComponent("slots-preflight-\(UUID().uuidString)", isDirectory: true)
-        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? manager.removeItem(at: directory) }
-        let image = directory.appendingPathComponent("shot.png")
-        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: image)
-        let messages = directory.appendingPathComponent("messages.json")
-        try Data("""
-        [{"role":"user","content":[{"type":"image_file","path":"shot.png"},
-                                   {"type":"text","text":"describe"}]}]
-        """.utf8).write(to: messages)
-
-        let arguments = try Args.parse([
-            "--model", "m.gturbo",
-            "--messages-file", messages.path,
-            "--expert-cache-slots", "8",
-            "--prefill", "off",
-        ])
-        let input = try parseInput(args: arguments)
-        #expect(input.hasImages)
-        let need = RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill
-        #expect(throws: ArgsError.imagePromptNeedsExpertCacheSlots(have: 8, need: need)) {
-            _ = try arguments.resolvedRuntimeConfiguration(
-                forceLogitsHead: false, imagePrompt: input.hasImages)
-        }
-        // The same arguments without an image stay valid.
-        #expect(throws: Never.self) {
-            _ = try arguments.resolvedRuntimeConfiguration(
-                forceLogitsHead: false, imagePrompt: false)
-        }
-    }
-
     /// `--prefill off` with an image is silently coerced back to chunked deep in
     /// the runtime, while the docs say off disables that path. The run is
     /// correct; saying nothing about it is what made the flag look honoured.

@@ -188,8 +188,6 @@ public func run(args: Args,
             try Model.load(
                 directoryURL: modelURL,
                 device: context.device,
-                streamingMode: .pread(slotCount: runtime.expertCacheSlots),
-                expertCachePolicy: runtime.modelExpertCachePolicy,
                 integrityPolicy: integrityPolicy)
         }
         // The installer hashes every file once and records the result. Trust
@@ -263,12 +261,22 @@ public func run(args: Args,
         } else {
             multimodalInput = nil
         }
+        var speculative: SpeculativeDecoder?
+        if let drafterPath = args.drafter {
+            guard multimodalInput == nil else {
+                return errored(stderr, "--drafter requires a text prompt", 2)
+            }
+            let drafter = try DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
+                                            context: context, maxContext: args.maxContext)
+            speculative = try SpeculativeDecoder(runner: runner, drafter: drafter)
+        }
+        let producer: any LogitProducer = speculative ?? runner
         let effectiveMaxNew = min(args.maxNew, args.maxContext - promptIds.count)
         let config = makeConfig(maxNewTokens: effectiveMaxNew)
 
         var generatedTokenIDs: [Int32] = []
         let stats = try await runRawCompletion(
-            producer: runner,
+            producer: producer,
             tokenizer: tokenizer,
             promptIds: promptIds,
             multimodalInput: multimodalInput,
@@ -311,7 +319,6 @@ public func run(args: Args,
                 "early_expert_read": runner.earlyExpertReadStats.map { early -> [String: Any] in
                     ["guess": runner.earlyExpertReadGuess.rawValue, "forwards": early.forwards,
                      "misses": early.misses, "reads": early.reads, "used": early.used,
-                     "late_adoptions": early.lateAdoptions, "skipped_busy": early.skippedBusy,
                      "precision": early.precision ?? NSNull()]
                 } ?? NSNull(),
                 "decode_attention_gpu_seconds": Double(runner.decodeAttentionGPUNanos) / nanosPerSecond,
@@ -347,6 +354,17 @@ public func run(args: Args,
                 "new_tokens": stats.newTokens,
                 "generated_token_ids": generatedTokenIDs,
                 "decode_seconds": stats.decodeSeconds,
+                "prefill_early_reads": runner.prefillEarlyReads,
+                "speculation": speculative.map { decoder -> [String: Any] in
+                    var profile = decoder.stats.profile
+                    profile["acceptance_rate"] = decoder.policy.acceptanceRate
+                    profile["draft_seconds_by_length"] = decoder.policy.draftSeconds
+                    profile["verify_seconds_by_rows"] = decoder.policy.verifySeconds
+                    profile["decode_step_seconds"] = decoder.policy.decodeSeconds
+                    profile["calibrated_acceptance_by_confidence_decile"] =
+                        (0..<10).map { decoder.policy.calibrated((Float($0) + 0.5) / 10) }
+                    return profile
+                } ?? NSNull(),
             ]
             let data = try JSONSerialization.data(withJSONObject: profile, options: [.sortedKeys])
             stderr.write(data)

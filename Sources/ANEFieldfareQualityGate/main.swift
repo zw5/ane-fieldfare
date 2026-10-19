@@ -39,8 +39,8 @@ private struct Fixture: Decodable {
             }
             let context = try MetalContext()
             let model = try Model.load(directoryURL: URL(fileURLWithPath: args[1]), device: context.device,
-                streamingMode: .pread(slotCount: 16), expertCachePolicy: .lfu, integrityPolicy: .sizeCheckTrustedReceipt)
-            let runtime = RuntimeConfiguration(expertCacheSlots: 16, prefillChunkTokens: chunk,
+                integrityPolicy: .sizeCheckTrustedReceipt)
+            let runtime = RuntimeConfiguration(prefillChunkTokens: chunk,
                 prefillAttentionPath: attention,
                 forceLogitsHead: true)
             let runner = try RealForwardRunner(model: model, context: context, maxContext: 4096, runtimeConfiguration: runtime)

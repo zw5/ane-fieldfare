@@ -132,6 +132,153 @@ kernel void router_gemv_gemma4_r4(
                             out_logits, num_experts, D, 4, tg_idx, sg_idx, lane);
 }
 
+// The router GEMV over two weight sets in one dispatch: this layer's router
+// into `out_logits`, then the next layer's guess into `out_logits2`. Each row
+// is the single router GEMV's, bitwise.
+kernel void router_gemv_gemma4_pair_r4(
+    device const uint8_t* W [[buffer(0)]],
+    device const bfloat* scales [[buffer(1)]],
+    device const bfloat* biases [[buffer(2)]],
+    device const half* hidden [[buffer(3)]],
+    device const bfloat* effective_scale [[buffer(4)]],
+    device float* out_logits [[buffer(5)]],
+    constant uint& num_experts [[buffer(6)]],
+    constant uint& D [[buffer(7)]],
+    device const uint8_t* W2 [[buffer(8)]],
+    device const bfloat* scales2 [[buffer(9)]],
+    device const bfloat* biases2 [[buffer(10)]],
+    device const bfloat* effective_scale2 [[buffer(11)]],
+    device float* out_logits2 [[buffer(12)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint sg_idx [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint groups = (router_fc_num_experts(num_experts) + 3u) / 4u;
+    if (tg_idx < groups) {
+        router_gemv_gemma4_body(W, scales, biases, hidden, effective_scale,
+                                out_logits, num_experts, D, 4, tg_idx, sg_idx, lane);
+    } else {
+        router_gemv_gemma4_body(W2, scales2, biases2, hidden, effective_scale2,
+                                out_logits2, num_experts, D, 4, tg_idx - groups, sg_idx, lane);
+    }
+}
+
+// router_gemv_gemma4_pair_r4 over the rows of a block: grid row y scores
+// hidden row y into `[rows][num_experts]` logits.
+kernel void router_gemv_gemma4_pair_rows_r4(
+    device const uint8_t* W [[buffer(0)]],
+    device const bfloat* scales [[buffer(1)]],
+    device const bfloat* biases [[buffer(2)]],
+    device const half* hidden [[buffer(3)]],
+    device const bfloat* effective_scale [[buffer(4)]],
+    device float* out_logits [[buffer(5)]],
+    constant uint& num_experts [[buffer(6)]],
+    constant uint& D [[buffer(7)]],
+    device const uint8_t* W2 [[buffer(8)]],
+    device const bfloat* scales2 [[buffer(9)]],
+    device const bfloat* biases2 [[buffer(10)]],
+    device const bfloat* effective_scale2 [[buffer(11)]],
+    device float* out_logits2 [[buffer(12)]],
+    constant uint& hidden_stride [[buffer(13)]],
+    uint2 tg [[threadgroup_position_in_grid]],
+    uint sg_idx [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint NE = router_fc_num_experts(num_experts);
+    const uint groups = (NE + 3u) / 4u;
+    device const half* h = hidden + tg.y * hidden_stride;
+    if (tg.x < groups) {
+        router_gemv_gemma4_body(W, scales, biases, h, effective_scale,
+                                out_logits + tg.y * NE, num_experts, D, 4, tg.x, sg_idx, lane);
+    } else {
+        router_gemv_gemma4_body(W2, scales2, biases2, h, effective_scale2,
+                                out_logits2 + tg.y * NE, num_experts, D, 4, tg.x - groups, sg_idx, lane);
+    }
+}
+
+static inline void router_topk_select_k8_simd_body(
+    device const float* logits,
+    device const bfloat* per_expert_scale,
+    device uint* out_indices,
+    device half* out_weights,
+    uint NE,
+    uint lane
+) {
+    float v[8];
+    bool live[8];
+    for (uint j = 0; j < 8; ++j) {
+        const uint e = j * 32u + lane;
+        live[j] = e < NE;
+        v[j] = live[j] ? logits[e] : -INFINITY;
+        // The serial kernel never takes a score at or below -inf (or NaN).
+        live[j] = live[j] && v[j] > -INFINITY;
+    }
+    uint top_idx[8];
+    float top_score[8];
+    for (uint r = 0; r < 8; ++r) {
+        float best = -INFINITY;
+        uint best_e = 0xFFFFFFFFu;
+        for (uint j = 0; j < 8; ++j) {
+            const uint e = j * 32u + lane;
+            if (live[j] && (v[j] > best || (v[j] == best && e < best_e))) {
+                best = v[j];
+                best_e = e;
+            }
+        }
+        const float top = simd_max(best);
+        const uint winner = simd_min(best == top ? best_e : 0xFFFFFFFFu);
+        if (winner != 0xFFFFFFFFu && (winner & 31u) == lane) live[winner >> 5] = false;
+        top_idx[r] = winner == 0xFFFFFFFFu ? 0u : winner;
+        top_score[r] = winner == 0xFFFFFFFFu ? -INFINITY : top;
+    }
+    if (lane != 0) return;
+
+    const float max_s = top_score[0];
+    float sum_exp = 0.0f;
+    float exps[8];
+    for (uint i = 0; i < 8; ++i) {
+        const float ex = fast::exp(top_score[i] - max_s);
+        exps[i] = ex;
+        sum_exp += ex;
+    }
+    for (uint i = 0; i < 8; ++i) {
+        const uint expert_idx = top_idx[i];
+        const float weight = exps[i] / sum_exp;
+        out_indices[i] = expert_idx;
+        out_weights[i] = half(weight * float(per_expert_scale[expert_idx]));
+    }
+}
+
+// router_topk_select_k8 over one SIMD: eight rounds of a SIMD-wide argmax
+// (higher score, then lower expert), so the selection, its order and the
+// softmax are the serial kernel's.
+kernel void router_topk_select_k8_simd(
+    device const float* logits [[buffer(0)]],
+    device const bfloat* per_expert_scale [[buffer(1)]],
+    device uint* out_indices [[buffer(2)]],
+    device half* out_weights [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    router_topk_select_k8_simd_body(logits, per_expert_scale, out_indices, out_weights,
+                                    router_fc_num_experts(num_experts), lane);
+}
+
+// One SIMD-group select per row of `[rows][num_experts]` logits.
+kernel void router_topk_select_k8_simd_rows(
+    device const float* logits [[buffer(0)]],
+    device const bfloat* per_expert_scale [[buffer(1)]],
+    device uint* out_indices [[buffer(2)]],
+    device half* out_weights [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    uint row [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint NE = router_fc_num_experts(num_experts);
+    router_topk_select_k8_simd_body(logits + row * NE, per_expert_scale,
+                                    out_indices + row * 8u, out_weights + row * 8u, NE, lane);
+}
+
 kernel void router_topk_select_k8(
     device const float* logits [[buffer(0)]],
     device const bfloat* per_expert_scale [[buffer(1)]],
@@ -441,6 +588,58 @@ kernel void moe_phase1_gate_up_act_subset_u16load(
         routed, routed_offsets, x, acts, active_slots, active_count,
         moe_fc_d(D), moe_fc_f(F), moe_fc_top_k(top_k), rows_per_tg,
         tg_idx, sg_idx, lane);
+}
+
+// Shared FFN gate, up and GELU in one dispatch. Each SIMD computes one gate
+// row and one up row with the routed experts' row math, which is the decode
+// GEMV's, and rounds both to FP16 before the activation as the separate
+// GEMV + gelu_mul_fp16 path does, so the result is bitwise that path's.
+kernel void shared_gate_up_act_int4(
+    device const uint8_t* gW [[buffer(0)]],
+    device const bfloat* gS [[buffer(1)]],
+    device const bfloat* gB [[buffer(2)]],
+    device const uint8_t* uW [[buffer(3)]],
+    device const bfloat* uS [[buffer(4)]],
+    device const bfloat* uB [[buffer(5)]],
+    device const half* x [[buffer(6)]],
+    device half* acts [[buffer(7)]],
+    constant uint& D [[buffer(8)]],
+    constant uint& F [[buffer(9)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint sg_idx [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint row = tg_idx * 8u + sg_idx;
+    if (row >= moe_fc_f(F)) return;
+    const float2 gu = moe_int4_gate_up_rows_simd_dev_vec_u16load(
+        gW, gS, gB, uW, uS, uB, x, row, moe_fc_d(D), lane);
+    if (lane == 0) {
+        acts[row] = half(gelu_pytorch_tanh(float(half(gu.x))) * float(half(gu.y)));
+    }
+}
+
+// Decode routing without a host round trip: points each routed slot at its
+// expert through the layer's address table, where 0 marks an expert the
+// command buffer did not bind. Such a slot reads `fallback` (zeros) and the
+// host patches the layer, so this also saves the layer input for the patch.
+kernel void moe_gather_routed_slots(
+    device const uint* indices [[buffer(0)]],
+    device const ulong* table [[buffer(1)]],
+    device ulong* slots [[buffer(2)]],
+    device const half* hidden [[buffer(3)]],
+    device half* saved [[buffer(4)]],
+    constant uint& top_k [[buffer(5)]],
+    constant uint& num_experts [[buffer(6)]],
+    constant uint& D [[buffer(7)]],
+    constant ulong& fallback [[buffer(8)]],
+    uint tid [[thread_position_in_grid]],
+    uint threads [[threads_per_grid]]
+) {
+    if (tid < top_k) {
+        const ulong address = table[min(indices[tid], num_experts - 1)];
+        slots[tid] = address != 0 ? address : fallback;
+    }
+    for (uint i = tid; i < D; i += threads) saved[i] = hidden[i];
 }
 
 kernel void moe_phase2_down_reduce_k8(

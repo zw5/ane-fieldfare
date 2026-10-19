@@ -61,14 +61,26 @@ public final class DFlashDrafter {
     public let config: DFlashDrafterConfig
     /// Positions whose target features are in the drafter's context cache.
     public private(set) var contextLength = 0
+    /// The target head's probability of each draft from the last `propose`,
+    /// under the final logit softcap: the drafter's confidence per position.
+    public private(set) var lastConfidences: [Float] = []
     public let maxContext: Int
     public var vocabSize: Int { model.config.vocabSize }
 
     private let ctx: MetalContext
     private let model: Model
+    /// BF16 tensors the context append and the norms read.
     private let weights: MTLBuffer
     private let tensorOffsets: [String: Int]
     private let gemm: VisionLinearBF16
+    /// Every projection a draft step reads, quantized at load to the target's
+    /// INT4 affine format (group 64, BF16 scale and bias). A draft step is
+    /// weight-bandwidth bound at a handful of rows, so this cuts its weight
+    /// traffic about 3.6x and the drafter's resident memory from ~860 MB to
+    /// ~360 MB, which the expert page cache gets back.
+    private let int4Weights: MTLBuffer
+    private let int4Views: [String: (weights: Int, scales: Int, biases: Int)]
+    private let int4: DequantInt4GEMV
     private let head: LMHeadChainInt4
     private let embedPSO, normF32PSO, normBF16PSO, headNormRopePSO, attentionPSO,
                 siluPSO, residualPSO, toF16PSO, gatherPSO: MTLComputePipelineState
@@ -96,10 +108,17 @@ public final class DFlashDrafter {
         self.model = model
         self.maxContext = maxContext
 
-        let (weights, offsets) = try Self.loadSafetensors(
+        let (loaded, ranges) = try Self.loadSafetensors(
             directory.appendingPathComponent("model.safetensors"), device: context.device)
+        let (int4Weights, int4Views) = try Self.quantizeDraftProjections(
+            loaded, ranges: ranges, config: config, device: context.device)
+        let (weights, offsets) = try Self.compact(
+            loaded, ranges: ranges, dropping: Self.draftOnlyProjections(config), device: context.device)
         self.weights = weights
         self.tensorOffsets = offsets
+        self.int4Weights = int4Weights
+        self.int4Views = int4Views
+        self.int4 = try DequantInt4GEMV(context: context)
         self.gemm = try VisionLinearBF16(context: context)
         self.head = try LMHeadChainInt4(context: context, maxD: config.hiddenSize,
                                         maxVocab: model.config.vocabSize)
@@ -253,12 +272,9 @@ public final class DFlashDrafter {
             let p = "layers.\(l)."
             let a = p + "self_attn."
             try encodeNorm(cb, normF32PSO, x: residual, weight: p + "input_layernorm.weight", out: normed, rows: R)
-            gemm.encode(commandBuffer: cb, input: normed, weights: weights, weightsOffset: try offset(a + "q_proj.weight"),
-                        output: q, m: R, n: qWidth, k: D)
-            gemm.encode(commandBuffer: cb, input: normed, weights: weights, weightsOffset: try offset(a + "k_proj.weight"),
-                        output: kBlock, m: R, n: kvWidth, k: D)
-            gemm.encode(commandBuffer: cb, input: normed, weights: weights, weightsOffset: try offset(a + "v_proj.weight"),
-                        output: vBlock, m: R, n: kvWidth, k: D)
+            try project(cb, input: normed, a + "q_proj.weight", output: q, rows: R, n: qWidth, k: D)
+            try project(cb, input: normed, a + "k_proj.weight", output: kBlock, rows: R, n: kvWidth, k: D)
+            try project(cb, input: normed, a + "v_proj.weight", output: vBlock, rows: R, n: kvWidth, k: D)
             try encodeHeadNormRope(cb, x: q, weight: a + "q_norm.weight", out: q, outOffset: 0,
                                    rows: R * config.heads, heads: config.heads, pos0: contextLength)
             try encodeHeadNormRope(cb, x: kBlock, weight: a + "k_norm.weight", out: kBlock, outOffset: 0,
@@ -276,18 +292,14 @@ public final class DFlashDrafter {
                                          threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
                 enc.endEncoding()
             }
-            gemm.encode(commandBuffer: cb, input: attention, weights: weights, weightsOffset: try offset(a + "o_proj.weight"),
-                        output: delta, m: R, n: D, k: qWidth)
+            try project(cb, input: attention, a + "o_proj.weight", output: delta, rows: R, n: D, k: qWidth)
             dispatch(cb, residualPSO, [residual, delta], [UInt32(R * D)], grid: MTLSize(width: R * D, height: 1, depth: 1))
             try encodeNorm(cb, normF32PSO, x: residual, weight: p + "post_attention_layernorm.weight", out: normed, rows: R)
             let m = p + "mlp."
-            gemm.encode(commandBuffer: cb, input: normed, weights: weights, weightsOffset: try offset(m + "gate_proj.weight"),
-                        output: gate, m: R, n: F, k: D)
-            gemm.encode(commandBuffer: cb, input: normed, weights: weights, weightsOffset: try offset(m + "up_proj.weight"),
-                        output: up, m: R, n: F, k: D)
+            try project(cb, input: normed, m + "gate_proj.weight", output: gate, rows: R, n: F, k: D)
+            try project(cb, input: normed, m + "up_proj.weight", output: up, rows: R, n: F, k: D)
             dispatch(cb, siluPSO, [gate, up, act], [UInt32(R * F)], grid: MTLSize(width: R * F, height: 1, depth: 1))
-            gemm.encode(commandBuffer: cb, input: act, weights: weights, weightsOffset: try offset(m + "down_proj.weight"),
-                        output: delta, m: R, n: D, k: F)
+            try project(cb, input: act, m + "down_proj.weight", output: delta, rows: R, n: D, k: F)
             dispatch(cb, residualPSO, [residual, delta], [UInt32(R * D)], grid: MTLSize(width: R * D, height: 1, depth: 1))
         }
         // Rows 1..<R predict the drafts; the head applies the final norm.
@@ -306,15 +318,123 @@ public final class DFlashDrafter {
                               scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
                               biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
                               outTokens: draftTokens, d: UInt32(D), vocab: UInt32(model.config.vocabSize),
-                              rmsEps: config.rmsEps)
+                              rmsEps: config.rmsEps,
+                              softcap: Float(model.config.finalLogitSoftcap))
         cb.commit()
         cb.waitUntilCompleted()
         if let error = cb.error { throw DFlashError.invalidState("propose failed: \(error)") }
         let out = draftTokens.contents().assumingMemoryBound(to: UInt32.self)
+        let confidence = head.rowsConfidence.contents().assumingMemoryBound(to: Float.self)
+        lastConfidences = (0..<(R - 1)).map { confidence[$0] }
         return (0..<(R - 1)).map { Int32(bitPattern: out[$0]) }
     }
 
     // MARK: - Encoding helpers
+
+    private func project(_ cb: MTLCommandBuffer, input: MTLBuffer, _ name: String, output: MTLBuffer,
+                         rows: Int, n: Int, k: Int) throws {
+        guard let view = int4Views[name] else { throw DFlashError.invalidCheckpoint("missing tensor \(name)") }
+        int4.encodeRows(commandBuffer: cb,
+                        weights: int4Weights, weightsOffset: view.weights,
+                        scales: int4Weights, scalesOffset: view.scales,
+                        biases: int4Weights, biasesOffset: view.biases,
+                        x: input, y: output, m: UInt32(n), n: UInt32(k), rows: rows,
+                        xStrideElements: k, yStrideElements: n, types: .bf16)
+    }
+
+    /// Projections only a draft step reads; the context append also reads
+    /// `k_proj` and `v_proj`, which therefore keep their BF16 copy.
+    static func draftOnlyProjections(_ config: DFlashDrafterConfig) -> Set<String> {
+        Set((0..<config.layers).flatMap { l in
+            ["self_attn.q_proj", "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"]
+                .map { "layers.\(l).\($0).weight" }
+        })
+    }
+
+    /// Quantizes every draft-step projection, `[out][in]` BF16, to INT4 affine
+    /// with the same rounding as the target's installer: per 64-wide group,
+    /// scale = (max - min) / 15 and bias = min, both rounded to BF16 first.
+    static func quantizeDraftProjections(_ source: MTLBuffer, ranges: [String: Range<Int>],
+                                         config: DFlashDrafterConfig, device: MTLDevice) throws
+        -> (MTLBuffer, [String: (weights: Int, scales: Int, biases: Int)]) {
+        let D = config.hiddenSize, F = config.intermediateSize
+        let q = config.heads * config.headDim, kv = config.kvHeads * config.headDim
+        var shapes: [(String, Int, Int)] = []
+        for l in 0..<config.layers {
+            let a = "layers.\(l).self_attn.", m = "layers.\(l).mlp."
+            shapes += [(a + "q_proj.weight", q, D), (a + "k_proj.weight", kv, D), (a + "v_proj.weight", kv, D),
+                       (a + "o_proj.weight", D, q), (m + "gate_proj.weight", F, D), (m + "up_proj.weight", F, D),
+                       (m + "down_proj.weight", D, F)]
+        }
+        var views: [String: (weights: Int, scales: Int, biases: Int)] = [:]
+        var cursor = 0
+        func take(_ bytes: Int) -> Int { defer { cursor += (bytes + 255) / 256 * 256 }; return cursor }
+        for (name, rows, cols) in shapes {
+            guard let range = ranges[name], range.count == rows * cols * 2, cols % Quantization.groupSize == 0 else {
+                throw DFlashError.invalidCheckpoint("tensor \(name) is not [\(rows), \(cols)] BF16")
+            }
+            let groups = rows * cols / Quantization.groupSize
+            views[name] = (take(rows * cols / 2), take(groups * 2), take(groups * 2))
+        }
+        guard let out = device.makeBuffer(length: max(cursor, 16), options: .storageModeShared) else {
+            throw DFlashError.invalidState("INT4 drafter allocation failed")
+        }
+        out.label = "dflash.int4"
+        let src = source.contents(), dst = out.contents()
+        for (name, rows, cols) in shapes {
+            let view = views[name]!
+            let w = src.advanced(by: ranges[name]!.lowerBound).assumingMemoryBound(to: UInt16.self)
+            let packed = dst.advanced(by: view.weights).assumingMemoryBound(to: UInt8.self)
+            let scales = dst.advanced(by: view.scales).assumingMemoryBound(to: UInt16.self)
+            let biases = dst.advanced(by: view.biases).assumingMemoryBound(to: UInt16.self)
+            nonisolated(unsafe) let (wp, pp, sp, bp) = (w, packed, scales, biases)
+            let groupsPerRow = cols / Quantization.groupSize
+            DispatchQueue.concurrentPerform(iterations: rows) { row in
+                for g in 0..<groupsPerRow {
+                    let base = row * cols + g * Quantization.groupSize
+                    var lo = Float.infinity, hi = -Float.infinity
+                    for i in 0..<Quantization.groupSize {
+                        let v = Quantization.bf16ToFloat(wp[base + i])
+                        lo = min(lo, v); hi = max(hi, v)
+                    }
+                    let sBits = Quantization.bf16Bits(hi == lo ? 1 : (hi - lo) / 15)
+                    let bBits = Quantization.bf16Bits(lo)
+                    sp[row * groupsPerRow + g] = sBits
+                    bp[row * groupsPerRow + g] = bBits
+                    let scale = Quantization.bf16ToFloat(sBits), bias = Quantization.bf16ToFloat(bBits)
+                    let inv = scale == 0 ? 0 : 1 / scale
+                    for i in stride(from: 0, to: Quantization.groupSize, by: 2) {
+                        func q(_ v: UInt16) -> UInt8 {
+                            UInt8(max(0, min(15, Int(((Quantization.bf16ToFloat(v) - bias) * inv).rounded()))))
+                        }
+                        pp[(base + i) / 2] = q(wp[base + i]) | (q(wp[base + i + 1]) << 4)
+                    }
+                }
+            }
+        }
+        return (out, views)
+    }
+
+    /// A buffer holding only the tensors not in `dropping`.
+    static func compact(_ source: MTLBuffer, ranges: [String: Range<Int>], dropping: Set<String>,
+                        device: MTLDevice) throws -> (MTLBuffer, [String: Int]) {
+        var offsets: [String: Int] = [:]
+        var cursor = 0
+        for (name, range) in ranges.sorted(by: { $0.key < $1.key }) where !dropping.contains(name) {
+            offsets[name] = cursor
+            cursor += (range.count + 255) / 256 * 256
+        }
+        guard let out = device.makeBuffer(length: max(cursor, 16), options: .storageModeShared) else {
+            throw DFlashError.invalidState("drafter weight allocation failed")
+        }
+        out.label = "dflash.weights"
+        for (name, offset) in offsets {
+            let range = ranges[name]!
+            out.contents().advanced(by: offset)
+                .copyMemory(from: source.contents().advanced(by: range.lowerBound), byteCount: range.count)
+        }
+        return (out, offsets)
+    }
 
     private func offset(_ name: String) throws -> Int {
         guard let value = tensorOffsets[name] else { throw DFlashError.invalidCheckpoint("missing tensor \(name)") }
@@ -365,7 +485,7 @@ public final class DFlashDrafter {
     }
 
     /// Reads every BF16 tensor of a safetensors file into one shared buffer.
-    static func loadSafetensors(_ url: URL, device: MTLDevice) throws -> (MTLBuffer, [String: Int]) {
+    static func loadSafetensors(_ url: URL, device: MTLDevice) throws -> (MTLBuffer, [String: Range<Int>]) {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         guard let lengthData = try handle.read(upToCount: 8), lengthData.count == 8 else {
@@ -376,14 +496,14 @@ public final class DFlashDrafter {
               let header = try JSONSerialization.jsonObject(with: headerData) as? [String: Any] else {
             throw DFlashError.invalidCheckpoint("bad safetensors header")
         }
-        var offsets: [String: Int] = [:]
+        var offsets: [String: Range<Int>] = [:]
         var dataLength = 0
         for (name, value) in header where name != "__metadata__" {
             guard let entry = value as? [String: Any], entry["dtype"] as? String == "BF16",
                   let range = entry["data_offsets"] as? [Int], range.count == 2 else {
                 throw DFlashError.invalidCheckpoint("tensor \(name) is not BF16")
             }
-            offsets[name] = range[0]
+            offsets[name] = range[0]..<range[1]
             dataLength = max(dataLength, range[1])
         }
         guard let buffer = device.makeBuffer(length: dataLength, options: .storageModeShared) else {

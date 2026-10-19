@@ -1,12 +1,13 @@
 import Testing
 import Foundation
+import Darwin
 import Metal
 @testable import ANEFieldfareHotpath
 import ANEFieldfareValidationSupport
 
 /// End-to-end: write a synthetic .gturbo blob containing one "expert" worth of
 /// affine-quantized weights (packed nibbles + BF16 scales + BF16 biases), open
-/// it through `PreadExpertStreamer`, load it into a bounded cache slot, run
+/// it through `MappedExpertLayer`, read it into the page cache, run
 /// `dequant_int4_gemv`, and compare against an FP32 reference computed on the
 /// CPU.
 ///
@@ -115,21 +116,20 @@ import ANEFieldfareValidationSupport
         try Data(fileBytes).write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
 
-        let layout = StreamLayout(
-            path: tmp.path,
-            streamOffset: UInt64(headerSize),
-            streamSize:   UInt64(blobSize),
-            expertsPerLayer: 1,
-            expertStride: UInt64(blobSize)
-        )
         let ctx = try MetalContext()
-        let streamer = try PreadExpertStreamer(
-            layout: layout,
+        let fd = open(tmp.path, O_RDONLY)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        let layer = try MappedExpertLayer(
+            fileDescriptor: fd,
+            path: tmp.path,
             device: ctx.device,
-            slotCount: 1)
+            expertCount: 1,
+            expertBytes: blobSize,
+            expertOffsets: [UInt64(headerSize)])
+        try layer.read([0])
         let kernel = try DequantInt4GEMV(context: ctx)
-        let expert = try streamer.loadExpert(layer: 0, expert: 0)
-        let weightsBuf = expert.buffer
+        let weightsBuf = layer.buffers[0]
 
         guard let xBuf = ctx.device.makeBuffer(length: Sizes.N * MemoryLayout<Float16>.size,
                                                options: .storageModeShared),
@@ -146,9 +146,9 @@ import ANEFieldfareValidationSupport
             Issue.record("Failed to make command buffer"); return
         }
         kernel.encode(commandBuffer: cmd,
-                      weights: weightsBuf, weightsOffset: Int(expert.offset),
-                      scales: weightsBuf, scalesOffset: Int(expert.offset) + scalesOffset,
-                      biases: weightsBuf, biasesOffset: Int(expert.offset) + biasesOffset,
+                      weights: weightsBuf, weightsOffset: 0,
+                      scales: weightsBuf, scalesOffset: scalesOffset,
+                      biases: weightsBuf, biasesOffset: biasesOffset,
                       x: xBuf, y: yBuf,
                       m: UInt32(Sizes.M), n: UInt32(Sizes.N))
         cmd.commit()

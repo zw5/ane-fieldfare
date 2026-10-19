@@ -22,18 +22,17 @@ final class RuntimeSelectionTests: XCTestCase {
     func testUpstreamRuntimeControlsPreserveANEContracts() throws {
         let required = ["--model", "/model", "--prompt", "hello"]
         let args = try Args.parse(required + ["--backend", "hybrid-ane",
-            "--expert-cache-slots", "24", "--expert-cache-policy", "lru",
             "--prefill-chunk-tokens", "256"])
         let runtime = try args.resolvedRuntimeConfiguration(forceLogitsHead: true)
         XCTAssertEqual(runtime.backend, .hybridANE)
-        XCTAssertEqual(runtime.expertCacheSlots, 24)
-        XCTAssertEqual(runtime.expertCachePolicy, .lru)
         XCTAssertEqual(runtime.prefillChunkTokens, 256)
         XCTAssertEqual(runtime.activeRoutedExperts, 8)
         XCTAssertEqual(runtime.prefillAttentionPath, .causalSIMD)
         XCTAssertThrowsError(try Args.parse(required + ["--backend", "hybrid-ane", "--expert-top-k", "6"]))
         XCTAssertThrowsError(try Args.parse(required + ["--backend", "hybrid-ane", "--prefill-expert-cap", "8"]))
-        XCTAssertThrowsError(try Args.parse(required + ["--prefill", "on", "--expert-cache-slots", "8"]))
+        // The page cache replaced the slot cache; its flags are gone.
+        XCTAssertThrowsError(try Args.parse(required + ["--expert-cache-slots", "8"]))
+        XCTAssertThrowsError(try Args.parse(required + ["--expert-cache-policy", "lru"]))
         let file = try Args.parse(["--model", "/model", "--prompt-file", "/prompt.txt", "--count-tokens"])
         XCTAssertEqual(file.promptFile, "/prompt.txt")
         XCTAssertTrue(file.countTokens)

@@ -16,13 +16,16 @@ final class DequantInt4GEMV {
         Shape(m: 8192, n: 2816),
         Shape(m: 1024, n: 2816),
         Shape(m: 2816, n: 8192),
+        // Gemma 4 26B-A4B shared FFN gate/up and down.
+        Shape(m: 2112, n: 2816),
+        Shape(m: 2816, n: 2112),
     ]
 
     /// Input rows one `encodeRows` dispatch handles; matches the kernel.
     static let maxBatchRows = 16
 
     private let pipeline: MTLComputePipelineState
-    private let multiRowPipeline: MTLComputePipelineState
+    private let context: MetalContext
     private let specializedPipelines: [Shape: MTLComputePipelineState]
 
     init(context: MetalContext) throws {
@@ -43,12 +46,27 @@ final class DequantInt4GEMV {
                 maxTotalThreadsPerThreadgroup: 512)
         }
         self.specializedPipelines = specializedPipelines
-        self.multiRowPipeline = try context.pipeline(
-            "dequant_int4_gemm_small_mma", constants: [], maxTotalThreadsPerThreadgroup: 128)
+        self.context = context
+    }
+
+    /// Activation and output element types for `encodeRows`.
+    enum RowsTypes: String {
+        case f16 = "dequant_int4_gemv_rows"
+        case bf16 = "dequant_int4_gemv_rows_bf16"
+        /// FP16 input, FP32 output, for logits.
+        case f16ToF32 = "dequant_int4_gemv_rows_f32"
+    }
+
+    /// Weight rows per SIMD group for `rows` input rows. Two amortize the
+    /// input traffic at 3–4 rows; past that the extra accumulators cost
+    /// occupancy (measured: twice as slow at 8 rows).
+    static func weightRowsPerSIMD(rows: Int) -> Int {
+        (3...4).contains(rows) ? 2 : 1
     }
 
     /// `rows` input vectors at `xStrideElements` apart, each projected like
-    /// `encode`, with the weights read once.
+    /// `encode`, with the weights read once. Row r's result is bitwise the
+    /// single-row GEMV's. Pipelines are specialized per row count and width.
     func encodeRows(commandBuffer: MTLCommandBuffer,
                     weights: MTLBuffer, weightsOffset: Int,
                     scales: MTLBuffer, scalesOffset: Int,
@@ -56,11 +74,68 @@ final class DequantInt4GEMV {
                     x: MTLBuffer, xOffset: Int = 0,
                     y: MTLBuffer, yOffset: Int = 0,
                     m: UInt32, n: UInt32, rows: Int,
-                    xStrideElements: Int, yStrideElements: Int) {
+                    xStrideElements: Int, yStrideElements: Int,
+                    types: RowsTypes = .f16) {
         precondition(rows > 0 && rows <= Self.maxBatchRows, "rows=\(rows) outside 1...\(Self.maxBatchRows)")
         precondition(n % UInt32(Quantization.groupSize) == 0 && weightsOffset % 2 == 0)
+        if rows >= Self.matrixMinRows, n % 128 == 0, types != .bf16 {
+            encodeRowsMatrix(commandBuffer: commandBuffer,
+                             weights: weights, weightsOffset: weightsOffset,
+                             scales: scales, scalesOffset: scalesOffset,
+                             biases: biases, biasesOffset: biasesOffset,
+                             x: x, xOffset: xOffset, y: y, yOffset: yOffset,
+                             m: m, n: n, rows: rows,
+                             xStrideElements: xStrideElements, yStrideElements: yStrideElements,
+                             f32: types == .f16ToF32)
+            return
+        }
+        let weightRows = Self.weightRowsPerSIMD(rows: rows)
+        let pipeline = try! context.pipeline(
+            types.rawValue,
+            constants: [
+                MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
+                MetalFunctionConstant(index: 28, value: .uint32(n)),
+                MetalFunctionConstant(index: 29, value: .bool(true)),
+                MetalFunctionConstant(index: 32, value: .uint32(UInt32(weightRows))),
+            ],
+            maxTotalThreadsPerThreadgroup: 256)
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        encoder.setComputePipelineState(multiRowPipeline)
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(weights, offset: weightsOffset, index: 0)
+        encoder.setBuffer(scales, offset: scalesOffset, index: 1)
+        encoder.setBuffer(biases, offset: biasesOffset, index: 2)
+        encoder.setBuffer(x, offset: xOffset, index: 3)
+        encoder.setBuffer(y, offset: yOffset, index: 4)
+        var values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
+        for i in values.indices { encoder.setBytes(&values[i], length: 4, index: 5 + i) }
+        encoder.dispatchThreadgroups(
+            MTLSize(width: (Int(m) + 8 * weightRows - 1) / (8 * weightRows), height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        encoder.endEncoding()
+    }
+
+    /// From this many input rows `encodeRows` uses the SIMD-group matrix
+    /// kernel: the ALU kernel is bandwidth-bound through 4 rows and
+    /// ALU-bound past them.
+    static let matrixMinRows = 5
+
+    private func encodeRowsMatrix(commandBuffer: MTLCommandBuffer,
+                                  weights: MTLBuffer, weightsOffset: Int,
+                                  scales: MTLBuffer, scalesOffset: Int,
+                                  biases: MTLBuffer, biasesOffset: Int,
+                                  x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int,
+                                  m: UInt32, n: UInt32, rows: Int,
+                                  xStrideElements: Int, yStrideElements: Int, f32: Bool) {
+        let pipeline = try! context.pipeline(
+            f32 ? "dequant_int4_gemv_rows_mma_f32" : "dequant_int4_gemv_rows_mma",
+            constants: [
+                MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
+                MetalFunctionConstant(index: 28, value: .uint32(n)),
+                MetalFunctionConstant(index: 29, value: .bool(true)),
+            ],
+            maxTotalThreadsPerThreadgroup: 128)
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)

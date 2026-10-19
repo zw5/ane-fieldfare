@@ -21,10 +21,21 @@ public enum SharedExpertError: Error, CustomStringConvertible {
 public final class SharedExpertInt4 {
     private let int4: DequantInt4GEMV
     private let geluMulPSO: MTLComputePipelineState
+    private let context: MetalContext
 
     public init(context: MetalContext) throws {
         self.int4 = try DequantInt4GEMV(context: context)
         self.geluMulPSO = try context.pipeline("gelu_mul_fp16")
+        self.context = context
+    }
+
+    /// Gate, up and GELU in one dispatch, specialized for (`d`, `f`).
+    private func gateUpActPipeline(d: UInt32, f: UInt32) throws -> MTLComputePipelineState {
+        try context.pipeline("shared_gate_up_act_int4", constants: [
+            MetalFunctionConstant(index: 0, value: .uint32(d)),
+            MetalFunctionConstant(index: 1, value: .uint32(f)),
+            MetalFunctionConstant(index: 3, value: .bool(true)),
+        ])
     }
 
     public func encode(commandBuffer cb: MTLCommandBuffer,
@@ -55,6 +66,34 @@ public final class SharedExpertInt4 {
         }
         guard yOffset >= 0, yOffset + outputBytes <= y.length else {
             throw SharedExpertError.scratchTooSmall("output range exceeds y buffer")
+        }
+
+        if gate.weightsOffset % 2 == 0, up.weightsOffset % 2 == 0,
+           gate.cols % UInt32(Quantization.groupSize) == 0,
+           let encoder = cb.makeComputeCommandEncoder() {
+            var d = gate.cols, f = gate.rows
+            encoder.setComputePipelineState(try gateUpActPipeline(d: d, f: f))
+            encoder.setBuffer(gate.weights, offset: gate.weightsOffset, index: 0)
+            encoder.setBuffer(gate.scales, offset: gate.scalesOffset, index: 1)
+            encoder.setBuffer(gate.biases, offset: gate.biasesOffset, index: 2)
+            encoder.setBuffer(up.weights, offset: up.weightsOffset, index: 3)
+            encoder.setBuffer(up.scales, offset: up.scalesOffset, index: 4)
+            encoder.setBuffer(up.biases, offset: up.biasesOffset, index: 5)
+            encoder.setBuffer(x, offset: xOffset, index: 6)
+            encoder.setBuffer(scratchAct, offset: scratchActOffset, index: 7)
+            encoder.setBytes(&d, length: 4, index: 8)
+            encoder.setBytes(&f, length: 4, index: 9)
+            encoder.dispatchThreadgroups(MTLSize(width: (intermediate + 7) / 8, height: 1, depth: 1),
+                                         threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+            encoder.endEncoding()
+            int4.encode(commandBuffer: cb,
+                        weights: down.weights, weightsOffset: down.weightsOffset,
+                        scales: down.scales, scalesOffset: down.scalesOffset,
+                        biases: down.biases, biasesOffset: down.biasesOffset,
+                        x: scratchAct, xOffset: scratchActOffset,
+                        y: y, yOffset: yOffset,
+                        m: down.rows, n: down.cols)
+            return
         }
 
         int4.encode(commandBuffer: cb,
