@@ -68,8 +68,8 @@ final class DequantInt4GEMV {
     /// `rows` input vectors at `xStrideElements` apart, each projected like
     /// `encode`, with the weights read once. Pipelines are specialized per row
     /// count and width. Below `matrixMinRows` rows, row r's result is bitwise
-    /// the single-row GEMV's; from there (when `n % 128 == 0`, not BF16) the
-    /// SIMD-group matrix kernel runs and matches it to FP32 rounding only.
+    /// the single-row GEMV's; from there the SIMD-group matrix kernel runs and
+    /// matches it to FP32 rounding only.
     func encodeRows(commandBuffer: any MTLCommandBuffer,
                     weights: any MTLBuffer, weightsOffset: Int,
                     scales: any MTLBuffer, scalesOffset: Int,
@@ -81,7 +81,7 @@ final class DequantInt4GEMV {
                     types: RowsTypes = .f16) throws {
         precondition(rows > 0 && rows <= Self.maxBatchRows, "rows=\(rows) outside 1...\(Self.maxBatchRows)")
         precondition(n % UInt32(Quantization.groupSize) == 0 && weightsOffset % 2 == 0)
-        if rows >= Self.matrixMinRows, n % 128 == 0, types != .bf16 {
+        if rows >= Self.matrixMinRows {
             try encodeRowsMatrix(commandBuffer: commandBuffer,
                              weights: weights, weightsOffset: weightsOffset,
                              scales: scales, scalesOffset: scalesOffset,
@@ -89,7 +89,7 @@ final class DequantInt4GEMV {
                              x: x, xOffset: xOffset, y: y, yOffset: yOffset,
                              m: m, n: n, rows: rows,
                              xStrideElements: xStrideElements, yStrideElements: yStrideElements,
-                             f32: types == .f16ToF32)
+                             types: types)
             return
         }
         let weightRows = Self.weightRowsPerSIMD(rows: rows)
@@ -122,23 +122,53 @@ final class DequantInt4GEMV {
     /// ALU-bound past them.
     static let matrixMinRows = 5
 
+    /// `encodeRows` over the weight rows listed in `ids` (`m` of them): output
+    /// o of each row is weight row `ids[o]`'s. Always the SIMD-group matrix
+    /// kernel, FP32 out.
+    func encodeRowsListed(commandBuffer: any MTLCommandBuffer,
+                          weights: any MTLBuffer, weightsOffset: Int,
+                          scales: any MTLBuffer, scalesOffset: Int,
+                          biases: any MTLBuffer, biasesOffset: Int,
+                          ids: any MTLBuffer, x: any MTLBuffer, y: any MTLBuffer,
+                          m: UInt32, n: UInt32, rows: Int,
+                          xStrideElements: Int, yStrideElements: Int) throws {
+        precondition(rows > 0 && rows <= Self.maxBatchRows, "rows=\(rows) outside 1...\(Self.maxBatchRows)")
+        precondition(n % UInt32(Quantization.groupSize) == 0 && weightsOffset % 2 == 0)
+        try encodeRowsMatrix(commandBuffer: commandBuffer,
+                             weights: weights, weightsOffset: weightsOffset,
+                             scales: scales, scalesOffset: scalesOffset,
+                             biases: biases, biasesOffset: biasesOffset,
+                             x: x, xOffset: 0, y: y, yOffset: 0,
+                             m: m, n: n, rows: rows,
+                             xStrideElements: xStrideElements, yStrideElements: yStrideElements,
+                             types: .f16ToF32, ids: ids)
+    }
+
     private func encodeRowsMatrix(commandBuffer: any MTLCommandBuffer,
                                   weights: any MTLBuffer, weightsOffset: Int,
                                   scales: any MTLBuffer, scalesOffset: Int,
                                   biases: any MTLBuffer, biasesOffset: Int,
                                   x: any MTLBuffer, xOffset: Int, y: any MTLBuffer, yOffset: Int,
                                   m: UInt32, n: UInt32, rows: Int,
-                                  xStrideElements: Int, yStrideElements: Int, f32: Bool) throws {
+                                  xStrideElements: Int, yStrideElements: Int, types: RowsTypes,
+                                  ids: (any MTLBuffer)? = nil) throws {
+        let name = switch types {
+        case .f16: "dequant_int4_gemv_rows_mma"
+        case .f16ToF32: "dequant_int4_gemv_rows_mma_f32"
+        case .bf16: "dequant_int4_gemv_rows_mma_bf16"
+        }
         let pipeline = try context.pipeline(
-            f32 ? "dequant_int4_gemv_rows_mma_f32" : "dequant_int4_gemv_rows_mma",
+            name,
             constants: [
                 MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
                 MetalFunctionConstant(index: 28, value: .uint32(n)),
                 MetalFunctionConstant(index: 29, value: .bool(true)),
+                MetalFunctionConstant(index: 33, value: .bool(ids != nil)),
             ],
             maxTotalThreadsPerThreadgroup: 128)
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.setComputePipelineState(pipeline)
+        if let ids { encoder.setBuffer(ids, offset: 0, index: 10) }
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)

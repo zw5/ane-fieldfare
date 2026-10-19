@@ -9,9 +9,9 @@ import ANEFieldfareValidationSupport
 /// `DequantInt4GEMV.matrixMinRows` rows, against the single-row GEMV, which the
 /// ALU kernel must match bitwise; from that many rows the SIMD-group matrix
 /// kernel matches the reference only. Shapes cover a partial 32-column tile, a
-/// K with a non-multiple-of-four group count (the shared expert's 2112, which
-/// stays on the ALU kernel), one and two 8-row tiles, and the resident
-/// layout's 2-aligned weight offset.
+/// K with a non-multiple-of-four group count (the shared expert's 2112, whose
+/// last 64-k group the matrix kernel takes as a half step), one and two 8-row
+/// tiles, and the resident layout's 2-aligned weight offset.
 @Suite struct DequantInt4SmallBatchTests {
     private static func run(m: Int, n: Int, rows: Int, seed: UInt64, weightByteOffset: Int = 0,
                             matchSingleRow: Bool = false) throws {
@@ -53,8 +53,7 @@ import ANEFieldfareValidationSupport
             #expect(rel < Tolerance.fp16Reduction, "M=\(m) N=\(n) row \(r)/\(rows): rel=\(rel)")
         }
         guard matchSingleRow else { return }
-        precondition(rows < DequantInt4GEMV.matrixMinRows || n % 128 != 0,
-                     "the matrix kernel is not bitwise the GEMV")
+        precondition(rows < DequantInt4GEMV.matrixMinRows, "the matrix kernel is not bitwise the GEMV")
         for r in 0..<rows {
             guard let single = Fp16Buffer.make(ctx.device, count: m),
                   let cb = ctx.queue.makeCommandBuffer() else { Issue.record("allocation failed"); return }
@@ -73,12 +72,12 @@ import ANEFieldfareValidationSupport
         try Self.run(m: 512, n: 2816, rows: 2, seed: 0xD7, matchSingleRow: true)
         try Self.run(m: 300, n: 2112, rows: 3, seed: 0xD8, matchSingleRow: true)   // 2 weight rows per SIMD
         try Self.run(m: 301, n: 2816, rows: 4, seed: 0xD9, matchSingleRow: true)   // odd tail row
-        try Self.run(m: 256, n: 2112, rows: 12, seed: 0xDA, matchSingleRow: true)  // ALU kernel past 4 rows
     }
     @Test func matrixKernelRowCounts() throws {
         try Self.run(m: 512, n: 2816, rows: 5, seed: 0xDB)
         try Self.run(m: 256, n: 4096, rows: 12, seed: 0xDC)
         try Self.run(m: 264, n: 8192, rows: 7, seed: 0xDD)                         // partial 32-row tile
+        try Self.run(m: 256, n: 2112, rows: 12, seed: 0xDA)                        // final 64-k group
     }
     @Test func oneRow() throws { try Self.run(m: 1024, n: 2816, rows: 1, seed: 0xD1) }
     @Test func eightRows() throws { try Self.run(m: 1024, n: 2816, rows: 8, seed: 0xD2) }
@@ -87,5 +86,41 @@ import ANEFieldfareValidationSupport
     @Test func sharedExpertDownShape() throws { try Self.run(m: 2816, n: 2112, rows: 9, seed: 0xD5) }
     @Test func twoAlignedWeightOffset() throws {
         try Self.run(m: 256, n: 2816, rows: 8, seed: 0xD6, weightByteOffset: 2)
+    }
+
+    /// BF16 in and out, as the drafter runs it: the ALU kernel through 4
+    /// rows, the matrix kernel past them.
+    @Test(arguments: [3, 8, 13])
+    func bf16Rows(rows: Int) throws {
+        let m = 384, n = 2816
+        var rng = SeedTree(0xBF).key("int4-bf16-rows-\(rows)")
+        let weightRows = (0..<m).map { _ in
+            Quantization.quantizeInt4Affine((0..<n).map { _ in rng.uniform(-0.5, 0.5) })
+        }
+        let x = (0..<(rows * n)).map { _ in Quantization.bf16Bits(rng.uniform(-1.0, 1.0)) }
+        let ctx = try MetalContext()
+        let kernel = try DequantInt4GEMV(context: ctx)
+        let device = ctx.device
+        func buffer<T: BitwiseCopyable>(_ values: [T]) -> any MTLBuffer {
+            values.withUnsafeBytes {
+                unsafe device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)!
+            }
+        }
+        let w = buffer(weightRows.flatMap(\.packed)), sc = buffer(weightRows.flatMap(\.scales))
+        let bi = buffer(weightRows.flatMap(\.biases)), xb = buffer(x)
+        let y = device.makeBuffer(length: rows * m * 2, options: .storageModeShared)!
+        let cb = ctx.queue.makeCommandBuffer()!
+        try kernel.encodeRows(commandBuffer: cb, weights: w, weightsOffset: 0, scales: sc, scalesOffset: 0,
+                              biases: bi, biasesOffset: 0, x: xb, y: y, m: UInt32(m), n: UInt32(n), rows: rows,
+                              xStrideElements: n, yStrideElements: m, types: .bf16)
+        cb.commit(); cb.waitUntilCompleted()
+        let out = unsafe y.contents().assumingMemoryBound(to: UInt16.self)
+        for r in 0..<rows {
+            let xr = x[(r * n)..<((r + 1) * n)].map(Quantization.bf16ToFloat)
+            let ref = DequantInt4GemvRef.apply(weightRows: weightRows, x: xr, n: n)
+            let got = (0..<m).map { unsafe Quantization.bf16ToFloat(out[r * m + $0]) }
+            let rel = RelError.compute(actual: got, reference: ref)
+            #expect(rel < 1e-2, "row \(r)/\(rows): rel=\(rel)")
+        }
     }
 }

@@ -29,6 +29,8 @@ constant uint FC_INT4_ROWS_R [[function_constant(27)]];
 constant uint FC_INT4_ROWS_K [[function_constant(28)]];
 constant bool FC_INT4_ROWS_USE_FC [[function_constant(29)]];
 constant uint FC_INT4_ROWS_WPS [[function_constant(32)]];
+// Set for the matrix kernel to read weight row ids[o] for output o.
+constant bool FC_INT4_ROWS_LISTED [[function_constant(33)]];
 
 static inline uint int4_fc_m(constant uint& M) {
     return (is_function_constant_defined(FC_INT4_USE_FC) &&
@@ -393,20 +395,32 @@ template [[host_name("dequant_int4_gemv_rows_f32")]] kernel void dequant_int4_ge
 // rows 4x, measured on M5). Here each SIMD group owns 8 weight rows and
 // dequantizes each weight once, as q * s + b in FP32, into an 8x8 fragment;
 // one multiply covers 8 input rows. Results match the ALU kernel to FP32
-// rounding but not bitwise. Needs K % 128 == 0.
+// rounding but not bitwise. K % 128 may be 64: the last group runs as a
+// half step.
 //
 // Fragment layout (Apple SIMD-group 8x8): lane l holds row
 // fm = 4*((l>>4)&1) + ((l>>1)&3) and columns fn, fn+1 with
 // fn = 4*((l>>3)&1) + 2*(l&1). Per 128-wide step, tile t (0..15) column c is
-// k = (c/2)*32 + 2t + (c&1): the 4 lanes of a weight row read 64 contiguous
-// bytes, lane j = fn/2 bytes [16j, 16j + 16), and tile t takes byte t (low
-// nibble: even k). All 32 of a lane's k share one quant group.
-template <typename TY>
+// k = 16c + t. The 4 lanes of a weight row read 64 contiguous bytes, lane
+// j = fn/2 bytes [16j, 16j + 16): its first 8 bytes are column fn, the next 8
+// column fn + 1, all in one quant group. Each lane's B values, x[r][16fm + t],
+// are 16 contiguous halves per input row, so no x load is wasted; the x loads,
+// not the weights, bound this kernel.
+template <typename TX>
+static inline void int4_mma_load_x16(device const TX* p, bool live, thread float (&v)[16]) {
+    typedef vec<TX, 4> TX4;
+    for (uint i = 0; i < 4; ++i) {
+        const float4 a = live ? float4(*((device const TX4*)(p + 4u * i))) : float4(0.0f);
+        v[4 * i] = a.x; v[4 * i + 1] = a.y; v[4 * i + 2] = a.z; v[4 * i + 3] = a.w;
+    }
+}
+
+template <typename TX, typename TY>
 kernel void dequant_int4_gemv_rows_mma(
     device const uint8_t* W        [[buffer(0)]],
     device const bfloat*  scales   [[buffer(1)]],
     device const bfloat*  biases   [[buffer(2)]],
-    device const half*    x        [[buffer(3)]],
+    device const TX*      x        [[buffer(3)]],
     device TY*            y        [[buffer(4)]],
     constant uint&        O        [[buffer(5)]],
     constant uint&        K        [[buffer(6)]],
@@ -415,7 +429,8 @@ kernel void dequant_int4_gemv_rows_mma(
     constant uint&        yStride  [[buffer(9)]],
     uint                  tg_idx   [[threadgroup_position_in_grid]],
     uint                  sg_idx   [[simdgroup_index_in_threadgroup]],
-    uint                  lane     [[thread_index_in_simdgroup]]
+    uint                  lane     [[thread_index_in_simdgroup]],
+    device const uint*    ids      [[buffer(10), function_constant(FC_INT4_ROWS_LISTED)]]
 ) {
     constexpr uint simds_per_tg = 4;
     const bool fc = is_function_constant_defined(FC_INT4_ROWS_USE_FC) && FC_INT4_ROWS_USE_FC;
@@ -428,48 +443,45 @@ kernel void dequant_int4_gemv_rows_mma(
 
     const uint fm = 4u * ((lane >> 4) & 1u) + ((lane >> 1) & 3u);
     const uint fn = 4u * ((lane >> 3) & 1u) + 2u * (lane & 1u);
-    const uint row = min(o0 + fm, O - 1u);
-    // Weights: the 4 lanes of row fm read 64 contiguous bytes (128 k, two
-    // groups) per step; lane j = fn/2 reads bytes [16j, 16j + 16).
+    const bool listed = is_function_constant_defined(FC_INT4_ROWS_LISTED) && FC_INT4_ROWS_LISTED;
+    const uint row = listed ? ids[min(o0 + fm, O - 1u)] : min(o0 + fm, O - 1u);
     device const uint8_t* w_row = W + row * row_bytes + (fn >> 1) * 16u;
     device const bfloat* s_row = scales + row * n_groups + (fn >> 2);
     device const bfloat* b_row = biases + row * n_groups + (fn >> 2);
-    // Inputs: B row c = fm is k = step*128 + (fm/2)*32 + 2t + (fm&1).
-    const uint x_off = (fm >> 1) * 32u;
-    const bool odd = (fm & 1u) != 0u;
     const uint frags = RR > 8u ? 2u : 1u;
-    device const half* xr[4];
+    device const TX* xr[4];
     for (uint f = 0; f < 2; ++f) {
-        xr[2 * f]     = x + min(8u * f + fn,      RR - 1u) * xStride + x_off;
-        xr[2 * f + 1] = x + min(8u * f + fn + 1u, RR - 1u) * xStride + x_off;
+        xr[2 * f]     = x + min(8u * f + fn,      RR - 1u) * xStride + 16u * fm;
+        xr[2 * f + 1] = x + min(8u * f + fn + 1u, RR - 1u) * xStride + 16u * fm;
     }
 
     simdgroup_float8x8 acc[2] = { simdgroup_float8x8(0.0f), simdgroup_float8x8(0.0f) };
     const uint steps = KK / 128u;
-    for (uint step = 0; step < steps; ++step) {
-        device const ushort* wp = (device const ushort*)(w_row + step * 64u);
+    // The last pass is a 64-k half step when K % 128 == 64: columns c < 4
+    // hold its k; lanes holding columns or B rows c >= 4 contribute zeros.
+    const uint passes = steps + (KK % 128u != 0u ? 1u : 0u);
+    for (uint step = 0; step < passes; ++step) {
+        const bool half_step = step == steps;
+        const bool live_a = !half_step || fn < 4u, live_b = !half_step || fm < 4u;
+        device const ushort* wp = (device const ushort*)(w_row + step * 64u - (live_a ? 0u : 32u));
         uint wv[4];
         for (uint i = 0; i < 4; ++i) wv[i] = uint(wp[2 * i]) | (uint(wp[2 * i + 1]) << 16);
-        const float s = float(s_row[step * 2u]);
-        const float b = float(b_row[step * 2u]);
-        device const half* p[4] = { xr[0] + step * 128u, xr[1] + step * 128u,
-                                    xr[2] + step * 128u, xr[3] + step * 128u };
-        for (uint h = 0; h < 8; ++h) {
-            half4 v[4];
-            for (uint i = 0; i < 2 * frags; ++i) v[i] = *((device const half4*)(p[i] + 4u * h));
-            for (uint j = 0; j < 2; ++j) {
-                const uint t = 2u * h + j;
-                const uint byte = (wv[t >> 2] >> (8u * (t & 3u))) & 0xFFu;
-                simdgroup_float8x8 a;
-                a.thread_elements()[0] = fma(float(byte & 0x0Fu), s, b);
-                a.thread_elements()[1] = fma(float(byte >> 4), s, b);
-                for (uint f = 0; f < frags; ++f) {
-                    const half4 v0 = v[2 * f], v1 = v[2 * f + 1];
-                    simdgroup_float8x8 bt;
-                    bt.thread_elements()[0] = float(j == 0 ? (odd ? v0.y : v0.x) : (odd ? v0.w : v0.z));
-                    bt.thread_elements()[1] = float(j == 0 ? (odd ? v1.y : v1.x) : (odd ? v1.w : v1.z));
-                    simdgroup_multiply_accumulate(acc[f], a, bt, acc[f]);
-                }
+        const float s = live_a ? float(s_row[step * 2u]) : 0.0f;
+        const float b = live_a ? float(b_row[step * 2u]) : 0.0f;
+        float v[4][16];
+        for (uint i = 0; i < 2 * frags; ++i) int4_mma_load_x16(xr[i] + step * 128u, live_b, v[i]);
+        for (uint t = 0; t < 16; ++t) {
+            const uint shift = 8u * ((t >> 1) & 3u) + 4u * (t & 1u);
+            const uint q0 = (wv[t >> 3] >> shift) & 0x0Fu;
+            const uint q1 = (wv[2u + (t >> 3)] >> shift) & 0x0Fu;
+            simdgroup_float8x8 a;
+            a.thread_elements()[0] = fma(float(q0), s, b);
+            a.thread_elements()[1] = fma(float(q1), s, b);
+            for (uint f = 0; f < frags; ++f) {
+                simdgroup_float8x8 bt;
+                bt.thread_elements()[0] = v[2 * f][t];
+                bt.thread_elements()[1] = v[2 * f + 1][t];
+                simdgroup_multiply_accumulate(acc[f], a, bt, acc[f]);
             }
         }
     }
@@ -482,9 +494,15 @@ kernel void dequant_int4_gemv_rows_mma(
     }
 }
 
-template [[host_name("dequant_int4_gemv_rows_mma")]] kernel void dequant_int4_gemv_rows_mma<half>(
+template [[host_name("dequant_int4_gemv_rows_mma")]] kernel void dequant_int4_gemv_rows_mma<half, half>(
     device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device half*,
-    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint);
-template [[host_name("dequant_int4_gemv_rows_mma_f32")]] kernel void dequant_int4_gemv_rows_mma<float>(
+    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
+    device const uint*);
+template [[host_name("dequant_int4_gemv_rows_mma_f32")]] kernel void dequant_int4_gemv_rows_mma<half, float>(
     device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device float*,
-    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint);
+    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
+    device const uint*);
+template [[host_name("dequant_int4_gemv_rows_mma_bf16")]] kernel void dequant_int4_gemv_rows_mma<bfloat, bfloat>(
+    device const uint8_t*, device const bfloat*, device const bfloat*, device const bfloat*, device bfloat*,
+    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
+    device const uint*);
