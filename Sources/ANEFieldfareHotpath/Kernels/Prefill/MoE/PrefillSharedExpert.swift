@@ -20,8 +20,7 @@ final class PrefillSharedExpert {
         self.shared = try SharedExpertRuntime(context: context, weightBits: weightBits)
         self.context = context
         if batched && weightBits == 4 {
-            let qmm = MPPPrefillInt4QMM(context: context)
-            self.batched = qmm.isAvailable ? qmm : nil
+            self.batched = try MPPPrefillInt4QMM(context: context)
             self.geluMulPSO = try context.pipeline("gelu_mul_fp16")
             self.multiRow = try DequantInt4GEMV(context: context)
         } else {
@@ -37,9 +36,7 @@ final class PrefillSharedExpert {
         }
         let bytes = tokens * intermediate * MemoryLayout<Float16>.stride
         func make(_ label: String) throws -> any MTLBuffer {
-            guard let buffer = context.device.makeBuffer(length: bytes, options: .storageModePrivate) else {
-                throw SharedExpertError.scratchTooSmall("cannot allocate \(bytes) bytes for \(label)")
-            }
+            let buffer = try context.device.newBuffer(length: bytes, options: .storageModePrivate)
             buffer.label = label
             return buffer
         }
@@ -61,7 +58,7 @@ final class PrefillSharedExpert {
         guard let batched, let geluMulPSO, useMultiRow || queryCount >= Self.batchedMinimumTokens,
               xStrideElements == d, yStrideElements == d else { return false }
         let buffers = try scratch(tokens: queryCount, intermediate: intermediate)
-        func project(_ p: SharedExpertProjection, x: any MTLBuffer, y: any MTLBuffer) throws -> Bool {
+        func project(_ p: SharedExpertProjection, x: any MTLBuffer, y: any MTLBuffer) throws {
             if useMultiRow, let multiRow {
                 try multiRow.encodeRows(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                                     scales: p.scales, scalesOffset: p.scalesOffset,
@@ -69,21 +66,17 @@ final class PrefillSharedExpert {
                                     x: x, y: y,
                                     m: p.rows, n: p.cols, rows: queryCount,
                                     xStrideElements: Int(p.cols), yStrideElements: Int(p.rows))
-                return true
+                return
             }
-            return batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
-                           scales: p.scales, scalesOffset: p.scalesOffset,
-                           biases: p.biases, biasesOffset: p.biasesOffset,
-                           x: x, y: y,
-                           m: queryCount, n: Int(p.rows), k: Int(p.cols)) != .fallback
+            try batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
+                               scales: p.scales, scalesOffset: p.scalesOffset,
+                               biases: p.biases, biasesOffset: p.biasesOffset,
+                               x: x, y: y,
+                               m: queryCount, n: Int(p.rows), k: Int(p.cols))
         }
-        // A fallback on the first projection leaves nothing encoded; any
-        // later one is a contract violation for these fixed shapes.
-        guard try project(gate, x: x, y: buffers.gate) else { return false }
-        guard try project(up, x: x, y: buffers.up),
-              let encoder = cb.makeTracedComputeEncoder() else {
-            throw SharedExpertError.dimensionMismatch("batched shared expert up projection fell back")
-        }
+        try project(gate, x: x, y: buffers.gate)
+        try project(up, x: x, y: buffers.up)
+        let encoder = try cb.makeTracedComputeEncoder()
         encoder.setComputePipelineState(geluMulPSO)
         encoder.setBuffer(buffers.gate, offset: 0, index: 0)
         encoder.setBuffer(buffers.up, offset: 0, index: 1)
@@ -94,9 +87,7 @@ final class PrefillSharedExpert {
                                 threadsPerThreadgroup: MTLSize(width: min(geluMulPSO.maxTotalThreadsPerThreadgroup, 256),
                                                                height: 1, depth: 1))
         encoder.endEncoding()
-        guard try project(down, x: buffers.act, y: y) else {
-            throw SharedExpertError.dimensionMismatch("batched shared expert down projection fell back")
-        }
+        try project(down, x: buffers.act, y: y)
         return true
     }
 

@@ -41,10 +41,10 @@ import ANEFieldfareValidationSupport
         let sepH2 = try buffer(h2), sepH1 = try buffer(h1), sepHidden = try buffer(hidden)
         let sepNormed = try buffer([Float16](repeating: 0, count: Self.d))
         let cb1 = try #require(ctx.queue.makeCommandBuffer())
-        rms.encodeBF16W(commandBuffer: cb1, x: sepH1, weight: w[0], out: sepH1, d: d, eps: Self.eps)
-        tail.encode(commandBuffer: cb1, h2: sepH2, h1: sepH1, hidden: sepHidden,
-                    postFFN2Weight: w[1], postFFNWeight: w[2], d: d, eps: Self.eps, layerScalar: layerScalar)
-        rms.encodeBF16W(commandBuffer: cb1, x: sepHidden, weight: w[3], out: sepNormed, d: d, eps: Self.eps)
+        try rms.encodeBF16W(commandBuffer: cb1, x: sepH1, weight: w[0], out: sepH1, d: d, eps: Self.eps)
+        try tail.encode(commandBuffer: cb1, h2: sepH2, h1: sepH1, hidden: sepHidden,
+                        postFFN2Weight: w[1], postFFNWeight: w[2], d: d, eps: Self.eps, layerScalar: layerScalar)
+        try rms.encodeBF16W(commandBuffer: cb1, x: sepHidden, weight: w[3], out: sepNormed, d: d, eps: Self.eps)
         cb1.commit()
         cb1.waitUntilCompleted()
         if let error = cb1.error { throw error }
@@ -63,10 +63,10 @@ import ANEFieldfareValidationSupport
         let h2Buf = try buffer(h2), h1Buf = try buffer(h1), hiddenBuf = try buffer(hidden)
         let normed = try buffer([Float16](repeating: 0, count: Self.d))
         let cb2 = try #require(ctx.queue.makeCommandBuffer())
-        tail.encodeWithNorms(commandBuffer: cb2, h2: h2Buf, h1: h1Buf, hidden: hiddenBuf,
-                             postFFN1Weight: view(w[0]), postFFN2Weight: view(w[1]), postFFNWeight: view(w[2]),
-                             next: (view(w[3]), normed),
-                             d: d, eps: Self.eps, layerScalar: layerScalar)
+        try tail.encodeWithNorms(commandBuffer: cb2, h2: h2Buf, h1: h1Buf, hidden: hiddenBuf,
+                                 postFFN1Weight: view(w[0]), postFFN2Weight: view(w[1]), postFFNWeight: view(w[2]),
+                                 next: (view(w[3]), normed),
+                                 d: d, eps: Self.eps, layerScalar: layerScalar)
         cb2.commit()
         cb2.waitUntilCompleted()
         if let error = cb2.error { throw error }

@@ -16,10 +16,10 @@ final class PrefillEmbedLookupInt4 {
                        out: any MTLBuffer,
                        t: UInt32,
                        d: UInt32,
-                       outScale: Float) {
+                       outScale: Float) throws {
         precondition(d % UInt32(Quantization.groupSize) == 0,
                      "D must be a multiple of \(Quantization.groupSize)")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(table, offset: tableOffset, index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)
@@ -48,8 +48,8 @@ final class PrefillRMSNorm {
                             out: any MTLBuffer,
                             t: UInt32,
                             d: UInt32,
-                            eps: Float) {
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+                            eps: Float) throws {
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(psoBF16W)
         enc.setBuffer(x, offset: 0, index: 0)
         enc.setBuffer(weight, offset: weightOffset, index: 1)
@@ -60,41 +60,6 @@ final class PrefillRMSNorm {
         let threads = min(Int(psoBF16W.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreadgroups(MTLSize(width: Int(t), height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
-        enc.endEncoding()
-    }
-}
-
-final class PrefillInt4QMM {
-    private let pso: any MTLComputePipelineState
-
-    init(context: MetalContext) throws {
-        self.pso = try context.pipeline("prefill_dequant_int4_qmm_f16_block")
-    }
-
-    func encode(commandBuffer: any MTLCommandBuffer,
-                       weights: any MTLBuffer, weightsOffset: Int = 0,
-                       scales: any MTLBuffer, scalesOffset: Int = 0,
-                       biases: any MTLBuffer, biasesOffset: Int = 0,
-                       x: any MTLBuffer,
-                       y: any MTLBuffer,
-                       t: Int,
-                       n: Int,
-                       k: Int) {
-        precondition(k % Quantization.groupSize == 0,
-                     "K must be a multiple of \(Quantization.groupSize)")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
-        enc.setComputePipelineState(pso)
-        enc.setBuffer(weights, offset: weightsOffset, index: 0)
-        enc.setBuffer(scales, offset: scalesOffset, index: 1)
-        enc.setBuffer(biases, offset: biasesOffset, index: 2)
-        enc.setBuffer(x, offset: 0, index: 3)
-        enc.setBuffer(y, offset: 0, index: 4)
-        enc.setValue(UInt32(t), index: 5)
-        enc.setValue(UInt32(n), index: 6)
-        enc.setValue(UInt32(k), index: 7)
-        enc.dispatchThreadgroups(
-            MTLSize(width: (n + 7) / 8, height: (t + 7) / 8, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
         enc.endEncoding()
     }
 }

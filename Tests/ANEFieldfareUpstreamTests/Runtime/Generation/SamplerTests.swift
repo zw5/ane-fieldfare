@@ -41,12 +41,12 @@ import ANEFieldfareValidationSupport
         }
 
         func draw(_ values: [Float], config: GenerationConfig,
-                  position: Int = 0, history: [Int32] = []) -> UInt32 {
+                  position: Int = 0, history: [Int32] = []) throws -> UInt32 {
             writeLogits(values)
             let cmd = ctx.queue.makeCommandBuffer()!
-            sampler.sample(commandBuffer: cmd, logits: logits, probs: probs,
-                           history: history, config: config,
-                           position: position, outToken: outToken)
+            try sampler.sample(commandBuffer: cmd, logits: logits, probs: probs,
+                               history: history, config: config,
+                               position: position, outToken: outToken)
             cmd.commit(); cmd.waitUntilCompleted()
             return unsafe outToken.contents().load(as: UInt32.self)
         }
@@ -57,7 +57,7 @@ import ANEFieldfareValidationSupport
         let rig = try Rig(vocab: v)
         var logits = [Float](repeating: 0.1, count: v)
         logits[1337] = 9.0
-        let id = rig.draw(logits, config: GenerationConfig(temperature: 0))
+        let id = try rig.draw(logits, config: GenerationConfig(temperature: 0))
         #expect(id == 1337, "got \(id)")
     }
 
@@ -67,13 +67,13 @@ import ANEFieldfareValidationSupport
         var rng = SeedTree(0x51A7_1006).key("sampler-position-replay")
         let logits = (0..<v).map { _ in rng.uniform(-2, 2) }
         let cfg = GenerationConfig(temperature: 1.0, seed: 42)
-        let run1 = (0..<5).map { rig.draw(logits, config: cfg, position: $0) }
-        let run2 = (0..<5).map { rig.draw(logits, config: cfg, position: $0) }
+        let run1 = try (0..<5).map { try rig.draw(logits, config: cfg, position: $0) }
+        let run2 = try (0..<5).map { try rig.draw(logits, config: cfg, position: $0) }
         #expect(run1 == run2, "seed=42 not reproducible: \(run1) vs \(run2)")
 
         // A different seed should diverge on at least one position.
         let cfg43 = GenerationConfig(temperature: 1.0, seed: 43)
-        let run3 = (0..<5).map { rig.draw(logits, config: cfg43, position: $0) }
+        let run3 = try (0..<5).map { try rig.draw(logits, config: cfg43, position: $0) }
         #expect(run3 != run1, "seed 42 and 43 produced identical sequences")
     }
 
@@ -86,9 +86,9 @@ import ANEFieldfareValidationSupport
         logits[10] = 6.0; logits[200] = 5.6; logits[500] = 2.0; logits[900] = 1.0
         for t in 0..<32 {
             let seed = UInt64(t) &+ 1
-            let k = rig.draw(logits, config: GenerationConfig(temperature: 1.0, topK: 4, seed: seed), position: t)
+            let k = try rig.draw(logits, config: GenerationConfig(temperature: 1.0, topK: 4, seed: seed), position: t)
             #expect([10, 200, 500, 900].contains(k), "trial \(t): id=\(k) outside top-4")
-            let p = rig.draw(logits, config: GenerationConfig(temperature: 1.0, topP: 0.9, seed: seed), position: t)
+            let p = try rig.draw(logits, config: GenerationConfig(temperature: 1.0, topP: 0.9, seed: seed), position: t)
             #expect([10, 200].contains(p), "trial \(t): id=\(p) outside nucleus")
         }
     }
@@ -110,7 +110,7 @@ import ANEFieldfareValidationSupport
         let trials = 64
         for t in 0..<trials {
             let cfg = GenerationConfig(temperature: 1.0, repetitionPenalty: 1.3, seed: UInt64(t) &+ 1)
-            let id = rig.draw(logits, config: cfg, position: t, history: history)
+            let id = try rig.draw(logits, config: cfg, position: t, history: history)
             if id == 5 { count5 += 1 }
         }
         // Post-softcap both land near the 30 cap; penalty 1.3 drops id 5 to

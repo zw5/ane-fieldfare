@@ -93,23 +93,6 @@ import Testing
             if case PrefillMoEGroupingError.expertOutOfRange(2) = error { return true }
             return false
         }
-
-        #expect {
-            _ = try PrefillMoEGrouping.groupTokenExpertPairs(
-                [
-                    Self.pair(token: 0, expert: 0, rank: 0, weightBits: 1),
-                    Self.pair(token: 0, expert: 1, rank: 0, weightBits: 2),
-                ],
-                queryCount: 1,
-                topK: 2,
-                numExperts: 2,
-                tileExpertCount: 1)
-        } throws: { error in
-            if case PrefillMoEGroupingError.duplicateTokenRank(token: 0, rank: 0) = error {
-                return true
-            }
-            return false
-        }
     }
 
     private static func pair(token: UInt32,

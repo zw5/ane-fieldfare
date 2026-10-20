@@ -382,8 +382,8 @@ void sample(
         // mlx-lm applies Top-P before Top-K. The probabilities still carry
         // their full-vocabulary normalization here, so comparing the raw
         // descending cumulative mass to top_p produces the same intersection
-        // without sorting the entire vocabulary. If Top-64 holds less than
-        // top_p mass, all 64 survive and Top-K is the limiting filter.
+        // without sorting the entire vocabulary. If the top k hold less than
+        // top_p mass, all k survive and Top-K is the limiting filter.
         if (top_p > 0.0f && top_p < 1.0f) {
             float cum = 0.0f;
             uint  cut = kept;
@@ -602,18 +602,13 @@ constant constexpr uint kLMHeadGroupSize = 64;
 constant constexpr uint kLMHeadRowSummaryStride = 2;
 constant uint FC_HEAD_D [[function_constant(10)]];
 constant uint FC_HEAD_V [[function_constant(11)]];
-constant bool FC_HEAD_USE_FC [[function_constant(13)]];
 
 static inline uint lmhead_fc_d(constant uint& D) {
-    return (is_function_constant_defined(FC_HEAD_USE_FC) &&
-            FC_HEAD_USE_FC &&
-            is_function_constant_defined(FC_HEAD_D)) ? FC_HEAD_D : D;
+    return is_function_constant_defined(FC_HEAD_D) ? FC_HEAD_D : D;
 }
 
 static inline uint lmhead_fc_v(constant uint& V) {
-    return (is_function_constant_defined(FC_HEAD_USE_FC) &&
-            FC_HEAD_USE_FC &&
-            is_function_constant_defined(FC_HEAD_V)) ? FC_HEAD_V : V;
+    return is_function_constant_defined(FC_HEAD_V) ? FC_HEAD_V : V;
 }
 
 inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,

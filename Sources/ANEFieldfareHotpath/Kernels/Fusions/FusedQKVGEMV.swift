@@ -28,7 +28,6 @@ final class FusedQKVGEMV {
                     MetalFunctionConstant(index: 23, value: .uint32(shape.qRows)),
                     MetalFunctionConstant(index: 24, value: .uint32(shape.kvRows)),
                     MetalFunctionConstant(index: 25, value: .uint32(shape.n)),
-                    MetalFunctionConstant(index: 26, value: .bool(true)),
                 ],
                 maxTotalThreadsPerThreadgroup: 512)
         }
@@ -51,14 +50,14 @@ final class FusedQKVGEMV {
                        vOut: any MTLBuffer, vOutOffset: Int = 0,
                        qRows: UInt32,
                        kvRows: UInt32,
-                       n: UInt32) {
+                       n: UInt32) throws {
         precondition(n % UInt32(Quantization.groupSize) == 0,
                      "N must be a multiple of \(Quantization.groupSize)")
         precondition(qWeightsOffset % 2 == 0 &&
                      kWeightsOffset % 2 == 0 &&
                      vWeightsOffset % 2 == 0,
                      "FusedQKVGEMV needs 2-aligned weights offsets")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         let shape = Shape(qRows: qRows, kvRows: kvRows, n: n)
         enc.setComputePipelineState(specializedPSOs[shape] ?? pso)
         enc.setBuffer(qWeights, offset: qWeightsOffset, index: 0)
@@ -74,12 +73,9 @@ final class FusedQKVGEMV {
         enc.setBuffer(qOut, offset: qOutOffset, index: 10)
         enc.setBuffer(kOut, offset: kOutOffset, index: 11)
         enc.setBuffer(vOut, offset: vOutOffset, index: 12)
-        let qVar = qRows
-        let kvVar = kvRows
-        let nVar = n
-        enc.setValue(qVar, index: 13)
-        enc.setValue(kvVar, index: 14)
-        enc.setValue(nVar, index: 15)
+        enc.setValue(qRows, index: 13)
+        enc.setValue(kvRows, index: 14)
+        enc.setValue(n, index: 15)
         let totalRows = Int(qRows + 2 * kvRows)
         enc.dispatchThreadgroups(MTLSize(width: (totalRows + 7) / 8,
                                          height: 1,

@@ -13,7 +13,6 @@ final class LMHeadChainInt4 {
     private static let realDecodeHeadConstants: [MetalFunctionConstant] = [
         MetalFunctionConstant(index: 10, value: .uint32(realDecodeD)),
         MetalFunctionConstant(index: 11, value: .uint32(realDecodeVocab)),
-        MetalFunctionConstant(index: 13, value: .bool(true)),
     ]
 
     /// Rows one `encodeGreedyCheck` call checks; matches the kernel.
@@ -55,8 +54,7 @@ final class LMHeadChainInt4 {
         self.rowReducer = try context.pipeline("lm_head_greedy_int4_rows_reduce")
         self.hotGreedy = try context.pipeline(
             "lm_head_greedy_int4_listed_chunk_raw",
-            constants: [MetalFunctionConstant(index: 10, value: .uint32(Self.realDecodeD)),
-                        MetalFunctionConstant(index: 13, value: .bool(true))])
+            constants: [MetalFunctionConstant(index: 10, value: .uint32(Self.realDecodeD))])
         self.checkSpecialized = try (1...Self.maxCheckRows).map {
             try context.pipeline("lm_head_greedy_int4_check_chunk_raw",
                                  constants: Self.realDecodeHeadConstants
@@ -69,9 +67,7 @@ final class LMHeadChainInt4 {
         self.rowsProjection = try DequantInt4GEMV(context: context)
         self.rowsArgmax = try context.pipeline("argmax_rows_f32")
         self.rowsSample = try context.pipeline("sample_rows_f32")
-        guard let zero = context.device.makeBuffer(length: 16, options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
+        let zero = try context.device.newBuffer(length: 16, options: .storageModeShared)
         unsafe memset(zero.contents(), 0, 16)
         self.zeroKeyOffset = zero
         self.maxD = maxD
@@ -80,35 +76,16 @@ final class LMHeadChainInt4 {
         let rowGroups = (maxVocab + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
         let xLength = max(maxD, 1) * MemoryLayout<Float16>.size
         let summaryLength = rowGroups * Self.rowSummaryStride * MemoryLayout<Float>.size
-        guard let xNormedBuffer = context.device.makeBuffer(
-                  length: xLength,
-                  options: .storageModePrivate),
-              let rowSummariesBuffer = context.device.makeBuffer(
-                  length: summaryLength,
-                  options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        self.xNormedBuffer = xNormedBuffer
-        self.rowSummariesBuffer = rowSummariesBuffer
-        guard let checkSummaries = context.device.makeBuffer(
-                  length: Self.maxCheckRows * summaryLength, options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        self.checkSummariesBuffer = checkSummaries
-        guard let xNormedRows = context.device.makeBuffer(
-                  length: Self.maxGreedyRows * xLength, options: .storageModePrivate),
-              let rowsLogits = context.device.makeBuffer(
-                  length: Self.maxGreedyRows * maxVocab * MemoryLayout<Float>.size,
-                  options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        self.xNormedRowsBuffer = xNormedRows
-        self.rowsLogitsBuffer = rowsLogits
-        guard let confidence = context.device.makeBuffer(
-                  length: Self.maxGreedyRows * MemoryLayout<Float>.size, options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
-        self.rowsConfidence = confidence
+        self.xNormedBuffer = try context.device.newBuffer(length: xLength, options: .storageModePrivate)
+        self.rowSummariesBuffer = try context.device.newBuffer(length: summaryLength, options: .storageModePrivate)
+        self.checkSummariesBuffer = try context.device.newBuffer(length: Self.maxCheckRows * summaryLength,
+                                                                 options: .storageModePrivate)
+        self.xNormedRowsBuffer = try context.device.newBuffer(length: Self.maxGreedyRows * xLength,
+                                                              options: .storageModePrivate)
+        self.rowsLogitsBuffer = try context.device.newBuffer(
+            length: Self.maxGreedyRows * maxVocab * MemoryLayout<Float>.size, options: .storageModePrivate)
+        self.rowsConfidence = try context.device.newBuffer(length: Self.maxGreedyRows * MemoryLayout<Float>.size,
+                                                           options: .storageModeShared)
     }
 
     /// Greedy tokens for `rowCount` consecutive FP16 hidden rows starting at
@@ -139,11 +116,11 @@ final class LMHeadChainInt4 {
         precondition(Int(d) % 256 == 0, "d must be a multiple of 256")
         let rowBytes = Int(d) * MemoryLayout<Float16>.stride
         for row in 0..<rowCount {
-            rms.encodeBF16W(commandBuffer: commandBuffer,
-                            x: hidden, xOffset: hiddenOffset + row * rowBytes,
-                            weight: normWeight, weightOffset: normOffset,
-                            out: xNormedRowsBuffer, outOffset: row * rowBytes,
-                            d: d, eps: rmsEps)
+            try rms.encodeBF16W(commandBuffer: commandBuffer,
+                                x: hidden, xOffset: hiddenOffset + row * rowBytes,
+                                weight: normWeight, weightOffset: normOffset,
+                                out: xNormedRowsBuffer, outOffset: row * rowBytes,
+                                d: d, eps: rmsEps)
         }
         // FP32 logits from the multi-row GEMV, which streams the table once
         // and keeps every row's accumulators in registers, then an argmax per
@@ -156,9 +133,9 @@ final class LMHeadChainInt4 {
                                   m: vocab, n: d, rows: rowCount,
                                   xStrideElements: Int(d), yStrideElements: Int(vocab),
                                   types: .f16ToF32)
-        encodeChoice(commandBuffer: commandBuffer, rowCount: rowCount, count: vocab, ids: nil,
-                     outTokens: outTokens, outTokensOffset: outTokensOffset, softcap: softcap,
-                     sampling: sampling)
+        try encodeChoice(commandBuffer: commandBuffer, rowCount: rowCount, count: vocab, ids: nil,
+                         outTokens: outTokens, outTokensOffset: outTokensOffset, softcap: softcap,
+                         sampling: sampling)
     }
 
     /// `encodeGreedyRows` over `table`'s rows only: each row's greedy token
@@ -185,11 +162,11 @@ final class LMHeadChainInt4 {
         precondition(Int(d) <= maxD && Int(d) % 256 == 0)
         let rowBytes = Int(d) * MemoryLayout<Float16>.stride
         for row in 0..<rowCount {
-            rms.encodeBF16W(commandBuffer: commandBuffer,
-                            x: hidden, xOffset: row * rowBytes,
-                            weight: normWeight, weightOffset: normOffset,
-                            out: xNormedRowsBuffer, outOffset: row * rowBytes,
-                            d: d, eps: rmsEps)
+            try rms.encodeBF16W(commandBuffer: commandBuffer,
+                                x: hidden, xOffset: row * rowBytes,
+                                weight: normWeight, weightOffset: normOffset,
+                                out: xNormedRowsBuffer, outOffset: row * rowBytes,
+                                d: d, eps: rmsEps)
         }
         try rowsProjection.encodeRowsListed(commandBuffer: commandBuffer,
                                             weights: weights, weightsOffset: weightsOffset,
@@ -198,9 +175,9 @@ final class LMHeadChainInt4 {
                                             ids: table.ids, x: xNormedRowsBuffer, y: rowsLogitsBuffer,
                                             m: UInt32(table.count), n: d, rows: rowCount,
                                             xStrideElements: Int(d), yStrideElements: table.count)
-        encodeChoice(commandBuffer: commandBuffer, rowCount: rowCount, count: UInt32(table.count),
-                     ids: table.ids, outTokens: outIndices, outTokensOffset: 0, softcap: softcap,
-                     sampling: sampling)
+        try encodeChoice(commandBuffer: commandBuffer, rowCount: rowCount, count: UInt32(table.count),
+                         ids: table.ids, outTokens: outIndices, outTokensOffset: 0, softcap: softcap,
+                         sampling: sampling)
     }
 
     /// How a row of the FP32 logits picks its token: the argmax, or a draw
@@ -214,8 +191,8 @@ final class LMHeadChainInt4 {
 
     private func encodeChoice(commandBuffer: any MTLCommandBuffer, rowCount: Int, count: UInt32,
                               ids: (any MTLBuffer)?, outTokens: any MTLBuffer, outTokensOffset: Int,
-                              softcap: Float, sampling: RowSampling?) {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+                              softcap: Float, sampling: RowSampling?) throws {
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setBuffer(rowsLogitsBuffer, offset: 0, index: 0)
         encoder.setBuffer(outTokens, offset: outTokensOffset, index: 1)
         if let sampling, sampling.rule.temperature > 0 {
@@ -260,7 +237,7 @@ final class LMHeadChainInt4 {
                             outTokenOffset: Int = 0,
                             d: UInt32,
                             vocab: UInt32,
-                            rmsEps: Float = 1e-6) {
+                            rmsEps: Float = 1e-6) throws {
         precondition(Int(d) <= maxD, "d=\(d) exceeds wrapper maxD=\(maxD)")
         precondition(Int(vocab) <= maxVocab,
                      "vocab=\(vocab) exceeds wrapper maxVocab=\(maxVocab)")
@@ -272,49 +249,38 @@ final class LMHeadChainInt4 {
 
         let rowGroups = (Int(vocab) + Self.rowsPerThreadgroup - 1)
             / Self.rowsPerThreadgroup
-        rms.encodeBF16W(commandBuffer: commandBuffer,
-                        x: hidden,
-                        xOffset: hiddenOffset,
-                        weight: normWeight,
-                        weightOffset: normOffset,
-                        out: xNormedBuffer,
-                        d: d,
-                        eps: rmsEps)
+        try rms.encodeBF16W(commandBuffer: commandBuffer,
+                            x: hidden,
+                            xOffset: hiddenOffset,
+                            weight: normWeight,
+                            weightOffset: normOffset,
+                            out: xNormedBuffer,
+                            d: d,
+                            eps: rmsEps)
 
-        if let encoder = commandBuffer.makeTracedComputeEncoder() {
-            let specialized = d == Self.realDecodeD && vocab == Self.realDecodeVocab
-            encoder.setComputePipelineState(specialized ? rowGreedySpecialized : rowGreedy)
-            encoder.setBuffer(xNormedBuffer, offset: 0, index: 0)
-            encoder.setBuffer(weights, offset: weightsOffset, index: 1)
-            encoder.setBuffer(scales, offset: scalesOffset, index: 2)
-            encoder.setBuffer(biases, offset: biasesOffset, index: 3)
-            encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 4)
-            let dValue = d
-            let vocabValue = vocab
-            encoder.setValue(dValue, index: 5)
-            encoder.setValue(vocabValue, index: 6)
+        let rowsEncoder = try commandBuffer.makeTracedComputeEncoder()
+        let specialized = d == Self.realDecodeD && vocab == Self.realDecodeVocab
+        rowsEncoder.setComputePipelineState(specialized ? rowGreedySpecialized : rowGreedy)
+        rowsEncoder.setBuffer(xNormedBuffer, offset: 0, index: 0)
+        rowsEncoder.setBuffer(weights, offset: weightsOffset, index: 1)
+        rowsEncoder.setBuffer(scales, offset: scalesOffset, index: 2)
+        rowsEncoder.setBuffer(biases, offset: biasesOffset, index: 3)
+        rowsEncoder.setBuffer(rowSummariesBuffer, offset: 0, index: 4)
+        rowsEncoder.setValue(d, index: 5)
+        rowsEncoder.setValue(vocab, index: 6)
+        rowsEncoder.dispatchThreadgroups(
+            MTLSize(width: rowGroups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup, height: 1, depth: 1))
+        rowsEncoder.endEncoding()
 
-            let threadgroupSize = MTLSize(
-                width: 32 * Self.rowsPerThreadgroup,
-                height: 1,
-                depth: 1)
-            encoder.dispatchThreadgroups(
-                MTLSize(width: rowGroups, height: 1, depth: 1),
-                threadsPerThreadgroup: threadgroupSize)
-            encoder.endEncoding()
-        }
-
-        if let encoder = commandBuffer.makeTracedComputeEncoder() {
-            encoder.setComputePipelineState(rowReducer)
-            encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 0)
-            encoder.setBuffer(outToken, offset: outTokenOffset, index: 1)
-            let rowGroupCount = UInt32(rowGroups)
-            encoder.setValue(rowGroupCount, index: 2)
-
-            let threadgroupSize = MTLSize(width: 256, height: 1, depth: 1)
-            encoder.dispatchThreads(threadgroupSize, threadsPerThreadgroup: threadgroupSize)
-            encoder.endEncoding()
-        }
+        let reduceEncoder = try commandBuffer.makeTracedComputeEncoder()
+        reduceEncoder.setComputePipelineState(rowReducer)
+        reduceEncoder.setBuffer(rowSummariesBuffer, offset: 0, index: 0)
+        reduceEncoder.setBuffer(outToken, offset: outTokenOffset, index: 1)
+        reduceEncoder.setValue(UInt32(rowGroups), index: 2)
+        let reduceSize = MTLSize(width: 256, height: 1, depth: 1)
+        reduceEncoder.dispatchThreads(reduceSize, threadsPerThreadgroup: reduceSize)
+        reduceEncoder.endEncoding()
     }
 
     /// Normalizes `hidden` into row `row` of `normedRows` and writes the
@@ -337,24 +303,23 @@ final class LMHeadChainInt4 {
                                row: Int,
                                outToken: any MTLBuffer,
                                d: UInt32,
-                               rmsEps: Float = 1e-6) {
+                               rmsEps: Float = 1e-6) throws {
         precondition(d == Self.realDecodeD, "the hot head is specialized to D=\(Self.realDecodeD)")
         precondition(table.count > 0 && weightsOffset % 2 == 0)
-        encodeNormRow(commandBuffer: commandBuffer, hidden: hidden, hiddenOffset: hiddenOffset,
-                      normWeight: normWeight, normOffset: normOffset, normedRows: normedRows, row: row,
-                      d: d, rmsEps: rmsEps)
+        try encodeNormRow(commandBuffer: commandBuffer, hidden: hidden, hiddenOffset: hiddenOffset,
+                          normWeight: normWeight, normOffset: normOffset, normedRows: normedRows, row: row,
+                          d: d, rmsEps: rmsEps)
         let rowOffset = row * Int(d) * MemoryLayout<Float16>.stride
         let rowGroups = (table.count + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(hotGreedy)
         encoder.setBuffer(normedRows, offset: rowOffset, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)
         encoder.setBuffer(scales, offset: scalesOffset, index: 2)
         encoder.setBuffer(biases, offset: biasesOffset, index: 3)
         encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 4)
-        let dValue = d
         let count = UInt32(table.count)
-        encoder.setValue(dValue, index: 5)
+        encoder.setValue(d, index: 5)
         encoder.setValue(count, index: 6)
         encoder.setBuffer(table.ids, offset: 0, index: 7)
         encoder.dispatchThreadgroups(
@@ -373,12 +338,12 @@ final class LMHeadChainInt4 {
     /// The head's final norm of `hidden` into row `row` of `normedRows`.
     func encodeNormRow(commandBuffer: any MTLCommandBuffer, hidden: any MTLBuffer, hiddenOffset: Int = 0,
                        normWeight: any MTLBuffer, normOffset: Int = 0, normedRows: any MTLBuffer, row: Int,
-                       d: UInt32, rmsEps: Float = 1e-6) {
+                       d: UInt32, rmsEps: Float = 1e-6) throws {
         precondition(row >= 0 && row < Self.maxCheckRows)
-        rms.encodeBF16W(commandBuffer: commandBuffer, x: hidden, xOffset: hiddenOffset,
-                        weight: normWeight, weightOffset: normOffset,
-                        out: normedRows, outOffset: row * Int(d) * MemoryLayout<Float16>.stride,
-                        d: d, eps: rmsEps)
+        try rms.encodeBF16W(commandBuffer: commandBuffer, x: hidden, xOffset: hiddenOffset,
+                            weight: normWeight, weightOffset: normOffset,
+                            out: normedRows, outOffset: row * Int(d) * MemoryLayout<Float16>.stride,
+                            d: d, eps: rmsEps)
     }
 
     /// The full head's greedy token for each of `rowCount` already
@@ -396,24 +361,22 @@ final class LMHeadChainInt4 {
                            biasesOffset: Int = 0,
                            outTokens: any MTLBuffer,
                            d: UInt32,
-                           vocab: UInt32) {
+                           vocab: UInt32) throws {
         precondition(rowCount > 0 && rowCount <= Self.maxCheckRows)
         precondition(Int(d) <= maxD && Int(vocab) <= maxVocab && Int(d) % 256 == 0)
         precondition(weightsOffset % 2 == 0)
         let rowsPerGroup = Self.rowsPerThreadgroup * Self.checkRowsPerSimd
         let rowGroups = (Int(vocab) + rowsPerGroup - 1) / rowsPerGroup
         let specialized = d == Self.realDecodeD && vocab == Self.realDecodeVocab
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState((specialized ? checkSpecialized : checkGeneric)[rowCount - 1])
         encoder.setBuffer(normedRows, offset: 0, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)
         encoder.setBuffer(scales, offset: scalesOffset, index: 2)
         encoder.setBuffer(biases, offset: biasesOffset, index: 3)
         encoder.setBuffer(checkSummariesBuffer, offset: 0, index: 4)
-        let dValue = d
-        let vocabValue = vocab
-        encoder.setValue(dValue, index: 5)
-        encoder.setValue(vocabValue, index: 6)
+        encoder.setValue(d, index: 5)
+        encoder.setValue(vocab, index: 6)
         encoder.dispatchThreadgroups(
             MTLSize(width: rowGroups, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup, height: 1, depth: 1))

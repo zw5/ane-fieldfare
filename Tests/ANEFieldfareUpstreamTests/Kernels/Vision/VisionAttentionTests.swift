@@ -56,11 +56,11 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
         let attention = try VisionAttention(context: context)
         unsafe memset(output.contents(), 0, output.length)
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
-        attention.encode(commandBuffer: commandBuffer,
-                         q: paddedQBuffer, k: paddedKBuffer, v: paddedVBuffer,
-                         output: output,
-                         sequenceLength: length, numHeads: heads,
-                         inputRowStride: length)
+        try attention.encode(commandBuffer: commandBuffer,
+                             q: paddedQBuffer, k: paddedKBuffer, v: paddedVBuffer,
+                             output: output,
+                             sequenceLength: length, numHeads: heads,
+                             inputRowStride: length)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)

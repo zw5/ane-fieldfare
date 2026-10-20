@@ -65,15 +65,15 @@ import ANEFieldfareValidationSupport
                 return
             }
             let cb = ctx.queue.makeCommandBuffer()!
-            fused.encode(commandBuffer: cb,
-                         h2: h2Buf,
-                         h1: h1Buf,
-                         hidden: hiddenBuf,
-                         postFFN2Weight: wPostFFN2Buf,
-                         postFFNWeight: wPostFFNBuf,
-                         d: UInt32(Self.d),
-                         eps: Self.eps,
-                         layerScalar: layerScalar)
+            try fused.encode(commandBuffer: cb,
+                             h2: h2Buf,
+                             h1: h1Buf,
+                             hidden: hiddenBuf,
+                             postFFN2Weight: wPostFFN2Buf,
+                             postFFNWeight: wPostFFNBuf,
+                             d: UInt32(Self.d),
+                             eps: Self.eps,
+                             layerScalar: layerScalar)
             cb.commit()
             cb.waitUntilCompleted()
             if let err = cb.error {
@@ -87,19 +87,19 @@ import ANEFieldfareValidationSupport
         }
 
         let cb = ctx.queue.makeCommandBuffer()!
-        block.encode(commandBuffer: cb,
-                     h2: h2Block,
-                     h1: h1Block,
-                     hidden: hiddenBlock,
-                     postFFN2Weight: wPostFFN2Buf,
-                     postFFNWeight: wPostFFNBuf,
-                     queryCount: UInt32(rows),
-                     d: UInt32(Self.d),
-                     h2StrideElements: UInt32(h2Stride),
-                     h1StrideElements: UInt32(h1Stride),
-                     hiddenStrideElements: UInt32(hiddenStride),
-                     eps: Self.eps,
-                     layerScalar: layerScalar)
+        try block.encode(commandBuffer: cb,
+                         h2: h2Block,
+                         h1: h1Block,
+                         hidden: hiddenBlock,
+                         postFFN2Weight: wPostFFN2Buf,
+                         postFFNWeight: wPostFFNBuf,
+                         queryCount: UInt32(rows),
+                         d: UInt32(Self.d),
+                         h2StrideElements: UInt32(h2Stride),
+                         h1StrideElements: UInt32(h1Stride),
+                         hiddenStrideElements: UInt32(hiddenStride),
+                         eps: Self.eps,
+                         layerScalar: layerScalar)
         cb.commit()
         cb.waitUntilCompleted()
         if let err = cb.error {

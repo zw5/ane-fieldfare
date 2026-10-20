@@ -17,12 +17,12 @@ final class PrefillRoPE {
                            headDim: UInt32,
                            numHeads: UInt32,
                            tokenStrideElements: UInt32,
-                           theta: Float) {
+                           theta: Float) throws {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(headDim % 2 == 0, "headDim must be even")
         precondition(tokenStrideElements >= numHeads * headDim,
                      "token stride is too small")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(psoDefaultNeox)
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setValue(startPosition, index: 1)
@@ -48,14 +48,14 @@ final class PrefillRoPE {
                                 numHeads: UInt32,
                                 rotatedPairs: UInt32,
                                 tokenStrideElements: UInt32,
-                                theta: Float) {
+                                theta: Float) throws {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(headDim % 2 == 0, "headDim must be even")
         precondition(rotatedPairs * 2 <= headDim,
                      "rotatedPairs * 2 must not exceed headDim")
         precondition(tokenStrideElements >= numHeads * headDim,
                      "token stride is too small")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(psoProportionalNeox)
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setValue(startPosition, index: 1)

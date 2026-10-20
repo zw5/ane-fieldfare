@@ -562,7 +562,7 @@ kernel void prefill_moe_reduce_token_major(
 kernel void prefill_grouped_routed_moe_batched_phase1(
     device const half*                                   hidden               [[buffer(0)]],
     device const PrefillTokenExpertPairMSL*              sorted_pairs         [[buffer(1)]],
-    device half*                                         gate_up_act_scratch  [[buffer(7)]],
+    device half*                                         act_scratch          [[buffer(7)]],
     device const PrefillStreamedRoutedBlobsMSL&          routed               [[buffer(9)]],
     constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p                    [[buffer(10)]],
     uint2                                                gid                  [[thread_position_in_grid]]
@@ -592,19 +592,13 @@ kernel void prefill_grouped_routed_moe_batched_phase1(
 
     const float gate = prefill_moe_int4_gemv_row_dev(gate_W, gate_s, gate_b, x, f, p.D);
     const float up = prefill_moe_int4_gemv_row_dev(up_W, up_s, up_b, x, f, p.D);
-    const uint row_elements = p.pair_count * p.F;
-    const uint index = pair_local * p.F + f;
-    gate_up_act_scratch[index] = half(gate);
-    gate_up_act_scratch[row_elements + index] = half(up);
-    gate_up_act_scratch[2u * row_elements + index] =
-        half(prefill_gelu_pytorch_tanh(gate) * up);
+    act_scratch[pair_local * p.F + f] = half(prefill_gelu_pytorch_tanh(gate) * up);
 }
 
 kernel void prefill_grouped_routed_moe_batched_down(
     device const PrefillTokenExpertPairMSL*              sorted_pairs         [[buffer(1)]],
     device half*                                         route_partials       [[buffer(5)]],
-    device const half*                                   gate_up_act_scratch  [[buffer(7)]],
-    device half*                                         down_scratch         [[buffer(8)]],
+    device const half*                                   act_scratch          [[buffer(7)]],
     device const PrefillStreamedRoutedBlobsMSL&          routed               [[buffer(9)]],
     constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p                    [[buffer(10)]],
     uint2                                                gid                  [[thread_position_in_grid]]
@@ -627,49 +621,9 @@ kernel void prefill_grouped_routed_moe_batched_down(
     device const uint8_t* down_W = expert + p.down_W_off;
     device const bfloat* down_s = reinterpret_cast<device const bfloat*>(expert + p.down_s_off);
     device const bfloat* down_b = reinterpret_cast<device const bfloat*>(expert + p.down_b_off);
-    device const half* act = gate_up_act_scratch + 2u * p.pair_count * p.F + pair_local * p.F;
+    device const half* act = act_scratch + pair_local * p.F;
     const half value = half(prefill_moe_int4_gemv_row_dev(down_W, down_s, down_b, act, d, p.F));
-    down_scratch[pair_local * p.D + d] = value;
     route_partials[(pair.token * p.top_k + pair.rank) * p.D + d] = value;
-}
-
-kernel void prefill_dequant_int4_qmm_f16_block(
-    device const uint8_t* W      [[buffer(0)]],
-    device const bfloat*  scales [[buffer(1)]],
-    device const bfloat*  biases [[buffer(2)]],
-    device const half*    X      [[buffer(3)]],
-    device half*          Y      [[buffer(4)]],
-    constant uint&        T      [[buffer(5)]],
-    constant uint&        N      [[buffer(6)]],
-    constant uint&        K      [[buffer(7)]],
-    uint2                 tid    [[thread_position_in_threadgroup]],
-    uint2                 tgid   [[threadgroup_position_in_grid]]
-) {
-    const uint n = tgid.x * 8u + tid.x;
-    const uint t = tgid.y * 8u + tid.y;
-    if (t >= T || n >= N) return;
-
-    const uint groups = K / kPrefillGroupSize;
-    const uint row_bytes = K / 2u;
-    device const uint8_t* w_row = W + n * row_bytes;
-    device const bfloat* s_row = scales + n * groups;
-    device const bfloat* b_row = biases + n * groups;
-    device const half* x_row = X + t * K;
-
-    float acc = 0.0f;
-    for (uint g = 0; g < groups; ++g) {
-        const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
-        const uint group_base = g * kPrefillGroupSize;
-        for (uint kk = 0; kk < kPrefillGroupSize; ++kk) {
-            const uint k = group_base + kk;
-            const uint8_t packed = w_row[k >> 1];
-            const uint q = (k & 1u) == 0u ? uint(packed & 0x0Fu) : uint(packed >> 4);
-            const float w = fma(float(q), scale, bias);
-            acc = fma(w, float(x_row[k]), acc);
-        }
-    }
-    Y[t * N + n] = half(acc);
 }
 
 static inline void prefill_rope_apply_neox_pair(
@@ -915,7 +869,7 @@ constant constexpr int kPrefillTensorOpsOutputs = 8;
 constant constexpr int kPrefillTensorOpsKeys = 64;
 constant constexpr int kPrefillTensorOpsHeadDim = 512;
 
-static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
+static inline void attention_prefill_full_tensorops_impl(
     device const half* Q,
     device half* K,
     device half* V,
@@ -953,8 +907,6 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
 
     const uint query_start = tg.x;
     const uint qh_start = tg.y * uint(kPrefillTensorOpsOutputs);
-    const uint valid_query_rows =
-        min(1u, p.queryCount - min(query_start, p.queryCount));
     const uint q_per_kv = p.numQHeads / p.numKVHeads;
     const uint kvh = qh_start / q_per_kv;
 
@@ -964,14 +916,10 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
         const uint output_row =
             linear / uint(kPrefillTensorOpsHeadDim);
         const uint d = linear % uint(kPrefillTensorOpsHeadDim);
-        if (valid_query_rows != 0u) {
-            query_tile[linear] = Q[
-                query_start * p.qTokenStrideElements
-                + (qh_start + output_row) * p.headDim
-                + d];
-        } else {
-            query_tile[linear] = half(0.0f);
-        }
+        query_tile[linear] = Q[
+            query_start * p.qTokenStrideElements
+            + (qh_start + output_row) * p.headDim
+            + d];
     }
     if (lid < uint(kPrefillTensorOpsOutputs)) {
         row_max[lid] = -INFINITY;
@@ -1021,8 +969,8 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
 
     // This full-attention kernel starts at key zero and ignores slidingWindow.
     // The Swift selector must dispatch it only when every prior key is visible.
-    const uint last =
-        min(p.kvValidCount, p.startPosition + query_start + valid_query_rows);
+    // One threadgroup per query row, so the grid never runs past queryCount.
+    const uint last = min(p.kvValidCount, p.startPosition + query_start + 1u);
     for (uint key_start = 0u;
          key_start < last;
          key_start += uint(kPrefillTensorOpsKeys)) {
@@ -1057,13 +1005,7 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
 
         if (lid < uint(kPrefillTensorOpsOutputs)) {
             const uint output_row = lid;
-            const uint causal_last = valid_query_rows != 0u
-                ? min(p.kvValidCount, p.startPosition + query_start + 1u)
-                : 0u;
-            const uint visible =
-                causal_last > key_start
-                    ? min(uint(kPrefillTensorOpsKeys), causal_last - key_start)
-                    : 0u;
+            const uint visible = min(uint(kPrefillTensorOpsKeys), last - key_start);
 
             float tile_max = -INFINITY;
             for (uint key = 0u; key < visible; ++key) {
@@ -1121,6 +1063,8 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
             const auto position =
                 output_accumulator.get_multidimensional_index(element);
             const uint output_row = uint(position[1]);
+            // fma(1, ...) rounds the rescaled accumulator before the add;
+            // fast math could otherwise contract the add into one fma.
             output_accumulator[element] =
                 fma(
                     1.0f,
@@ -1139,19 +1083,17 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
             output_accumulator.get_multidimensional_index(element);
         const uint d = uint(position[0]);
         const uint output_row = uint(position[1]);
-        if (valid_query_rows != 0u) {
-            const float denominator = row_sum[output_row];
-            O[
-                query_start * p.oTokenStrideElements
-                + (qh_start + output_row) * p.headDim
-                + d] = denominator > 0.0f
-                    ? half(output_accumulator[element] / denominator)
-                    : half(0.0f);
-        }
+        const float denominator = row_sum[output_row];
+        O[
+            query_start * p.oTokenStrideElements
+            + (qh_start + output_row) * p.headDim
+            + d] = denominator > 0.0f
+                ? half(output_accumulator[element] / denominator)
+                : half(0.0f);
     }
 }
 
-kernel void attention_prefill_full_tensorops_2d_validity_v2(
+kernel void attention_prefill_full_tensorops(
     device const half* Q [[buffer(0)]],
     device half* K [[buffer(1)]],
     device half* V [[buffer(2)]],
@@ -1170,7 +1112,7 @@ kernel void attention_prefill_full_tensorops_2d_validity_v2(
     threadgroup float row_max[kPrefillTensorOpsOutputs];
     threadgroup float row_sum[kPrefillTensorOpsOutputs];
     threadgroup float row_old_scale[kPrefillTensorOpsOutputs];
-    attention_prefill_full_tensorops_2d_validity_v2_impl(
+    attention_prefill_full_tensorops_impl(
         Q, K, V, O, p, tg, lid, threads3.x,
         query_tile, score_tile, weight_tile,
         row_max, row_sum, row_old_scale);

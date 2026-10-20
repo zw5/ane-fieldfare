@@ -48,17 +48,17 @@ import Metal
         let url = try Self.writeSyntheticLayer()
         defer { try? FileManager.default.removeItem(at: url) }
         let layer = try Self.open(url, device: device)
-        #expect(throws: ExpertStoreError.self) { try layer.read([Self.numExperts]) }
+        #expect(throws: MappedExpertLayerError.self) { try layer.read([Self.numExperts]) }
     }
 
     @Test func misalignedStrideOrOffsetThrows() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let url = try Self.writeSyntheticLayer()
         defer { try? FileManager.default.removeItem(at: url) }
-        #expect(throws: ExpertStoreError.self) {
+        #expect(throws: MappedExpertLayerError.self) {
             _ = try Self.open(url, device: device, stride: Self.expertStride - 1)
         }
-        #expect(throws: ExpertStoreError.self) {
+        #expect(throws: MappedExpertLayerError.self) {
             _ = try Self.open(url, device: device, offsets: Self.offsets.map { $0 + 1 })
         }
     }
@@ -68,7 +68,7 @@ import Metal
         let url = try Self.writeSyntheticLayer()
         defer { try? FileManager.default.removeItem(at: url) }
         let offsets = Self.offsets + [UInt64(Self.headerBytes + Self.numExperts * Self.expertStride)]
-        #expect(throws: ExpertStoreError.self) {
+        #expect(throws: MappedExpertLayerError.self) {
             _ = try Self.open(url, device: device, offsets: offsets)
         }
     }

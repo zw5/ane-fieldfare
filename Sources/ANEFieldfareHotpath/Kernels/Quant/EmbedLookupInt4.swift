@@ -20,19 +20,18 @@ final class EmbedLookupInt4 {
                        out:    any MTLBuffer, outOffset: Int = 0,
                        tokenId: UInt32,
                        d: UInt32,
-                       outScale: Float) {
+                       outScale: Float) throws {
         precondition(d % UInt32(Quantization.groupSize) == 0,
                      "D must be a multiple of \(Quantization.groupSize)")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(table,  offset: tableOffset,  index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)
         enc.setBuffer(biases, offset: biasesOffset, index: 2)
         enc.setBuffer(out,    offset: outOffset,    index: 3)
-        let tokenVar = tokenId
         let dVar     = d
         let sVar     = outScale
-        enc.setValue(tokenVar, index: 4)
+        enc.setValue(tokenId, index: 4)
         enc.setValue(dVar, index: 5)
         enc.setValue(sVar, index: 6)
 

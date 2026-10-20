@@ -17,20 +17,15 @@ constant constexpr uint kInt8GroupSize = 64;
 constant constexpr uint kRowsPerTGInt8 = 8;
 constant uint FC_INT8_M [[function_constant(70)]];
 constant uint FC_INT8_N [[function_constant(71)]];
-constant bool FC_INT8_USE_FC [[function_constant(72)]];
 constant constexpr float kInt8GeluSqrt2OverPi = 0.7978845608028654f;
 constant constexpr float kInt8GeluCubicCoeff  = 0.044715f;
 
 static inline uint int8_fc_m(constant uint& M) {
-    return (is_function_constant_defined(FC_INT8_USE_FC) &&
-            FC_INT8_USE_FC &&
-            is_function_constant_defined(FC_INT8_M)) ? FC_INT8_M : M;
+    return is_function_constant_defined(FC_INT8_M) ? FC_INT8_M : M;
 }
 
 static inline uint int8_fc_n(constant uint& N) {
-    return (is_function_constant_defined(FC_INT8_USE_FC) &&
-            FC_INT8_USE_FC &&
-            is_function_constant_defined(FC_INT8_N)) ? FC_INT8_N : N;
+    return is_function_constant_defined(FC_INT8_N) ? FC_INT8_N : N;
 }
 
 inline float int8_gelu_pytorch_tanh(float x) {

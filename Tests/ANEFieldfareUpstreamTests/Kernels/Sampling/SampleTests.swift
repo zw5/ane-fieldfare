@@ -36,11 +36,11 @@ import ANEFieldfareValidationSupport
             return UInt32.max
         }
 
-        kernel.encode(commandBuffer: cmd,
-                      probs: inBuf, outToken: outBuf,
-                      v: UInt32(v),
-                      temperature: temperature,
-                      topK: topK, topP: topP, seed: seed)
+        try kernel.encode(commandBuffer: cmd,
+                          probs: inBuf, outToken: outBuf,
+                          v: UInt32(v),
+                          temperature: temperature,
+                          topK: topK, topP: topP, seed: seed)
         cmd.commit()
         cmd.waitUntilCompleted()
 

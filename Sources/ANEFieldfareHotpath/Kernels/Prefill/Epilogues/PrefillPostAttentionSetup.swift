@@ -27,7 +27,7 @@ final class PrefillPostAttentionSetup {
                 denseStrideElements: UInt32,
                 routedStrideElements: UInt32,
                 routerStrideElements: UInt32,
-                eps: Float) {
+                eps: Float) throws {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(d > 0 && d <= 4096, "D must be in 1...4096")
         precondition(hiddenStrideElements >= d, "hidden stride is too small")
@@ -35,7 +35,7 @@ final class PrefillPostAttentionSetup {
         precondition(denseStrideElements >= d, "dense stride is too small")
         precondition(routedStrideElements >= d, "routed stride is too small")
         precondition(routerStrideElements >= d, "router stride is too small")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(hidden, offset: 0, index: 0)
         enc.setBuffer(attn, offset: 0, index: 1)

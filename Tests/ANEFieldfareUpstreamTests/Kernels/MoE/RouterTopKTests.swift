@@ -95,7 +95,7 @@ import ANEFieldfareValidationSupport
         let indexBuffer = try buffer([UInt32](repeating: 0, count: Self.topK))
         let outputWeightBuffer = try #require(Fp16Buffer.make(context.device, count: Self.topK))
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
-        kernel.encodeRouterGemma4(
+        try kernel.encodeRouterGemma4(
             commandBuffer: commandBuffer,
             weights: weightBuffer,
             scales: scaleBuffer,

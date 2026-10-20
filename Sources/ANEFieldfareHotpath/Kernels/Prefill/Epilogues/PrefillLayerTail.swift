@@ -22,13 +22,13 @@ final class PrefillLayerTail {
                 h1StrideElements: UInt32,
                 hiddenStrideElements: UInt32,
                 eps: Float,
-                layerScalar: Float) {
+                layerScalar: Float) throws {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(d > 0 && d <= 4096, "D must be in 1...4096")
         precondition(h2StrideElements >= d, "h2 stride is too small")
         precondition(h1StrideElements >= d, "h1 stride is too small")
         precondition(hiddenStrideElements >= d, "hidden stride is too small")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(h2, offset: 0, index: 0)
         enc.setBuffer(h1, offset: 0, index: 1)

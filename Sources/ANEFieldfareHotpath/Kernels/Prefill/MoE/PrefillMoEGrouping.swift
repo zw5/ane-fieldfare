@@ -35,39 +35,12 @@ public struct PrefillMoEGroupedRoutes: Equatable, Sendable {
 }
 
 enum PrefillMoEGroupingError: Error, Equatable, CustomStringConvertible {
-    case invalidQueryCount(Int)
-    case invalidTopK(Int)
-    case invalidNumExperts(Int)
-    case invalidTileExpertCount(Int)
-    case pairCountMismatch(expected: Int, actual: Int)
-    case tokenOutOfRange(UInt32)
-    case rankOutOfRange(UInt32)
     case expertOutOfRange(UInt32)
-    case duplicateTokenRank(token: UInt32, rank: UInt32)
-    case expertSortKeyCountMismatch(expected: Int, actual: Int)
 
     public var description: String {
         switch self {
-        case .invalidQueryCount(let value):
-            return "queryCount must be non-negative, got \(value)"
-        case .invalidTopK(let value):
-            return "topK must be positive, got \(value)"
-        case .invalidNumExperts(let value):
-            return "numExperts must be positive, got \(value)"
-        case .invalidTileExpertCount(let value):
-            return "tileExpertCount must be in 1...16, got \(value)"
-        case .pairCountMismatch(let expected, let actual):
-            return "expected \(expected) route pairs, got \(actual)"
-        case .tokenOutOfRange(let value):
-            return "route token \(value) is out of range"
-        case .rankOutOfRange(let value):
-            return "route rank \(value) is out of range"
         case .expertOutOfRange(let value):
             return "route expert \(value) is out of range"
-        case .duplicateTokenRank(let token, let rank):
-            return "duplicate route pair for token \(token), rank \(rank)"
-        case .expertSortKeyCountMismatch(let expected, let actual):
-            return "expected \(expected) expert sort keys, got \(actual)"
         }
     }
 }
@@ -81,45 +54,13 @@ enum PrefillMoEGrouping {
         tileExpertCount: Int,
         expertSortKeys: [UInt64]? = nil
     ) throws -> PrefillMoEGroupedRoutes {
-        guard queryCount >= 0 else {
-            throw PrefillMoEGroupingError.invalidQueryCount(queryCount)
-        }
-        guard topK > 0 else {
-            throw PrefillMoEGroupingError.invalidTopK(topK)
-        }
-        guard numExperts > 0 else {
-            throw PrefillMoEGroupingError.invalidNumExperts(numExperts)
-        }
-        guard (1...16).contains(tileExpertCount) else {
-            throw PrefillMoEGroupingError.invalidTileExpertCount(tileExpertCount)
-        }
-        if let expertSortKeys, expertSortKeys.count != numExperts {
-            throw PrefillMoEGroupingError.expertSortKeyCountMismatch(expected: numExperts,
-                                                                    actual: expertSortKeys.count)
-        }
-        let expectedPairs = queryCount * topK
-        guard pairs.count <= expectedPairs else {
-            throw PrefillMoEGroupingError.pairCountMismatch(expected: expectedPairs,
-                                                           actual: pairs.count)
-        }
-
-        var seenTokenRanks: Set<UInt64> = []
-        seenTokenRanks.reserveCapacity(pairs.count)
-        for pair in pairs {
-            guard pair.token < UInt32(queryCount) else {
-                throw PrefillMoEGroupingError.tokenOutOfRange(pair.token)
-            }
-            guard pair.rank < UInt32(topK) else {
-                throw PrefillMoEGroupingError.rankOutOfRange(pair.rank)
-            }
-            guard pair.expert < UInt32(numExperts) else {
-                throw PrefillMoEGroupingError.expertOutOfRange(pair.expert)
-            }
-            let key = UInt64(pair.token) << 32 | UInt64(pair.rank)
-            guard seenTokenRanks.insert(key).inserted else {
-                throw PrefillMoEGroupingError.duplicateTokenRank(token: pair.token,
-                                                                rank: pair.rank)
-            }
+        precondition(queryCount >= 0 && topK > 0 && numExperts > 0 && (1...16).contains(tileExpertCount))
+        precondition(pairs.count <= queryCount * topK)
+        precondition(expertSortKeys.map { $0.count == numExperts } ?? true)
+        // The experts come from the GPU router; everything else was built on
+        // the host from them.
+        if let bad = pairs.first(where: { $0.expert >= UInt32(numExperts) }) {
+            throw PrefillMoEGroupingError.expertOutOfRange(bad.expert)
         }
 
         let sortedPairs = pairs.sorted {

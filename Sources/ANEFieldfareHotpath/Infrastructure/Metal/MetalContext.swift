@@ -28,6 +28,16 @@ enum MetalError: Error, CustomStringConvertible {
     }
 }
 
+extension MTLDevice {
+    /// `makeBuffer(length:options:)`, throwing when Metal cannot allocate.
+    func newBuffer(length: Int, options: MTLResourceOptions) throws -> any MTLBuffer {
+        guard let buffer = makeBuffer(length: length, options: options) else {
+            throw MetalError.allocationFailed("\(length)-byte buffer")
+        }
+        return buffer
+    }
+}
+
 func metalCommandBufferStatusName(_ status: MTLCommandBufferStatus) -> String {
     switch status {
     case .notEnqueued: return "notEnqueued"
@@ -194,13 +204,11 @@ public final class MetalContext: Sendable {
     /// Compile one shader module into its own library, leaving the shared
     /// runtime library untouched.
     ///
-    /// Cached per device, module and source variant: libraries are immutable,
-    /// and one `VisionRuntime` init otherwise compiles the identical tensorops
-    /// source twice (attention, projector) on every load.
-    public static func privateLibrary(device: any MTLDevice, module: String,
-                                      includeVisionTensorOps: Bool = false) throws
-        -> any MTLLibrary {
-        let key = "\(ObjectIdentifier(device).hashValue)#\(module)#\(includeVisionTensorOps)"
+    /// Cached per device and module: libraries are immutable, and the text
+    /// prefill, vision attention and vision projector share one tensorops
+    /// library.
+    public static func privateLibrary(device: any MTLDevice, module: String) throws -> any MTLLibrary {
+        let key = "\(ObjectIdentifier(device).hashValue)#\(module)"
         // Compiling inside the lock keeps concurrent first loads from
         // compiling the same source twice.
         return try privateLibraryCache.withLock { cache in
@@ -213,11 +221,6 @@ public final class MetalContext: Sendable {
             let src = try String(contentsOf: url, encoding: .utf8)
             let opts = MTLCompileOptions()
             opts.languageVersion = .version4_0
-            if includeVisionTensorOps {
-                opts.preprocessorMacros = [
-                    "TURBO_FIELDFARE_VISION_TENSOROPS": NSNumber(value: true)
-                ]
-            }
             do {
                 let library = try device.makeLibrary(source: src, options: opts)
                 cache[key] = library

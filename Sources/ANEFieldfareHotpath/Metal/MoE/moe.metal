@@ -8,45 +8,33 @@ constant constexpr float kGeluCubicCoeff = 0.044715f;
 
 constant uint FC_ROUTER_NUM_EXPERTS [[function_constant(40)]];
 constant uint FC_ROUTER_D [[function_constant(41)]];
-constant bool FC_ROUTER_USE_FC [[function_constant(43)]];
 
 constant uint FC_MOE_D [[function_constant(0)]];
 constant uint FC_MOE_F [[function_constant(1)]];
 constant uint FC_MOE_TOP_K [[function_constant(2)]];
-constant bool FC_MOE_USE_FC [[function_constant(3)]];
 
 static inline uint router_fc_num_experts(constant uint& num_experts) {
-    return (is_function_constant_defined(FC_ROUTER_USE_FC) &&
-            FC_ROUTER_USE_FC &&
-            is_function_constant_defined(FC_ROUTER_NUM_EXPERTS))
+    return is_function_constant_defined(FC_ROUTER_NUM_EXPERTS)
         ? FC_ROUTER_NUM_EXPERTS
         : num_experts;
 }
 
 static inline uint router_fc_d(constant uint& D) {
-    return (is_function_constant_defined(FC_ROUTER_USE_FC) &&
-            FC_ROUTER_USE_FC &&
-            is_function_constant_defined(FC_ROUTER_D))
+    return is_function_constant_defined(FC_ROUTER_D)
         ? FC_ROUTER_D
         : D;
 }
 
 static inline uint moe_fc_d(constant uint& D) {
-    return (is_function_constant_defined(FC_MOE_USE_FC) &&
-            FC_MOE_USE_FC &&
-            is_function_constant_defined(FC_MOE_D)) ? FC_MOE_D : D;
+    return is_function_constant_defined(FC_MOE_D) ? FC_MOE_D : D;
 }
 
 static inline uint moe_fc_f(constant uint& F) {
-    return (is_function_constant_defined(FC_MOE_USE_FC) &&
-            FC_MOE_USE_FC &&
-            is_function_constant_defined(FC_MOE_F)) ? FC_MOE_F : F;
+    return is_function_constant_defined(FC_MOE_F) ? FC_MOE_F : F;
 }
 
 static inline uint moe_fc_top_k(constant uint& top_k) {
-    return (is_function_constant_defined(FC_MOE_USE_FC) &&
-            FC_MOE_USE_FC &&
-            is_function_constant_defined(FC_MOE_TOP_K)) ? FC_MOE_TOP_K : top_k;
+    return is_function_constant_defined(FC_MOE_TOP_K) ? FC_MOE_TOP_K : top_k;
 }
 
 static inline float gelu_pytorch_tanh(float x) {
@@ -592,19 +580,20 @@ kernel void moe_gather_routed_slots(
     device const half* hidden [[buffer(3)]],
     device half* saved [[buffer(4)]],
     constant uint& top_k [[buffer(5)]],
-    constant uint& num_experts [[buffer(6)]],
     constant uint& D [[buffer(7)]],
     constant ulong& fallback [[buffer(8)]],
     uint tid [[thread_position_in_grid]],
     uint threads [[threads_per_grid]]
 ) {
     if (tid < top_k) {
-        const ulong address = table[min(indices[tid], num_experts - 1)];
+        const ulong address = table[indices[tid]];
         slots[tid] = address != 0 ? address : fallback;
     }
     for (uint i = tid; i < D; i += threads) saved[i] = hidden[i];
 }
 
+// One SIMD group per routed slot; slots at or past `top_k` were not computed
+// and add zero.
 kernel void moe_phase2_down_reduce_k8(
     device const RoutedBlobs& routed [[buffer(0)]],
     constant ExpertOffsets& routed_offsets [[buffer(1)]],
@@ -614,6 +603,7 @@ kernel void moe_phase2_down_reduce_k8(
     device half* y [[buffer(5)]],
     constant uint& D [[buffer(6)]],
     constant uint& F [[buffer(7)]],
+    constant uint& top_k [[buffer(8)]],
     uint d [[threadgroup_position_in_grid]],
     uint sg_idx [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]
@@ -623,16 +613,20 @@ kernel void moe_phase2_down_reduce_k8(
     const uint FF = moe_fc_f(F);
     if (d >= DD) return;
 
-    device const uint8_t* base = routed.blob[sg_idx];
-    const ExpertOffsets re = routed_offsets;
-    device const uint8_t* dW = base + re.down_W_off;
-    device const bfloat* dS = (device const bfloat*)(base + re.down_s_off);
-    device const bfloat* dB = (device const bfloat*)(base + re.down_b_off);
-    device const half* act_slot = acts + sg_idx * FF;
+    float weighted = 0.0f;
+    if (sg_idx < moe_fc_top_k(top_k)) {
+        device const uint8_t* base = routed.blob[sg_idx];
+        const ExpertOffsets re = routed_offsets;
+        device const uint8_t* dW = base + re.down_W_off;
+        device const bfloat* dS = (device const bfloat*)(base + re.down_s_off);
+        device const bfloat* dB = (device const bfloat*)(base + re.down_b_off);
+        device const half* act_slot = acts + sg_idx * FF;
 
-    const float value = moe_int4_gemv_row_simd_dev_vec(
-        dW, dS, dB, act_slot, d, FF, lane);
-    if (lane == 0) partial[sg_idx] = float(routing_w[sg_idx]) * value;
+        const float value = moe_int4_gemv_row_simd_dev_vec(
+            dW, dS, dB, act_slot, d, FF, lane);
+        weighted = float(routing_w[sg_idx]) * value;
+    }
+    if (lane == 0) partial[sg_idx] = weighted;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (sg_idx == 0 && lane == 0) {

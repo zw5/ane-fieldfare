@@ -41,7 +41,7 @@ extension Model {
         let mapped = try expertLayer(layer)
         return try experts.map { expert in
             guard expert >= 0, expert < mapped.expertCount else {
-                throw ExpertStoreError.expertOutOfRange(expert)
+                throw MappedExpertLayerError.expertOutOfRange(expert)
             }
             return TensorView(
                 buffer: mapped.buffers[expert],

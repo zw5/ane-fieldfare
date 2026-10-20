@@ -31,7 +31,7 @@ final class PrefillAttention {
     init(context: MetalContext) throws {
         self.context = context
         self.psoCausalTiled = try context.pipeline("attention_prefill_causal_tiled")
-        self.psoFullTensorOps2D = try context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")
+        self.psoFullTensorOps2D = try context.pipeline("attention_prefill_full_tensorops")
     }
 
     /// Full-attention layers of the production shape run the TensorOps
@@ -109,7 +109,7 @@ final class PrefillAttention {
                           params: PrefillAttentionParams, threads: Int, headsPerGroup: Int) throws {
         precondition(threads <= pipeline.maxTotalThreadsPerThreadgroup,
                      "prefill attention needs \(threads) threads per threadgroup")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { throw MetalError.encoderUnavailable }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pipeline)
         enc.setBuffer(q, offset: 0, index: 0)
         enc.setBuffer(k, offset: 0, index: 1)

@@ -12,11 +12,8 @@ final class PrefillFinalRowHeadInt4 {
         self.rms = try RMSNorm(context: context)
         self.int4 = try DequantInt4GEMV(context: context)
         self.maxD = maxD
-        guard let normed = context.device.makeBuffer(length: maxD * MemoryLayout<Float16>.size,
-                                                     options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        self.normed = normed
+        self.normed = try context.device.newBuffer(length: maxD * MemoryLayout<Float16>.size,
+                                                   options: .storageModePrivate)
     }
 
     func encodeLogits(commandBuffer: any MTLCommandBuffer,
@@ -34,31 +31,31 @@ final class PrefillFinalRowHeadInt4 {
                              logits: any MTLBuffer,
                              d: UInt32,
                              vocab: UInt32,
-                             rmsEps: Float) {
+                             rmsEps: Float) throws {
         precondition(row >= 0, "row must be non-negative")
         precondition(rowStrideElements >= Int(d), "row stride must cover d")
         precondition(Int(d) <= maxD, "d=\(d) exceeds maxD=\(maxD)")
         precondition(d % UInt32(Quantization.groupSize) == 0,
                      "d must be a multiple of \(Quantization.groupSize)")
         let hiddenOffset = (row * rowStrideElements) * MemoryLayout<Float16>.size
-        rms.encodeBF16W(commandBuffer: commandBuffer,
-                        x: hiddenBlock,
-                        xOffset: hiddenOffset,
-                        weight: normWeight,
-                        weightOffset: normWeightOffset,
-                        out: normed,
-                        d: d,
-                        eps: rmsEps)
-        int4.encode(commandBuffer: commandBuffer,
-                    weights: weights,
-                    weightsOffset: weightsOffset,
-                    scales: scales,
-                    scalesOffset: scalesOffset,
-                    biases: biases,
-                    biasesOffset: biasesOffset,
-                    x: normed,
-                    y: logits,
-                    m: vocab,
-                    n: d)
+        try rms.encodeBF16W(commandBuffer: commandBuffer,
+                            x: hiddenBlock,
+                            xOffset: hiddenOffset,
+                            weight: normWeight,
+                            weightOffset: normWeightOffset,
+                            out: normed,
+                            d: d,
+                            eps: rmsEps)
+        try int4.encode(commandBuffer: commandBuffer,
+                        weights: weights,
+                        weightsOffset: weightsOffset,
+                        scales: scales,
+                        scalesOffset: scalesOffset,
+                        biases: biases,
+                        biasesOffset: biasesOffset,
+                        x: normed,
+                        y: logits,
+                        m: vocab,
+                        n: d)
     }
 }

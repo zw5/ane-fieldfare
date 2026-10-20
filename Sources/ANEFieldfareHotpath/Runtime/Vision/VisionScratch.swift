@@ -38,9 +38,7 @@ package final class VisionScratch {
     /// whose tails are read back; every other buffer is fully overwritten,
     /// pad included, by the dispatch that fills it.
     package func encodeClear(commandBuffer: any MTLCommandBuffer) throws {
-        guard let blit = commandBuffer.makeTracedBlitEncoder() else {
-            throw MetalError.encoderUnavailable
-        }
+        let blit = try commandBuffer.makeTracedBlitEncoder()
         let liveBytes = rows * hiddenSize * MemoryLayout<UInt16>.stride
         for buffer in [hiddenB, attention] {
             guard buffer.length > liveBytes else { continue }

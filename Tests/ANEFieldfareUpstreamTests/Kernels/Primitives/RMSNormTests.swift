@@ -29,8 +29,8 @@ import ANEFieldfareValidationSupport
         let wBuf = try #require(unsafe ctx.device.makeBuffer(bytes: wBits, length: wBits.count * 2,
                                                              options: .storageModeShared))
         let cb = try #require(ctx.queue.makeCommandBuffer())
-        kernel.encodeBF16W(commandBuffer: cb, x: xBuf, weight: wBuf, out: yBuf,
-                           d: UInt32(d), eps: Self.eps)
+        try kernel.encodeBF16W(commandBuffer: cb, x: xBuf, weight: wBuf, out: yBuf,
+                               d: UInt32(d), eps: Self.eps)
         cb.commit(); cb.waitUntilCompleted()
 
         let ref = RmsNormRef.apply(x: x.map { Float($0) },

@@ -52,15 +52,11 @@ public final class VisionResize {
         // the vertical pass then reads columns of the already-narrowed image,
         // which is the cheaper order whenever the width shrinks.
         let intermediateRowBytes = destinationWidth * 4
-        guard let intermediate = device.makeBuffer(
-            length: max(1, sourceHeight * intermediateRowBytes),
-            options: .storageModeShared),
-              let output = device.makeBuffer(
-                length: max(1, destinationHeight * destinationRowBytes),
-                options: .storageModeShared),
-              let commandBuffer = context.queue.makeCommandBuffer() else {
-            throw MetalError.noDevice
-        }
+        let intermediate = try device.newBuffer(length: max(1, sourceHeight * intermediateRowBytes),
+                                                options: .storageModeShared)
+        let output = try device.newBuffer(length: max(1, destinationHeight * destinationRowBytes),
+                                          options: .storageModeShared)
+        let commandBuffer = try context.makeCommandBuffer()
 
         if sourceWidth != destinationWidth {
             try encode(commandBuffer: commandBuffer,
@@ -130,9 +126,7 @@ public final class VisionResize {
         gridWidth: Int,
         gridHeight: Int
     ) throws {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else {
-            throw MetalError.noQueue
-        }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         var params = params
         params.tapStride = UInt32(table.tapStride)
         params.precision = Int32(table.precision)
@@ -150,7 +144,7 @@ public final class VisionResize {
                 bytes: table.weights,
                 length: table.weights.count * MemoryLayout<Int16>.stride,
                 options: .storageModeShared) else {
-            throw MetalError.noDevice
+            throw MetalError.allocationFailed("\(table.weights.count * MemoryLayout<Int16>.stride)-byte buffer")
         }
         encoder.setBuffer(starts, offset: 0, index: 2)
         encoder.setBuffer(weights, offset: 0, index: 3)

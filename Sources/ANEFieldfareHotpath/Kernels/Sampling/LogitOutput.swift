@@ -22,15 +22,14 @@ final class LogitSoftcapSoftmax {
                        logits: any MTLBuffer,
                        probs: any MTLBuffer,
                        v: UInt32,
-                       softcap: Float = 30.0) {
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+                       softcap: Float = 30.0) throws {
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(logits, offset: 0, index: 0)
         enc.setBuffer(probs,  offset: 0, index: 1)
         let vVar       = v
-        let softcapVar = softcap
         enc.setValue(vVar, index: 2)
-        enc.setValue(softcapVar, index: 3)
+        enc.setValue(softcap, index: 3)
 
         let threadsPerGroup = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         let gridSize = MTLSize(width: threadsPerGroup, height: 1, depth: 1)
@@ -67,8 +66,8 @@ final class Sample {
                        topK: UInt32 = 0,
                        topP: Float = 1.0,
                        seed: UInt64,
-                       position: UInt32 = 0) {
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+                       position: UInt32 = 0) throws {
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(probs,    offset: 0, index: 0)
         enc.setBuffer(outToken, offset: 0, index: 1)
@@ -158,50 +157,41 @@ final class SampleTopK64 {
                        outToken: any MTLBuffer,
                        temperature: Float,
                        topP: Float,
-                       seed: UInt64) {
+                       seed: UInt64) throws {
         let threads = MTLSize(width: 256, height: 1, depth: 1)
 
-        if let enc = commandBuffer.makeTracedComputeEncoder() {
-            enc.setComputePipelineState(stage1PSO)
-            enc.setBuffer(probs, offset: 0, index: 0)
-            enc.setBuffer(stage1Values, offset: 0, index: 1)
-            enc.setBuffer(stage1Indices, offset: 0, index: 2)
-            let v = UInt32(vocab)
-            enc.setValue(v, index: 3)
-            enc.dispatchThreadgroups(MTLSize(width: stage1Groups, height: 1, depth: 1),
-                                     threadsPerThreadgroup: threads)
-            enc.endEncoding()
-        }
+        let stage1 = try commandBuffer.makeTracedComputeEncoder()
+        stage1.setComputePipelineState(stage1PSO)
+        stage1.setBuffer(probs, offset: 0, index: 0)
+        stage1.setBuffer(stage1Values, offset: 0, index: 1)
+        stage1.setBuffer(stage1Indices, offset: 0, index: 2)
+        stage1.setValue(UInt32(vocab), index: 3)
+        stage1.dispatchThreadgroups(MTLSize(width: stage1Groups, height: 1, depth: 1),
+                                    threadsPerThreadgroup: threads)
+        stage1.endEncoding()
 
-        if let enc = commandBuffer.makeTracedComputeEncoder() {
-            enc.setComputePipelineState(reducePSO)
-            enc.setBuffer(stage1Values, offset: 0, index: 0)
-            enc.setBuffer(stage1Indices, offset: 0, index: 1)
-            enc.setBuffer(stage2Values, offset: 0, index: 2)
-            enc.setBuffer(stage2Indices, offset: 0, index: 3)
-            let count = UInt32(stage1Count)
-            enc.setValue(count, index: 4)
-            enc.dispatchThreadgroups(MTLSize(width: stage2Groups, height: 1, depth: 1),
-                                     threadsPerThreadgroup: threads)
-            enc.endEncoding()
-        }
+        let reduce = try commandBuffer.makeTracedComputeEncoder()
+        reduce.setComputePipelineState(reducePSO)
+        reduce.setBuffer(stage1Values, offset: 0, index: 0)
+        reduce.setBuffer(stage1Indices, offset: 0, index: 1)
+        reduce.setBuffer(stage2Values, offset: 0, index: 2)
+        reduce.setBuffer(stage2Indices, offset: 0, index: 3)
+        reduce.setValue(UInt32(stage1Count), index: 4)
+        reduce.dispatchThreadgroups(MTLSize(width: stage2Groups, height: 1, depth: 1),
+                                    threadsPerThreadgroup: threads)
+        reduce.endEncoding()
 
-        if let enc = commandBuffer.makeTracedComputeEncoder() {
-            enc.setComputePipelineState(finalPSO)
-            enc.setBuffer(stage2Values, offset: 0, index: 0)
-            enc.setBuffer(stage2Indices, offset: 0, index: 1)
-            enc.setBuffer(outToken, offset: 0, index: 2)
-            let count = UInt32(stage2Count)
-            let temp = temperature
-            let p = topP
-            let rngSeed = seed
-            enc.setValue(count, index: 3)
-            enc.setValue(temp, index: 4)
-            enc.setValue(p, index: 5)
-            enc.setValue(rngSeed, index: 6)
-            enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
-                                     threadsPerThreadgroup: threads)
-            enc.endEncoding()
-        }
+        let final = try commandBuffer.makeTracedComputeEncoder()
+        final.setComputePipelineState(finalPSO)
+        final.setBuffer(stage2Values, offset: 0, index: 0)
+        final.setBuffer(stage2Indices, offset: 0, index: 1)
+        final.setBuffer(outToken, offset: 0, index: 2)
+        final.setValue(UInt32(stage2Count), index: 3)
+        final.setValue(temperature, index: 4)
+        final.setValue(topP, index: 5)
+        final.setValue(seed, index: 6)
+        final.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                   threadsPerThreadgroup: threads)
+        final.endEncoding()
     }
 }

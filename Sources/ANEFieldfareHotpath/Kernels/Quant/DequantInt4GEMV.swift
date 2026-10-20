@@ -41,7 +41,6 @@ final class DequantInt4GEMV {
                 constants: [
                     MetalFunctionConstant(index: 20, value: .uint32(shape.m)),
                     MetalFunctionConstant(index: 21, value: .uint32(shape.n)),
-                    MetalFunctionConstant(index: 22, value: .bool(true)),
                 ],
                 maxTotalThreadsPerThreadgroup: 512)
         }
@@ -59,7 +58,7 @@ final class DequantInt4GEMV {
 
     /// Weight rows per SIMD group for `rows` input rows. Two amortize the
     /// input traffic at 3–4 rows; past that the extra accumulators cost
-    /// occupancy (measured: twice as slow at 8 rows). The ALU kernel only:
+    /// occupancy. The ALU kernel only:
     /// 5+ rows normally take the matrix kernel.
     private static func weightRowsPerSIMD(rows: Int) -> Int {
         (3...4).contains(rows) ? 2 : 1
@@ -98,19 +97,19 @@ final class DequantInt4GEMV {
             constants: [
                 MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
                 MetalFunctionConstant(index: 28, value: .uint32(n)),
-                MetalFunctionConstant(index: 29, value: .bool(true)),
                 MetalFunctionConstant(index: 32, value: .uint32(UInt32(weightRows))),
             ],
             maxTotalThreadsPerThreadgroup: 256)
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        let values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
-        for i in values.indices { encoder.setValue(values[i], index: 5 + i) }
+        encoder.setValue(m, index: 5)
+        encoder.setValue(UInt32(xStrideElements), index: 8)
+        encoder.setValue(UInt32(yStrideElements), index: 9)
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(m) + 8 * weightRows - 1) / (8 * weightRows), height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -162,11 +161,10 @@ final class DequantInt4GEMV {
             constants: [
                 MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
                 MetalFunctionConstant(index: 28, value: .uint32(n)),
-                MetalFunctionConstant(index: 29, value: .bool(true)),
                 MetalFunctionConstant(index: 33, value: .bool(ids != nil)),
             ],
             maxTotalThreadsPerThreadgroup: 128)
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(pipeline)
         if let ids { encoder.setBuffer(ids, offset: 0, index: 10) }
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
@@ -174,8 +172,9 @@ final class DequantInt4GEMV {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        let values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
-        for i in values.indices { encoder.setValue(values[i], index: 5 + i) }
+        encoder.setValue(m, index: 5)
+        encoder.setValue(UInt32(xStrideElements), index: 8)
+        encoder.setValue(UInt32(yStrideElements), index: 9)
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(m) + 31) / 32, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
@@ -194,14 +193,14 @@ final class DequantInt4GEMV {
                 y: any MTLBuffer,
                 yOffset: Int = 0,
                 m: UInt32,
-                n: UInt32) {
+                n: UInt32) throws {
         precondition(n % UInt32(Quantization.groupSize) == 0,
                      "N must be a multiple of \(Quantization.groupSize)")
         // The kernel reads packed weights through a `ushort*`; the repacker
         // guarantees two-byte sub-tensor alignment but not four-byte alignment.
         precondition(weightsOffset % 2 == 0,
                      "dequant_int4_gemv_simd needs a 2-aligned weightsOffset, got \(weightsOffset)")
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(
             specializedPipelines[Shape(m: m, n: n)] ?? pipeline)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
@@ -209,10 +208,8 @@ final class DequantInt4GEMV {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        let mValue = m
-        let nValue = n
-        encoder.setValue(mValue, index: 5)
-        encoder.setValue(nValue, index: 6)
+        encoder.setValue(m, index: 5)
+        encoder.setValue(n, index: 6)
 
         let threadgroupSize = MTLSize(
             width: 32 * Self.rowsPerThreadgroup,

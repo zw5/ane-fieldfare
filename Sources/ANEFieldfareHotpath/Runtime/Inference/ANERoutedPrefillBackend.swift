@@ -252,7 +252,7 @@ final class ANERoutedPrefillBackend {
             argumentEncoder.setBuffer(job?.view.buffer, offset: Int(job?.view.offset ?? 0), index: slot)
         }
         guard let cb = carrierQueue.makeCommandBuffer() else { throw MetalError.commandBufferUnavailable }
-        guard let enc = cb.makeTracedComputeEncoder() else { throw MetalError.encoderUnavailable }
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(weightsPipeline)
         enc.setBuffer(bank.arguments, offset: 0, index: 0); enc.setBuffer(bank.input, offset: 0, index: 1)
         enc.setValues(offsetsArray, index: 2)
@@ -305,7 +305,7 @@ final class ANERoutedPrefillBackend {
         }
         guard let cb = carrierQueue.makeCommandBuffer() else { throw MetalError.commandBufferUnavailable }
         cb.encodeWaitForEvent(bank.event, value: bank.generation)
-        guard let enc = cb.makeTracedComputeEncoder() else { throw MetalError.encoderUnavailable }
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(outputsPipeline)
         enc.setBuffer(bank.output, offset: 0, index: 0); enc.setBuffer(partials, offset: 0, index: 1)
         enc.setBuffer(pairs, offset: 0, index: 2); enc.setBuffer(bank.metadata, offset: 0, index: 3)

@@ -44,11 +44,11 @@ import ANEFieldfareValidationSupport
         let outScale = Float(Sizes.D).squareRoot()
 
         let cb = ctx.queue.makeCommandBuffer()!
-        kernel.encode(commandBuffer: cb,
-                      table: tableBuf, scales: scalesBuf, biases: biasesBuf,
-                      out: outBuf,
-                      tokenId: token, d: UInt32(Sizes.D),
-                      outScale: outScale)
+        try kernel.encode(commandBuffer: cb,
+                          table: tableBuf, scales: scalesBuf, biases: biasesBuf,
+                          out: outBuf,
+                          tokenId: token, d: UInt32(Sizes.D),
+                          outScale: outScale)
         cb.commit(); cb.waitUntilCompleted()
 
         let ref = EmbedLookupRef.applyInt4(

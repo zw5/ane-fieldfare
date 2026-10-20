@@ -58,9 +58,9 @@ import ANEFieldfareValidationSupport
         for r in 0..<rows {
             guard let single = Fp16Buffer.make(ctx.device, count: m),
                   let cb = ctx.queue.makeCommandBuffer() else { Issue.record("allocation failed"); return }
-            kernel.encode(commandBuffer: cb, weights: wBuf, weightsOffset: weightByteOffset,
-                          scales: sBuf, scalesOffset: 0, biases: bBuf, biasesOffset: 0,
-                          x: xBuf, xOffset: r * n * 2, y: single, m: UInt32(m), n: UInt32(n))
+            try kernel.encode(commandBuffer: cb, weights: wBuf, weightsOffset: weightByteOffset,
+                              scales: sBuf, scalesOffset: 0, biases: bBuf, biasesOffset: 0,
+                              x: xBuf, xOffset: r * n * 2, y: single, m: UInt32(m), n: UInt32(n))
             cb.commit()
             cb.waitUntilCompleted()
             let gemv = Fp16Buffer.read(single, count: m)

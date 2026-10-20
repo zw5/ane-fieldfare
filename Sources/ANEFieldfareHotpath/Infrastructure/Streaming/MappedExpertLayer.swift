@@ -3,7 +3,7 @@ import Foundation
 public import Metal
 import Synchronization
 
-package enum ExpertStoreError: Error, CustomStringConvertible {
+package enum MappedExpertLayerError: Error, CustomStringConvertible {
     case mapFailed(path: String, errno: Int32)
     case sizeMismatch(expected: UInt64, actual: UInt64)
     case misaligned(String)
@@ -37,11 +37,10 @@ package enum ExpertStoreError: Error, CustomStringConvertible {
 ///
 /// Every expert is a no-copy `MTLBuffer` over its own page-aligned slice of
 /// the mapping, so a resident expert costs the GPU nothing to bind and the
-/// cache holds as many experts as free memory allows. There is no app-level
-/// slot pool to size, evict or double-buffer: the kernel's unified buffer
-/// cache is the expert cache. Correctness never depends on residency. The GPU
-/// faults in any page that is absent when a command buffer runs; `read` only
-/// makes that happen earlier and in parallel.
+/// page cache holds as many experts as free memory allows. Correctness never
+/// depends on residency: the GPU faults in any page that is absent when a
+/// command buffer runs, and `read` only makes that happen earlier and in
+/// parallel.
 public final class MappedExpertLayer: @unchecked Sendable {
     // SAFETY: every stored property is a `let`. The buffers alias a
     // `PROT_READ` mapping, so neither the CPU nor the GPU can write through
@@ -69,7 +68,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
     }
 
     /// Each expert read is split into this many concurrent `pread`s; one
-    /// 3.4 MB read at queue depth 1 leaves most SSD bandwidth idle.
+    /// read at queue depth 1 leaves most SSD bandwidth idle.
     public static let readSplit = 4
 
     public let expertCount: Int
@@ -92,26 +91,26 @@ public final class MappedExpertLayer: @unchecked Sendable {
         precondition(expertOffsets.count == expertCount, "one offset per expert")
         let page = Int(getpagesize())
         guard expertBytes > 0, expertBytes % page == 0 else {
-            throw ExpertStoreError.misaligned("expert stride \(expertBytes), page \(page)")
+            throw MappedExpertLayerError.misaligned("expert stride \(expertBytes), page \(page)")
         }
         let fd = fcntl(fileDescriptor, F_DUPFD_CLOEXEC, 0)
-        guard fd >= 0 else { throw ExpertStoreError.mapFailed(path: path, errno: errno) }
+        guard fd >= 0 else { throw MappedExpertLayerError.mapFailed(path: path, errno: errno) }
         var closeOnFailure = true
         defer { if closeOnFailure { close(fd) } }
 
         var info = stat()
-        guard unsafe fstat(fd, &info) == 0 else { throw ExpertStoreError.mapFailed(path: path, errno: errno) }
+        guard unsafe fstat(fd, &info) == 0 else { throw MappedExpertLayerError.mapFailed(path: path, errno: errno) }
         let offsets = expertOffsets.map { Int($0) }
         let required = (offsets.max() ?? 0) + expertBytes
         guard Int(info.st_size) >= required else {
-            throw ExpertStoreError.sizeMismatch(expected: UInt64(required), actual: UInt64(info.st_size))
+            throw MappedExpertLayerError.sizeMismatch(expected: UInt64(required), actual: UInt64(info.st_size))
         }
         if let bad = offsets.first(where: { $0 % page != 0 }) {
-            throw ExpertStoreError.misaligned("expert offset \(bad), page \(page)")
+            throw MappedExpertLayerError.misaligned("expert offset \(bad), page \(page)")
         }
         let mapped = (required + page - 1) / page * page
         guard let raw = unsafe mmap(nil, mapped, PROT_READ, MAP_SHARED, fd, 0), unsafe raw != MAP_FAILED else {
-            throw ExpertStoreError.mapFailed(path: path, errno: errno)
+            throw MappedExpertLayerError.mapFailed(path: path, errno: errno)
         }
         // From here the mapping owns the descriptor and unmaps on release.
         closeOnFailure = false
@@ -122,7 +121,7 @@ public final class MappedExpertLayer: @unchecked Sendable {
             guard let buffer = unsafe device.makeBuffer(bytesNoCopy: raw + offset, length: expertBytes,
                                                  options: .storageModeShared,
                                                  deallocator: { _, _ in withExtendedLifetime(mapping) {} }) else {
-                throw ExpertStoreError.bufferWrapFailed(expert: expert)
+                throw MappedExpertLayerError.bufferWrapFailed(expert: expert)
             }
             buffer.label = "\((path as NSString).lastPathComponent).e\(expert)"
             buffers.append(buffer)
@@ -135,15 +134,15 @@ public final class MappedExpertLayer: @unchecked Sendable {
     }
 
     private func checked(_ expert: Int) throws -> Int {
-        guard expert >= 0, expert < expertCount else { throw ExpertStoreError.expertOutOfRange(expert) }
+        guard expert >= 0, expert < expertCount else { throw MappedExpertLayerError.expertOutOfRange(expert) }
         return expertOffsets[expert]
     }
 
-    /// Pages probed per residency check. `mincore` costs about 0.25 µs per
-    /// page, so a whole 205-page expert costs ~54 µs, and decode asks 240
-    /// times a token. An expert's pages are read together and used together,
-    /// so they age out together; a spread sample of single pages decides as
-    /// well at 1/50 the cost. A wrong "resident" only costs a GPU page fault.
+    /// Pages probed per residency check. `mincore` is paid per page and decode
+    /// checks every routed expert of every layer. An expert's pages are read
+    /// together and used together, so they age out together; a spread sample
+    /// of single pages decides as well as all of them. A wrong "resident"
+    /// only costs a GPU page fault.
     public static let residencyProbes = 8
 
     /// Whether `expert` is in memory or already being read in.
@@ -201,9 +200,9 @@ public final class MappedExpertLayer: @unchecked Sendable {
             let n = unsafe pread(fd, sink, count - filled, off_t(offset + filled))
             if n < 0 {
                 if errno == EINTR { continue }
-                throw ExpertStoreError.preadFailed(errno: errno)
+                throw MappedExpertLayerError.preadFailed(errno: errno)
             }
-            if n == 0 { throw ExpertStoreError.shortRead(expected: count, actual: filled) }
+            if n == 0 { throw MappedExpertLayerError.shortRead(expected: count, actual: filled) }
             filled += n
         }
     }
@@ -222,7 +221,7 @@ private enum ReadSink {
         } ?? [UInt8](repeating: 0, count: bytes)
         defer { free.withLock { [sink] in $0.append(sink) } }
         return try sink.withUnsafeMutableBytes { buffer in
-            guard let base = buffer.baseAddress else { throw ExpertStoreError.shortRead(expected: bytes, actual: 0) }
+            guard let base = buffer.baseAddress else { throw MappedExpertLayerError.shortRead(expected: bytes, actual: 0) }
             return unsafe try body(base)
         }
     }

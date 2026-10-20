@@ -238,13 +238,13 @@ public final class DFlashDrafter {
         while done < rows {
             let n = min(Self.maxRows, rows - done), p0 = position + done
             try dispatch(cb, gatherPSO, [tap.buffer, feature],
-                     [UInt32(n), UInt32(layers), UInt32(D), UInt32(p0), UInt32(tap.capacity)],
-                     grid: MTLSize(width: layers * D, height: n, depth: 1))
+                         [UInt32(n), UInt32(layers), UInt32(D), UInt32(p0), UInt32(tap.capacity)],
+                         grid: MTLSize(width: layers * D, height: n, depth: 1))
             try project(cb, weights.fc, x: feature, y: contextHidden, rows: n)
             try norm(cb, normBF16PSO, x: contextHidden, weight: weights.hiddenNorm, out: contextHidden, rows: n)
             for (l, layer) in weights.layers.enumerated() {
                 try project(cb, layer.qkv.rows(config.qWidth..<config.qkvWidth), x: contextHidden, y: contextKV, rows: n)
-                let enc = try encoder(cb)
+                let enc = try cb.makeTracedComputeEncoder()
                 enc.setComputePipelineState(storeKVPSO)
                 enc.setBuffer(contextKV, offset: 0, index: 0)
                 enc.setBuffer(weights.buffer, offset: layer.kNorm, index: 1)
@@ -276,49 +276,55 @@ public final class DFlashDrafter {
         GPUTrace.setScope("draft")
         let D = config.hiddenSize, F = config.intermediateSize
         let emb = model.embedding
-        let embed = try encoder(cb)
-        embed.setComputePipelineState(embedPSO)
-        embed.setBuffer(emb.buffer, offset: Int(emb.offset), index: 0)
-        embed.setBuffer(emb.buffer, offset: Int(emb.scaleOffset), index: 1)
-        embed.setBuffer(emb.buffer, offset: Int(emb.biasOffset), index: 2)
-        embed.setBuffer(block, offset: 0, index: 3)
-        embed.setBuffer(residual, offset: 0, index: 4)
-        embed.setValue(UInt32(D), index: 5)
-        embed.setValue(Float(D).squareRoot(), index: 6)
-        embed.dispatchThreads(MTLSize(width: D, height: R, depth: 1),
-                              threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
-        embed.endEncoding()
+        do {
+            let enc = try cb.makeTracedComputeEncoder()
+            enc.setComputePipelineState(embedPSO)
+            enc.setBuffer(emb.buffer, offset: Int(emb.offset), index: 0)
+            enc.setBuffer(emb.buffer, offset: Int(emb.scaleOffset), index: 1)
+            enc.setBuffer(emb.buffer, offset: Int(emb.biasOffset), index: 2)
+            enc.setBuffer(block, offset: 0, index: 3)
+            enc.setBuffer(residual, offset: 0, index: 4)
+            enc.setValue(UInt32(D), index: 5)
+            enc.setValue(Float(D).squareRoot(), index: 6)
+            enc.dispatchThreads(MTLSize(width: D, height: R, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+            enc.endEncoding()
+        }
         try norm(cb, normF32PSO, x: residual, weight: weights.layers[0].inputNorm, out: normed, rows: R)
         for (l, layer) in weights.layers.enumerated() {
             try project(cb, layer.qkv, x: normed, y: qkv, rows: R)
-            let rope = try encoder(cb)
-            rope.setComputePipelineState(qkNormRopePSO)
-            rope.setBuffer(qkv, offset: 0, index: 0)
-            rope.setBuffer(weights.buffer, offset: layer.qNorm, index: 1)
-            rope.setBuffer(weights.buffer, offset: layer.kNorm, index: 2)
-            rope.setBuffer(state, offset: 0, index: 3)
-            rope.setValue(UInt32(config.heads), index: 4)
-            rope.setValue(UInt32(config.kvHeads), index: 5)
-            rope.setValue(config.ropeTheta, index: 6)
-            rope.setValue(config.rmsEps, index: 7)
-            rope.dispatchThreadgroups(MTLSize(width: config.heads + config.kvHeads, height: R, depth: 1),
-                                      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
-            rope.endEncoding()
-            let attend = try encoder(cb)
-            attend.setComputePipelineState(attentionPSO)
-            attend.setBuffer(qkv, offset: 0, index: 0)
-            attend.setBuffer(kCache[l], offset: 0, index: 1)
-            attend.setBuffer(vCache[l], offset: 0, index: 2)
-            attend.setBuffer(attention, offset: 0, index: 3)
-            attend.setBuffer(state, offset: 0, index: 4)
-            let params: [UInt32] = [UInt32(config.heads), UInt32(config.kvHeads), UInt32(R),
-                                    config.slidingLayers[l] ? 1 : 0,
-                                    UInt32(min(config.slidingWindow, Int(UInt32.max))),
-                                    UInt32(cacheCapacity[l])]
-            for i in params.indices { attend.setValue(params[i], index: 5 + i) }
-            attend.dispatchThreadgroups(MTLSize(width: config.heads, height: R, depth: 1),
-                                        threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
-            attend.endEncoding()
+            do {
+                let enc = try cb.makeTracedComputeEncoder()
+                enc.setComputePipelineState(qkNormRopePSO)
+                enc.setBuffer(qkv, offset: 0, index: 0)
+                enc.setBuffer(weights.buffer, offset: layer.qNorm, index: 1)
+                enc.setBuffer(weights.buffer, offset: layer.kNorm, index: 2)
+                enc.setBuffer(state, offset: 0, index: 3)
+                enc.setValue(UInt32(config.heads), index: 4)
+                enc.setValue(UInt32(config.kvHeads), index: 5)
+                enc.setValue(config.ropeTheta, index: 6)
+                enc.setValue(config.rmsEps, index: 7)
+                enc.dispatchThreadgroups(MTLSize(width: config.heads + config.kvHeads, height: R, depth: 1),
+                                         threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+                enc.endEncoding()
+            }
+            do {
+                let enc = try cb.makeTracedComputeEncoder()
+                enc.setComputePipelineState(attentionPSO)
+                enc.setBuffer(qkv, offset: 0, index: 0)
+                enc.setBuffer(kCache[l], offset: 0, index: 1)
+                enc.setBuffer(vCache[l], offset: 0, index: 2)
+                enc.setBuffer(attention, offset: 0, index: 3)
+                enc.setBuffer(state, offset: 0, index: 4)
+                let params: [UInt32] = [UInt32(config.heads), UInt32(config.kvHeads), UInt32(R),
+                                        config.slidingLayers[l] ? 1 : 0,
+                                        UInt32(min(config.slidingWindow, Int(UInt32.max))),
+                                        UInt32(cacheCapacity[l])]
+                for i in params.indices { enc.setValue(params[i], index: 5 + i) }
+                enc.dispatchThreadgroups(MTLSize(width: config.heads, height: R, depth: 1),
+                                         threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+                enc.endEncoding()
+            }
             try project(cb, layer.o, x: attention, y: delta, rows: R)
             try addNorm(cb, weight: layer.postAttentionNorm, rows: R)
             try project(cb, layer.gateUp, x: normed, y: gateUp, rows: R)
@@ -351,7 +357,7 @@ public final class DFlashDrafter {
                                       sampling: sampling.map { .init(rule: $0, keyBase: 1, keyOffset: state) })
         }
         try dispatch(cb, finishPSO, [picks, hotVocabulary?.ids ?? picks, block],
-                 [UInt32(R - 1), hotVocabulary == nil ? 0 : 1], grid: MTLSize(width: R - 1, height: 1, depth: 1))
+                     [UInt32(R - 1), hotVocabulary == nil ? 0 : 1], grid: MTLSize(width: R - 1, height: 1, depth: 1))
     }
 
     /// After a verify of `rows` rows of `block` starting at position
@@ -360,7 +366,7 @@ public final class DFlashDrafter {
     /// anchors the next block at the target's next token. The verify's
     /// context rows must already be in the cache (`encodeContextUpdate`).
     func encodeAccept(_ cb: any MTLCommandBuffer, verified: any MTLBuffer, rows: Int) throws {
-        let enc = try encoder(cb)
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(acceptPSO)
         enc.setBuffer(block, offset: 0, index: 0)
         enc.setBuffer(verified, offset: 0, index: 1)
@@ -374,10 +380,6 @@ public final class DFlashDrafter {
 
     // MARK: - Helpers
 
-    private func encoder(_ cb: any MTLCommandBuffer) throws -> any MTLComputeCommandEncoder {
-        guard let enc = cb.makeTracedComputeEncoder() else { throw MetalError.encoderUnavailable }
-        return enc
-    }
 
     private func project(_ cb: any MTLCommandBuffer, _ m: DFlashMatrix, x: any MTLBuffer, y: any MTLBuffer,
                          rows: Int) throws {
@@ -391,7 +393,7 @@ public final class DFlashDrafter {
 
     private func dispatch(_ cb: any MTLCommandBuffer, _ pso: any MTLComputePipelineState, _ buffers: [any MTLBuffer],
                           _ constants: [UInt32], grid: MTLSize) throws {
-        let enc = try encoder(cb)
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         for (i, b) in buffers.enumerated() { enc.setBuffer(b, offset: 0, index: i) }
         for i in constants.indices { enc.setValue(constants[i], index: buffers.count + i) }
@@ -401,7 +403,7 @@ public final class DFlashDrafter {
 
     private func norm(_ cb: any MTLCommandBuffer, _ pso: any MTLComputePipelineState, x: any MTLBuffer,
                       weight: Int, out: any MTLBuffer, rows: Int) throws {
-        let enc = try encoder(cb)
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(x, offset: 0, index: 0)
         enc.setBuffer(weights.buffer, offset: weight, index: 1)
@@ -415,7 +417,7 @@ public final class DFlashDrafter {
 
     /// residual += delta, normed = rmsnorm(residual) * weight.
     private func addNorm(_ cb: any MTLCommandBuffer, weight: Int, rows: Int) throws {
-        let enc = try encoder(cb)
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(addNormPSO)
         enc.setBuffer(residual, offset: 0, index: 0)
         enc.setBuffer(delta, offset: 0, index: 1)

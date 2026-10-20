@@ -229,7 +229,7 @@ read"). It predicts them with the **next-layer guess**: a small matrix per
 layer, fitted offline on routing traces, that predicts the next layer's router
 choices from the current hidden state (`Sources/ANEFieldfareHotpath/NextLayerGuess/`).
 
-Code: `Sources/ANEFieldfareHotpath/Infrastructure/Streaming/ExpertStore.swift`.
+Code: `Sources/ANEFieldfareHotpath/Infrastructure/Streaming/MappedExpertLayer.swift`.
 
 ### GPU and Neural Engine
 

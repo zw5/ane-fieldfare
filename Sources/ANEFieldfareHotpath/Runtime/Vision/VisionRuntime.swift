@@ -90,12 +90,8 @@ public final class VisionRuntime {
         // Pre-Apple10 GPUs convert the pooled features to FP16 for the projector.
         self.usesBF16Projector = context.device.supportsFamily(.apple10)
         self.imageResize = try VisionResize(context: context)
-        self.projectorKernel = MPPPrefillInt4QMM(
+        self.projectorKernel = try MPPPrefillInt4QMM(
             context: context, variant: usesBF16Projector ? .apple10BF16 : .control)
-        guard projectorKernel.isAvailable else {
-            throw VisionRuntimeError.unsupportedKernel(
-                projectorKernel.unavailableReason ?? "INT4 projector unavailable")
-        }
     }
 
     public func encodeImage(
@@ -197,18 +193,18 @@ public final class VisionRuntime {
             let fixed = try mapRegion([patchWeight, positionTable])
             let commandBuffer = try makeCommandBuffer()
             try scratch.encodeClear(commandBuffer: commandBuffer)
-            attention.encodeClearPadding(commandBuffer: commandBuffer)
-            primitives.encodeNormalize(commandBuffer: commandBuffer,
-                                       input: input.patchesBF16,
-                                       output: scratch.normalizedPatches,
-                                       rows: rows, paddedRows: scratch.paddedRows)
-            linear.encode(
+            try attention.encodeClearPadding(commandBuffer: commandBuffer)
+            try primitives.encodeNormalize(commandBuffer: commandBuffer,
+                                           input: input.patchesBF16,
+                                           output: scratch.normalizedPatches,
+                                           rows: rows, paddedRows: scratch.paddedRows)
+            try linear.encode(
                 commandBuffer: commandBuffer,
                 input: scratch.normalizedPatches,
                 weights: fixed.buffer, weightsOffset: try fixed.offset(of: patchWeight),
                 output: scratch.hiddenA,
                 m: scratch.paddedRows, n: VisionConfig.hiddenSize, k: VisionConfig.patchDimension)
-            primitives.encodeAddPosition(
+            try primitives.encodeAddPosition(
                 commandBuffer: commandBuffer,
                 hidden: scratch.hiddenA,
                 table: fixed.buffer, tableOffset: try fixed.offset(of: positionTable),
@@ -230,7 +226,7 @@ public final class VisionRuntime {
                 try weights.offset(of: prefix + suffix)
             }
 
-            primitives.encodeRMSNorm(
+            try primitives.encodeRMSNorm(
                 commandBuffer: commandBuffer,
                 input: scratch.hiddenA, output: scratch.hiddenB,
                 weightBuffer: weights.buffer,
@@ -240,7 +236,7 @@ public final class VisionRuntime {
                 ("self_attn.k_proj.linear.weight", attention.fusedK),
                 ("self_attn.v_proj.linear.weight", attention.fusedV),
             ] {
-                linear.encode(
+                try linear.encode(
                     commandBuffer: commandBuffer,
                     input: scratch.hiddenB,
                     weights: weights.buffer, weightsOffset: try offset(suffix),
@@ -248,7 +244,7 @@ public final class VisionRuntime {
                     m: scratch.paddedRows, n: VisionConfig.hiddenSize, k: VisionConfig.hiddenSize,
                     paddedHeadStore: paddedHeadStore)
             }
-            primitives.encodeQKV(
+            try primitives.encodeQKV(
                 commandBuffer: commandBuffer,
                 q: attention.fusedQ, k: attention.fusedK, v: attention.fusedV,
                 weights: weights.buffer,
@@ -257,30 +253,30 @@ public final class VisionRuntime {
                 positions: input.positionsInt32x2,
                 rows: rows, heads: VisionConfig.numHeads,
                 paddedRowStride: scratch.paddedRows)
-            attention.encode(commandBuffer: commandBuffer,
+            try attention.encode(commandBuffer: commandBuffer,
                              q: attention.fusedQ, k: attention.fusedK, v: attention.fusedV,
                              output: scratch.attention,
                              sequenceLength: rows, numHeads: VisionConfig.numHeads,
                              inputRowStride: scratch.paddedRows)
-            linear.encode(
+            try linear.encode(
                 commandBuffer: commandBuffer,
                 input: scratch.attention,
                 weights: weights.buffer,
                 weightsOffset: try offset("self_attn.o_proj.linear.weight"),
                 output: scratch.q,
                 m: scratch.paddedRows, n: VisionConfig.hiddenSize, k: VisionConfig.hiddenSize)
-            primitives.encodePostnormResidual(
+            try primitives.encodePostnormResidual(
                 commandBuffer: commandBuffer,
                 residual: scratch.hiddenA, branch: scratch.q,
                 weightBuffer: weights.buffer,
                 weightOffset: try offset("post_attention_layernorm.weight"),
                 output: scratch.hiddenB, rows: rows)
-            primitives.encodeRMSNorm(
+            try primitives.encodeRMSNorm(
                 commandBuffer: commandBuffer,
                 input: scratch.hiddenB, output: scratch.q,
                 weightBuffer: weights.buffer,
                 weightOffset: try offset("pre_feedforward_layernorm.weight"), rows: rows)
-            linear.encode(
+            try linear.encode(
                 commandBuffer: commandBuffer,
                 input: scratch.q,
                 weights: weights.buffer,
@@ -288,7 +284,7 @@ public final class VisionRuntime {
                 output: scratch.gate,
                 m: scratch.paddedRows, n: VisionConfig.intermediateSize,
                 k: VisionConfig.hiddenSize)
-            linear.encode(
+            try linear.encode(
                 commandBuffer: commandBuffer,
                 input: scratch.q,
                 weights: weights.buffer,
@@ -297,14 +293,14 @@ public final class VisionRuntime {
                 m: scratch.paddedRows, n: VisionConfig.intermediateSize,
                 k: VisionConfig.hiddenSize,
                 fusesGeGLU: true)
-            linear.encode(
+            try linear.encode(
                 commandBuffer: commandBuffer,
                 input: scratch.gate,
                 weights: weights.buffer,
                 weightsOffset: try offset("mlp.down_proj.linear.weight"),
                 output: scratch.q,
                 m: scratch.paddedRows, n: VisionConfig.hiddenSize, k: VisionConfig.intermediateSize)
-            primitives.encodePostnormResidual(
+            try primitives.encodePostnormResidual(
                 commandBuffer: commandBuffer,
                 residual: scratch.hiddenB, branch: scratch.q,
                 weightBuffer: weights.buffer,
@@ -329,7 +325,7 @@ public final class VisionRuntime {
             throw MetalError.allocationFailed("vision features")
         }
         let commandBuffer = try makeCommandBuffer()
-        primitives.encodePool(
+        try primitives.encodePool(
             commandBuffer: commandBuffer,
             input: scratch.hiddenA,
             weights: projector.buffer,
@@ -338,12 +334,12 @@ public final class VisionRuntime {
             output: scratch.attention,
             patchWidth: patchGridWidth, patchHeight: patchGridHeight)
         if !usesBF16Projector {
-            primitives.encodeBFloatToHalf(
+            try primitives.encodeBFloatToHalf(
                 commandBuffer: commandBuffer,
                 input: scratch.attention, output: scratch.hiddenB,
                 count: outputRows * VisionConfig.hiddenSize)
         }
-        let projectorPath = projectorKernel.encode(
+        try projectorKernel.encode(
             commandBuffer: commandBuffer,
             weights: projector.buffer,
             weightsOffset: try projector.offset(
@@ -357,9 +353,6 @@ public final class VisionRuntime {
             x: usesBF16Projector ? scratch.attention : scratch.hiddenB,
             y: features,
             m: outputRows, n: VisionConfig.textHiddenSize, k: VisionConfig.hiddenSize)
-        guard projectorPath != .fallback else {
-            throw VisionRuntimeError.unsupportedKernel("INT4 projector fell back")
-        }
         try commitPipelined(commandBuffer, retaining: projector)
         while !inFlight.isEmpty { try drainOldest() }
 

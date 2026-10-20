@@ -133,12 +133,12 @@ import ANEFieldfareValidationSupport
         guard let cmd = ctx.queue.makeCommandBuffer() else {
             Issue.record("Failed to make command buffer"); return
         }
-        kernel.encode(commandBuffer: cmd,
-                      weights: weightsBuf, weightsOffset: 0,
-                      scales: weightsBuf, scalesOffset: scalesOffset,
-                      biases: weightsBuf, biasesOffset: biasesOffset,
-                      x: xBuf, y: yBuf,
-                      m: UInt32(Sizes.M), n: UInt32(Sizes.N))
+        try kernel.encode(commandBuffer: cmd,
+                          weights: weightsBuf, weightsOffset: 0,
+                          scales: weightsBuf, scalesOffset: scalesOffset,
+                          biases: weightsBuf, biasesOffset: biasesOffset,
+                          x: xBuf, y: yBuf,
+                          m: UInt32(Sizes.M), n: UInt32(Sizes.N))
         cmd.commit()
         cmd.waitUntilCompleted()
 

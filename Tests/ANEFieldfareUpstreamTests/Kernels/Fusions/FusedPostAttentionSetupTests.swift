@@ -38,12 +38,12 @@ import ANEFieldfareValidationSupport
 
         // The legacy residual add runs on the CPU between two command buffers.
         let attentionNormCB = try #require(ctx.queue.makeCommandBuffer())
-        rms.encodeBF16W(commandBuffer: attentionNormCB,
-                        x: attnLegacy,
-                        weight: wPostBuf,
-                        out: attnLegacy,
-                        d: UInt32(Self.d),
-                        eps: Self.eps)
+        try rms.encodeBF16W(commandBuffer: attentionNormCB,
+                            x: attnLegacy,
+                            weight: wPostBuf,
+                            out: attnLegacy,
+                            d: UInt32(Self.d),
+                            eps: Self.eps)
         attentionNormCB.commit()
         attentionNormCB.waitUntilCompleted()
         if let error = attentionNormCB.error {
@@ -58,35 +58,35 @@ import ANEFieldfareValidationSupport
         }
 
         let cb = try #require(ctx.queue.makeCommandBuffer())
-        rms.encodeBF16W(commandBuffer: cb,
-                        x: hiddenLegacy,
-                        weight: wPreBuf,
-                        out: denseLegacy,
-                        d: UInt32(Self.d),
-                        eps: Self.eps)
-        rms.encodeBF16W(commandBuffer: cb,
-                        x: hiddenLegacy,
-                        weight: wPre2Buf,
-                        out: routedLegacy,
-                        d: UInt32(Self.d),
-                        eps: Self.eps)
-        rms.encodeBF16W(commandBuffer: cb,
-                        x: hiddenLegacy,
-                        weight: unitBuf,
-                        out: routerLegacy,
-                        d: UInt32(Self.d),
-                        eps: Self.eps)
-        fused.encode(commandBuffer: cb,
-                     hidden: hiddenFused,
-                     attn: attnFused,
-                     denseX: denseFused,
-                     routedX: routedFused,
-                     routerX: routerFused,
-                     postAttentionWeight: wPostBuf,
-                     preFFNWeight: wPreBuf,
-                     preFFN2Weight: wPre2Buf,
-                     d: UInt32(Self.d),
-                     eps: Self.eps)
+        try rms.encodeBF16W(commandBuffer: cb,
+                            x: hiddenLegacy,
+                            weight: wPreBuf,
+                            out: denseLegacy,
+                            d: UInt32(Self.d),
+                            eps: Self.eps)
+        try rms.encodeBF16W(commandBuffer: cb,
+                            x: hiddenLegacy,
+                            weight: wPre2Buf,
+                            out: routedLegacy,
+                            d: UInt32(Self.d),
+                            eps: Self.eps)
+        try rms.encodeBF16W(commandBuffer: cb,
+                            x: hiddenLegacy,
+                            weight: unitBuf,
+                            out: routerLegacy,
+                            d: UInt32(Self.d),
+                            eps: Self.eps)
+        try fused.encode(commandBuffer: cb,
+                         hidden: hiddenFused,
+                         attn: attnFused,
+                         denseX: denseFused,
+                         routedX: routedFused,
+                         routerX: routerFused,
+                         postAttentionWeight: wPostBuf,
+                         preFFNWeight: wPreBuf,
+                         preFFN2Weight: wPre2Buf,
+                         d: UInt32(Self.d),
+                         eps: Self.eps)
         cb.commit()
         cb.waitUntilCompleted()
         if let err = cb.error {

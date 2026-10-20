@@ -144,7 +144,7 @@ public enum ModelError: Error, CustomStringConvertible, Equatable {
         case .residentBufferWrapFailed:
             return "MTLDevice.makeBuffer(bytesNoCopy:...) returned nil"
         case .indexCorrupt(let d):
-            return "resident index is corrupt: \(d)"
+            return "invalid model data: \(d)"
         case .posixFailed(let c, let e):
             return "\(c) failed with errno \(e)"
         }

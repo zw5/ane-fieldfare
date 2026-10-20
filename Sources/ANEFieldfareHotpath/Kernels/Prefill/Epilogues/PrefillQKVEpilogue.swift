@@ -27,7 +27,7 @@ final class PrefillQKVEpilogue {
                 kvTokenStrideElements: UInt32,
                 theta: Float,
                 rotatedPairs: UInt32,
-                eps: Float) {
+                eps: Float) throws {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(headDim > 0 && headDim % 2 == 0, "headDim must be positive and even")
         precondition(numQHeads > 0, "numQHeads must be positive")
@@ -39,71 +39,71 @@ final class PrefillQKVEpilogue {
         precondition(kvTokenStrideElements >= numKVHeads * headDim,
                      "KV token stride is too small")
 
-        perHeadNorm.encodeBF16W(commandBuffer: commandBuffer,
-                                x: q,
-                                weight: qWeight,
-                                weightOffset: qWeightOffset,
-                                out: q,
-                                queryCount: queryCount,
-                                headDim: headDim,
-                                numHeads: numQHeads,
-                                tokenStrideElements: qTokenStrideElements,
-                                eps: eps)
-        perHeadNorm.encodeBF16W(commandBuffer: commandBuffer,
-                                x: k,
-                                weight: kWeight,
-                                weightOffset: kWeightOffset,
-                                out: k,
-                                queryCount: queryCount,
-                                headDim: headDim,
-                                numHeads: numKVHeads,
-                                tokenStrideElements: kvTokenStrideElements,
-                                eps: eps)
-        perHeadNorm.encodeNoScale(commandBuffer: commandBuffer,
-                                  x: v,
-                                  out: v,
-                                  queryCount: queryCount,
-                                  headDim: headDim,
-                                  numHeads: numKVHeads,
-                                  tokenStrideElements: kvTokenStrideElements,
-                                  eps: eps)
+        try perHeadNorm.encodeBF16W(commandBuffer: commandBuffer,
+                                    x: q,
+                                    weight: qWeight,
+                                    weightOffset: qWeightOffset,
+                                    out: q,
+                                    queryCount: queryCount,
+                                    headDim: headDim,
+                                    numHeads: numQHeads,
+                                    tokenStrideElements: qTokenStrideElements,
+                                    eps: eps)
+        try perHeadNorm.encodeBF16W(commandBuffer: commandBuffer,
+                                    x: k,
+                                    weight: kWeight,
+                                    weightOffset: kWeightOffset,
+                                    out: k,
+                                    queryCount: queryCount,
+                                    headDim: headDim,
+                                    numHeads: numKVHeads,
+                                    tokenStrideElements: kvTokenStrideElements,
+                                    eps: eps)
+        try perHeadNorm.encodeNoScale(commandBuffer: commandBuffer,
+                                      x: v,
+                                      out: v,
+                                      queryCount: queryCount,
+                                      headDim: headDim,
+                                      numHeads: numKVHeads,
+                                      tokenStrideElements: kvTokenStrideElements,
+                                      eps: eps)
 
         if rotatedPairs * 2 == headDim {
-            rope.encodeDefaultNeox(commandBuffer: commandBuffer,
-                                   data: q,
-                                   startPosition: startPosition,
-                                   queryCount: queryCount,
-                                   headDim: headDim,
-                                   numHeads: numQHeads,
-                                   tokenStrideElements: qTokenStrideElements,
-                                   theta: theta)
-            rope.encodeDefaultNeox(commandBuffer: commandBuffer,
-                                   data: k,
-                                   startPosition: startPosition,
-                                   queryCount: queryCount,
-                                   headDim: headDim,
-                                   numHeads: numKVHeads,
-                                   tokenStrideElements: kvTokenStrideElements,
-                                   theta: theta)
+            try rope.encodeDefaultNeox(commandBuffer: commandBuffer,
+                                       data: q,
+                                       startPosition: startPosition,
+                                       queryCount: queryCount,
+                                       headDim: headDim,
+                                       numHeads: numQHeads,
+                                       tokenStrideElements: qTokenStrideElements,
+                                       theta: theta)
+            try rope.encodeDefaultNeox(commandBuffer: commandBuffer,
+                                       data: k,
+                                       startPosition: startPosition,
+                                       queryCount: queryCount,
+                                       headDim: headDim,
+                                       numHeads: numKVHeads,
+                                       tokenStrideElements: kvTokenStrideElements,
+                                       theta: theta)
         } else {
-            rope.encodeProportionalNeox(commandBuffer: commandBuffer,
-                                        data: q,
-                                        startPosition: startPosition,
-                                        queryCount: queryCount,
-                                        headDim: headDim,
-                                        numHeads: numQHeads,
-                                        rotatedPairs: rotatedPairs,
-                                        tokenStrideElements: qTokenStrideElements,
-                                        theta: theta)
-            rope.encodeProportionalNeox(commandBuffer: commandBuffer,
-                                        data: k,
-                                        startPosition: startPosition,
-                                        queryCount: queryCount,
-                                        headDim: headDim,
-                                        numHeads: numKVHeads,
-                                        rotatedPairs: rotatedPairs,
-                                        tokenStrideElements: kvTokenStrideElements,
-                                        theta: theta)
+            try rope.encodeProportionalNeox(commandBuffer: commandBuffer,
+                                            data: q,
+                                            startPosition: startPosition,
+                                            queryCount: queryCount,
+                                            headDim: headDim,
+                                            numHeads: numQHeads,
+                                            rotatedPairs: rotatedPairs,
+                                            tokenStrideElements: qTokenStrideElements,
+                                            theta: theta)
+            try rope.encodeProportionalNeox(commandBuffer: commandBuffer,
+                                            data: k,
+                                            startPosition: startPosition,
+                                            queryCount: queryCount,
+                                            headDim: headDim,
+                                            numHeads: numKVHeads,
+                                            rotatedPairs: rotatedPairs,
+                                            tokenStrideElements: kvTokenStrideElements,
+                                            theta: theta)
         }
     }
 }

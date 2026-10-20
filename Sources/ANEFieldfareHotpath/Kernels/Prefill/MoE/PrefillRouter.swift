@@ -44,14 +44,14 @@ final class PrefillRouter {
                            numExperts: UInt32,
                            d: UInt32,
                            topK: UInt32,
-                           hiddenStrideElements: UInt32) {
+                           hiddenStrideElements: UInt32) throws {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(numExperts <= 256, "numExperts > 256 is not supported")
         precondition(topK > 0 && topK <= 64, "topK must be in 1...64")
         precondition(d % UInt32(Quantization.groupSize) == 0,
                      "D must be a multiple of \(Quantization.groupSize)")
         precondition(hiddenStrideElements >= d, "hidden stride is too small")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)

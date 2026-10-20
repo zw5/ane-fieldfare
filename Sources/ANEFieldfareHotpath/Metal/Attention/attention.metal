@@ -39,29 +39,22 @@ constant constexpr uint kAttnMaxHeadDim   = 512;
 constant uint FC_ATTN_HEAD_DIM [[function_constant(60)]];
 constant uint FC_ATTN_NUM_Q_HEADS [[function_constant(61)]];
 constant uint FC_ATTN_NUM_KV_HEADS [[function_constant(62)]];
-constant bool FC_ATTN_USE_FC [[function_constant(63)]];
 constant uint FC_ATTN_NUM_CHUNKS [[function_constant(65)]];
 constant uint FC_ATTN_RING_CAP [[function_constant(69)]];
 
 static inline uint attn_fc_head_dim(constant uint& head_dim) {
-    return (is_function_constant_defined(FC_ATTN_USE_FC) &&
-            FC_ATTN_USE_FC &&
-            is_function_constant_defined(FC_ATTN_HEAD_DIM))
+    return is_function_constant_defined(FC_ATTN_HEAD_DIM)
         ? FC_ATTN_HEAD_DIM
         : head_dim;
 }
 static inline uint attn_fc_num_q_heads(constant uint& num_q_heads) {
-    return (is_function_constant_defined(FC_ATTN_USE_FC) &&
-            FC_ATTN_USE_FC &&
-            is_function_constant_defined(FC_ATTN_NUM_Q_HEADS))
+    return is_function_constant_defined(FC_ATTN_NUM_Q_HEADS)
         ? FC_ATTN_NUM_Q_HEADS
         : num_q_heads;
 }
 
 static inline uint attn_fc_num_kv_heads(constant uint& num_kv_heads) {
-    return (is_function_constant_defined(FC_ATTN_USE_FC) &&
-            FC_ATTN_USE_FC &&
-            is_function_constant_defined(FC_ATTN_NUM_KV_HEADS))
+    return is_function_constant_defined(FC_ATTN_NUM_KV_HEADS)
         ? FC_ATTN_NUM_KV_HEADS
         : num_kv_heads;
 }

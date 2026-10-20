@@ -4,11 +4,6 @@ import Testing
 @testable import ANEFieldfareHotpath
 import ANEFieldfareValidationSupport
 
-private let mppTensorOpsAvailable: Bool = {
-    guard let context = try? MetalContext() else { return false }
-    return MPPPrefillInt4QMM(context: context).isAvailable
-}()
-
 @Suite struct MPPPrefillInt4QMMTests {
     private struct Inputs {
         let packed: [UInt8]
@@ -104,15 +99,13 @@ private let mppTensorOpsAvailable: Bool = {
         return output
     }
 
-    /// One oracle for both prefill INT4 GEMMs: the `PrefillInt4QMM` fallback
-    /// always, and the TensorOps candidate where the runtime supports it.
-    /// Partial tiles in M and N, adversarial affine terms, unaligned weights.
-    @Test func int4QMMAndTensorOpsCandidateMatchFP32AffineReference() throws {
+    /// The TensorOps INT4 GEMM against an FP32 affine reference: partial
+    /// tiles in M and N, adversarial affine terms, unaligned weights.
+    @Test func tensorOpsQMMMatchesFP32AffineReference() throws {
         let m = 17, n = 35, k = 128
         let weightOffset = 13, scaleOffset = 2, biasOffset = 6
         let context = try MetalContext()
-        let baseline = try PrefillInt4QMM(context: context)
-        let candidate = MPPPrefillInt4QMM(context: context)
+        let candidate = try MPPPrefillInt4QMM(context: context)
         let inputs = Self.makeInputs(m: m, n: n, k: k, adversarialAffine: true)
         guard let weights = Self.makeBuffer(device: context.device,
                                             values: inputs.packed,
@@ -124,47 +117,33 @@ private let mppTensorOpsAvailable: Bool = {
                                                values: inputs.biases,
                                                prefixBytes: biasOffset),
               let input = Fp16Buffer.make(context.device, halves: inputs.x),
-              let baselineBuffer = Fp16Buffer.make(context.device, count: m * n),
               let candidateBuffer = Fp16Buffer.make(context.device, count: m * n),
               let commandBuffer = context.queue.makeCommandBuffer() else {
             Issue.record("buffer allocation failed")
             return
         }
 
-        baseline.encode(commandBuffer: commandBuffer,
-                        weights: weights, weightsOffset: weightOffset,
-                        scales: scaleBuffer, scalesOffset: scaleOffset,
-                        biases: biasBuffer, biasesOffset: biasOffset,
-                        x: input, y: baselineBuffer, t: m, n: n, k: k)
-        let path = mppTensorOpsAvailable
-            ? candidate.encode(commandBuffer: commandBuffer,
-                               weights: weights, weightsOffset: weightOffset,
-                               scales: scaleBuffer, scalesOffset: scaleOffset,
-                               biases: biasBuffer, biasesOffset: biasOffset,
-                               x: input, y: candidateBuffer, m: m, n: n, k: k)
-            : nil
+        try candidate.encode(commandBuffer: commandBuffer,
+                             weights: weights, weightsOffset: weightOffset,
+                             scales: scaleBuffer, scalesOffset: scaleOffset,
+                             biases: biasBuffer, biasesOffset: biasOffset,
+                             x: input, y: candidateBuffer, m: m, n: n, k: k)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)
 
         let reference = Self.cpuReference(inputs, m: m, n: n, k: k)
-        var outputs = [("PrefillInt4QMM", baselineBuffer)]
-        if let path {
-            #expect(path == .affineThreadgroupF16)
-            outputs.append(("MPP candidate", candidateBuffer))
-        }
-        for (label, buffer) in outputs {
-            let actual = Fp16Buffer.read(buffer, count: m * n)
-            let maxAbs = RelError.maxAbsDiff(actual, reference)
-            let relative = RelError.compute(actual: actual, reference: reference)
-            #expect(maxAbs <= 0.03, "\(label) maxAbs=\(maxAbs) rel=\(relative)")
-            #expect(relative <= 1e-3, "\(label) maxAbs=\(maxAbs) rel=\(relative)")
-        }
+        let actual = Fp16Buffer.read(candidateBuffer, count: m * n)
+        let maxAbs = RelError.maxAbsDiff(actual, reference)
+        let relative = RelError.compute(actual: actual, reference: reference)
+        #expect(maxAbs <= 0.03, "maxAbs=\(maxAbs) rel=\(relative)")
+        #expect(relative <= 1e-3, "maxAbs=\(maxAbs) rel=\(relative)")
     }
 
-    @Test func apple10BF16ProjectorPreservesBF16AffineSemantics() throws {
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice()?.supportsFamily(.apple10) == true,
+                   "the BF16 projector kernel needs an Apple10 GPU"))
+    func apple10BF16ProjectorPreservesBF16AffineSemantics() throws {
         let context = try MetalContext()
-        guard context.device.supportsFamily(.apple10) else { return }
         let m = 64, n = 64, k = 128
         let inputs = Self.makeInputs(m: m, n: n, k: k, adversarialAffine: true)
         let activations = inputs.x.map { Quantization.bf16Bits(Float($0)) }
@@ -177,31 +156,24 @@ private let mppTensorOpsAvailable: Bool = {
             Issue.record("buffer allocation failed")
             return
         }
-        let candidate = MPPPrefillInt4QMM(context: context, variant: .apple10BF16)
-        #expect(candidate.isAvailable, "\(candidate.unavailableReason ?? "unknown error")")
-        // A short output must still project. The BF16 variant is the vision
-        // projector and has no control kernel, so falling back here meant not
-        // projecting at all — a 3x3 patch grid pools to a single row and failed
-        // outright. The Apple10 kernel bound-checks against M, so a partial tile
-        // is correct.
-        let shortOutput = candidate.encode(
+        let candidate = try MPPPrefillInt4QMM(context: context, variant: .apple10BF16)
+        // A short output and a single row (a 3x3 patch grid pools to one)
+        // must project too: the kernel bound-checks every store against M.
+        try candidate.encode(
             commandBuffer: commandBuffer,
             weights: weights, scales: scales, biases: biases,
             x: x, y: y, m: 17, n: 35, k: k)
-        #expect(shortOutput == .affineThreadgroupBF16Apple10)
-        let singleRow = candidate.encode(
+        try candidate.encode(
             commandBuffer: commandBuffer,
             weights: weights, scales: scales, biases: biases,
             x: x, y: y, m: 1, n: 35, k: k)
-        #expect(singleRow == .affineThreadgroupBF16Apple10)
-        let path = candidate.encode(
+        try candidate.encode(
             commandBuffer: commandBuffer,
             weights: weights, scales: scales, biases: biases,
             x: x, y: y, m: m, n: n, k: k)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)
-        #expect(path == .affineThreadgroupBF16Apple10)
 
         var reference = [Float](repeating: 0, count: m * n)
         let groups = k / Quantization.groupSize
@@ -224,39 +196,6 @@ private let mppTensorOpsAvailable: Bool = {
         let actual = Fp16Buffer.read(y, count: m * n)
         #expect(RelError.maxAbsDiff(actual, reference) <= 0.03)
         #expect(RelError.compute(actual: actual, reference: reference) <= 1e-3)
-    }
-
-    @Test func unsupportedOrUnalignedInputsReportFallback() throws {
-        let context = try MetalContext()
-        let candidate = MPPPrefillInt4QMM(context: context)
-        guard let buffer = context.device.makeBuffer(length: 4096,
-                                                     options: .storageModeShared),
-              let commandBuffer = context.queue.makeCommandBuffer() else {
-            Issue.record("buffer allocation failed")
-            return
-        }
-        let unsupportedShape = candidate.encode(commandBuffer: commandBuffer,
-                                                weights: buffer,
-                                                scales: buffer,
-                                                biases: buffer,
-                                                x: buffer,
-                                                y: buffer,
-                                                m: 1,
-                                                n: 1,
-                                                k: 65)
-        let unalignedScale = candidate.encode(commandBuffer: commandBuffer,
-                                              weights: buffer,
-                                              weightsOffset: 1,
-                                              scales: buffer,
-                                              scalesOffset: 1,
-                                              biases: buffer,
-                                              x: buffer,
-                                              y: buffer,
-                                              m: 1,
-                                              n: 1,
-                                              k: 64)
-        #expect(unsupportedShape == .fallback)
-        #expect(unalignedScale == .fallback)
     }
 
 }

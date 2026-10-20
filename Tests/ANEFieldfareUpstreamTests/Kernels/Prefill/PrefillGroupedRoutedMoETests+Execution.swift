@@ -48,10 +48,7 @@ extension PrefillGroupedRoutedMoETests {
         ctx.device,
         halves: [Float16](repeating: -77, count: rows * topK * d)),
       let activationScratch = ctx.device.makeBuffer(
-        length: 3 * 4 * f * MemoryLayout<Float16>.stride,
-        options: .storageModePrivate),
-      let downScratch = ctx.device.makeBuffer(
-        length: 4 * d * MemoryLayout<Float16>.stride,
+        length: 4 * f * MemoryLayout<Float16>.stride,
         options: .storageModePrivate),
       let commandBuffer = ctx.queue.makeCommandBuffer()
     else {
@@ -75,16 +72,13 @@ extension PrefillGroupedRoutedMoETests {
       hiddenStrideElements: UInt32(d),
       binding: binding,
       offsets: pool.offsets)
-    let argumentBuffer = try grouped.makeStreamedArgumentBuffer(
-      device: ctx.device,
-      binding: binding)
-    let microbatches = grouped.encodeStreamedBatched(
+    let argumentBuffer = grouped.makeStreamedArgumentBuffer(binding: binding)
+    try grouped.encodeStreamedBatched(
       commandBuffer: commandBuffer,
       hidden: hiddenBuffer,
       sortedPairs: pairBuffer,
       routePartials: outputBuffer,
-      gateUpActScratch: activationScratch,
-      downScratch: downScratch,
+      actScratch: activationScratch,
       argumentBuffer: argumentBuffer,
       binding: binding,
       params: params,
@@ -98,7 +92,6 @@ extension PrefillGroupedRoutedMoETests {
     let maxAbsoluteError = zip(actual, expected).reduce(Float(0)) {
       max($0, abs(Float($1.0) - Float($1.1)))
     }
-    #expect(microbatches == 2)
     #expect(maxAbsoluteError <= 0.0015, "maxAbsoluteError=\(maxAbsoluteError)")
     #expect(binding.views.allSatisfy { $0.offset > 0 })
   }

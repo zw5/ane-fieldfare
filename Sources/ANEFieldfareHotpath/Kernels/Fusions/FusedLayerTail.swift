@@ -14,9 +14,9 @@ import Metal
 /// norm of the new `hidden`.
 final class FusedLayerTail {
     private let pso: any MTLComputePipelineState
-    private let specializedPSO: any MTLComputePipelineState?
+    private let specializedPSO: any MTLComputePipelineState
     private let normsPSO: any MTLComputePipelineState
-    private let normsSpecializedPSO: any MTLComputePipelineState?
+    private let normsSpecializedPSO: any MTLComputePipelineState
 
     /// The norms reproduce `rmsnorm_bf16w` bitwise only with its 256-thread
     /// row; a pipeline that cannot run 256 threads leaves the norms unfused.
@@ -26,12 +26,11 @@ final class FusedLayerTail {
     init(context: MetalContext) throws {
         let d2816: [MetalFunctionConstant] = [
             MetalFunctionConstant(index: 80, value: .uint32(2816)),
-            MetalFunctionConstant(index: 86, value: .bool(true)),
         ]
         self.pso = try context.pipeline("fused_layer_tail")
-        self.specializedPSO = try? context.pipeline("fused_layer_tail", constants: d2816)
+        self.specializedPSO = try context.pipeline("fused_layer_tail", constants: d2816)
         self.normsPSO = try context.pipeline("fused_layer_tail_norms")
-        self.normsSpecializedPSO = try? context.pipeline("fused_layer_tail_norms", constants: d2816)
+        self.normsSpecializedPSO = try context.pipeline("fused_layer_tail_norms", constants: d2816)
     }
 
     func encode(commandBuffer cb: any MTLCommandBuffer,
@@ -44,24 +43,22 @@ final class FusedLayerTail {
                        postFFNWeightOffset: Int = 0,
                        d: UInt32,
                        eps: Float,
-                       layerScalar: Float) {
+                       layerScalar: Float) throws {
         precondition(d <= 4096,
                      "D > 4096 exceeds the fused-tail threadgroup scratch (kFusedMaxD)")
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
-        enc.setComputePipelineState((d == 2816 ? specializedPSO : nil) ?? pso)
+        let enc = try cb.makeTracedComputeEncoder()
+        let pipeline = d == 2816 ? specializedPSO : pso
+        enc.setComputePipelineState(pipeline)
         enc.setBuffer(h2,             offset: 0,                    index: 0)
         enc.setBuffer(h1,             offset: 0,                    index: 1)
         enc.setBuffer(hidden,         offset: 0,                    index: 2)
         enc.setBuffer(postFFN2Weight, offset: postFFN2WeightOffset, index: 3)
         enc.setBuffer(postFFNWeight,  offset: postFFNWeightOffset,  index: 4)
-        let dVar = d
-        let epsVar = eps
-        let scaleVar = layerScalar
-        enc.setValue(dVar, index: 5)
-        enc.setValue(epsVar, index: 6)
-        enc.setValue(scaleVar, index: 7)
+        enc.setValue(d, index: 5)
+        enc.setValue(eps, index: 6)
+        enc.setValue(layerScalar, index: 7)
 
-        let threads = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
+        let threads = min(Int(pipeline.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreads(MTLSize(width: threads, height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
         enc.endEncoding()
@@ -82,11 +79,11 @@ final class FusedLayerTail {
                          next: (inputNorm: TensorView, normed: any MTLBuffer)?,
                          d: UInt32,
                          eps: Float,
-                         layerScalar: Float) {
+                         layerScalar: Float) throws {
         precondition(d <= 4096,
                      "D > 4096 exceeds the fused-tail threadgroup scratch (kFusedMaxD)")
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
-        enc.setComputePipelineState((d == 2816 ? normsSpecializedPSO : nil) ?? normsPSO)
+        let enc = try cb.makeTracedComputeEncoder()
+        enc.setComputePipelineState(d == 2816 ? normsSpecializedPSO : normsPSO)
         enc.setBuffer(h2, offset: 0, index: 0)
         enc.setBuffer(h1, offset: 0, index: 1)
         enc.setBuffer(hidden, offset: 0, index: 2)
