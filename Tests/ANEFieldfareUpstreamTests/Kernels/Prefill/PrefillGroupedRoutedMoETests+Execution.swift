@@ -78,7 +78,7 @@ extension PrefillGroupedRoutedMoETests {
     let argumentBuffer = try grouped.makeStreamedArgumentBuffer(
       device: ctx.device,
       binding: binding)
-    let microbatches = grouped.encodeStreamedBatched(
+    try grouped.encodeStreamedBatched(
       commandBuffer: commandBuffer,
       hidden: hiddenBuffer,
       sortedPairs: pairBuffer,
@@ -98,7 +98,6 @@ extension PrefillGroupedRoutedMoETests {
     let maxAbsoluteError = zip(actual, expected).reduce(Float(0)) {
       max($0, abs(Float($1.0) - Float($1.1)))
     }
-    #expect(microbatches == 2)
     #expect(maxAbsoluteError <= 0.0015, "maxAbsoluteError=\(maxAbsoluteError)")
     #expect(binding.views.allSatisfy { $0.offset > 0 })
   }

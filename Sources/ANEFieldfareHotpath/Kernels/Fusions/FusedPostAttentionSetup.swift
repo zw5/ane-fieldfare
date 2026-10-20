@@ -11,11 +11,11 @@ import Metal
 ///   router_x = rmsnorm(hidden), no weight
 final class FusedPostAttentionSetup {
     private let pso: any MTLComputePipelineState
-    private let specializedPSO: any MTLComputePipelineState?
+    private let specializedPSO: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.pso = try context.pipeline("fused_post_attn_setup")
-        self.specializedPSO = try? context.pipeline(
+        self.specializedPSO = try context.pipeline(
             "fused_post_attn_setup",
             constants: [
                 MetalFunctionConstant(index: 80, value: .uint32(2816)),
@@ -36,11 +36,12 @@ final class FusedPostAttentionSetup {
                        preFFN2Weight: any MTLBuffer,
                        preFFN2WeightOffset: Int = 0,
                        d: UInt32,
-                       eps: Float) {
+                       eps: Float) throws {
         precondition(d <= 4096,
                      "D > 4096 exceeds the fused post-attention setup scratch")
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
-        enc.setComputePipelineState((d == 2816 ? specializedPSO : nil) ?? pso)
+        let enc = try cb.makeTracedComputeEncoder()
+        let pipeline = d == 2816 ? specializedPSO : pso
+        enc.setComputePipelineState(pipeline)
         enc.setBuffer(hidden,              offset: 0,                         index: 0)
         enc.setBuffer(attn,                offset: 0,                         index: 1)
         enc.setBuffer(denseX,              offset: 0,                         index: 2)
@@ -49,12 +50,10 @@ final class FusedPostAttentionSetup {
         enc.setBuffer(postAttentionWeight, offset: postAttentionWeightOffset, index: 5)
         enc.setBuffer(preFFNWeight,        offset: preFFNWeightOffset,        index: 6)
         enc.setBuffer(preFFN2Weight,       offset: preFFN2WeightOffset,       index: 7)
-        let dVar = d
-        let epsVar = eps
-        enc.setValue(dVar, index: 8)
-        enc.setValue(epsVar, index: 9)
+        enc.setValue(d, index: 8)
+        enc.setValue(eps, index: 9)
 
-        let threads = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
+        let threads = min(Int(pipeline.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreads(MTLSize(width: threads, height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
         enc.endEncoding()

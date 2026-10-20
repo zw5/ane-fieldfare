@@ -163,20 +163,20 @@ final class Attention {
                           seqLen: UInt32,
                           window: UInt32,
                           scale: Float,
-                          ringCapacity: UInt32) {
+                          ringCapacity: UInt32) throws {
         precondition(numQHeads % numKVHeads == 0,
                      "numQHeads must be a multiple of numKVHeads for GQA")
         precondition(headDim <= 512,
                      "head_dim must be <= 512 (kernel scratch is sized for the full-attn case)")
         let kvStart = seqLen > window ? seqLen - window : 0
 
-        encodeSplit(commandBuffer: commandBuffer,
-                    q: q, qOffset: qOffset, k: k, kOffset: kOffset,
-                    v: v, vOffset: vOffset, out: out, outOffset: outOffset,
-                    headDim: headDim, numQHeads: numQHeads, numKVHeads: numKVHeads,
-                    seqLen: seqLen, kvStart: kvStart, scale: scale,
-                    preferGQASWA: true,
-                    ringCapacity: ringCapacity)
+        try encodeSplit(commandBuffer: commandBuffer,
+                        q: q, qOffset: qOffset, k: k, kOffset: kOffset,
+                        v: v, vOffset: vOffset, out: out, outOffset: outOffset,
+                        headDim: headDim, numQHeads: numQHeads, numKVHeads: numKVHeads,
+                        seqLen: seqLen, kvStart: kvStart, scale: scale,
+                        preferGQASWA: true,
+                        ringCapacity: ringCapacity)
     }
 
     /// Full attention. Gemma 4 reuses the raw K projection as raw V input, but
@@ -190,20 +190,20 @@ final class Attention {
                            numQHeads: UInt32,
                            numKVHeads: UInt32,
                            seqLen: UInt32,
-                           scale: Float) {
+                           scale: Float) throws {
         precondition(numQHeads % numKVHeads == 0,
                      "numQHeads must be a multiple of numKVHeads for GQA")
         precondition(headDim <= 512,
                      "head_dim must be <= 512 (kernel scratch is sized for the full-attn case)")
         precondition(seqLen > 0, "full attention requires at least one KV position")
 
-        encodeSplit(commandBuffer: commandBuffer,
-                    q: q, qOffset: qOffset, k: k, kOffset: kOffset,
-                    v: v, vOffset: vOffset, out: out, outOffset: outOffset,
-                    headDim: headDim, numQHeads: numQHeads, numKVHeads: numKVHeads,
-                    seqLen: seqLen, kvStart: 0, scale: scale,
-                    preferGQASWA: false,
-                    ringCapacity: 0)
+        try encodeSplit(commandBuffer: commandBuffer,
+                        q: q, qOffset: qOffset, k: k, kOffset: kOffset,
+                        v: v, vOffset: vOffset, out: out, outOffset: outOffset,
+                        headDim: headDim, numQHeads: numQHeads, numKVHeads: numKVHeads,
+                        seqLen: seqLen, kvStart: 0, scale: scale,
+                        preferGQASWA: false,
+                        ringCapacity: 0)
     }
 
 
@@ -220,7 +220,7 @@ final class Attention {
                              headDim: UInt32, numQHeads: UInt32, numKVHeads: UInt32,
                              seqLen: UInt32, kvStart: UInt32, scale: Float,
                              preferGQASWA: Bool,
-                             ringCapacity: UInt32) {
+                             ringCapacity: UInt32) throws {
         precondition(Int(numQHeads) <= Self.maxQHeads,
                      "numQHeads \(numQHeads) exceeds split-KV scratch (max \(Self.maxQHeads))")
         precondition(Int(headDim) <= Self.maxHeadDim,
@@ -243,7 +243,7 @@ final class Attention {
                                          ringCapacity: ringCapacity)
         let tgWidth = min(Self.threadsPerGroup, Int(partialPSO.maxTotalThreadsPerThreadgroup))
 
-        guard let p1 = commandBuffer.makeTracedComputeEncoder() else { return }
+        let p1 = try commandBuffer.makeTracedComputeEncoder()
         p1.setComputePipelineState(partialPSO)
         p1.setBuffer(q, offset: qOffset, index: 0)
         p1.setBuffer(k, offset: kOffset, index: 1)
@@ -264,7 +264,7 @@ final class Attention {
                                 threadsPerThreadgroup: MTLSize(width: tgWidth, height: 1, depth: 1))
         p1.endEncoding()
 
-        guard let p2 = commandBuffer.makeTracedComputeEncoder() else { return }
+        let p2 = try commandBuffer.makeTracedComputeEncoder()
         let combinePSO = combinePipeline(headDim: headDim,
                                          numQHeads: numQHeads,
                                          numKVHeads: numKVHeads,

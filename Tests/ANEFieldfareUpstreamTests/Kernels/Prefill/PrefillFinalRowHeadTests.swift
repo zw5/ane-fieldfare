@@ -74,33 +74,33 @@ import ANEFieldfareValidationSupport
         }
 
         let cb = ctx.queue.makeCommandBuffer()!
-        scalarNorm.encodeBF16W(commandBuffer: cb,
-                               x: hiddenBuf,
-                               xOffset: selectedRow * rowStride * MemoryLayout<Float16>.size,
-                               weight: normBuf,
-                               out: scalarNormed,
-                               d: UInt32(d),
-                               eps: eps)
-        scalarHead.encode(commandBuffer: cb,
-                          weights: wBuf,
-                          scales: sBuf,
-                          biases: bBuf,
-                          x: scalarNormed,
-                          y: scalarLogits,
-                          m: UInt32(vocab),
-                          n: UInt32(d))
-        finalRowHead.encodeLogits(commandBuffer: cb,
-                                  hiddenBlock: hiddenBuf,
-                                  row: selectedRow,
-                                  rowStrideElements: rowStride,
-                                  normWeight: normBuf,
-                                  weights: wBuf,
-                                  scales: sBuf,
-                                  biases: bBuf,
-                                  logits: blockLogits,
-                                  d: UInt32(d),
-                                  vocab: UInt32(vocab),
-                                  rmsEps: eps)
+        try scalarNorm.encodeBF16W(commandBuffer: cb,
+                                   x: hiddenBuf,
+                                   xOffset: selectedRow * rowStride * MemoryLayout<Float16>.size,
+                                   weight: normBuf,
+                                   out: scalarNormed,
+                                   d: UInt32(d),
+                                   eps: eps)
+        try scalarHead.encode(commandBuffer: cb,
+                              weights: wBuf,
+                              scales: sBuf,
+                              biases: bBuf,
+                              x: scalarNormed,
+                              y: scalarLogits,
+                              m: UInt32(vocab),
+                              n: UInt32(d))
+        try finalRowHead.encodeLogits(commandBuffer: cb,
+                                      hiddenBlock: hiddenBuf,
+                                      row: selectedRow,
+                                      rowStrideElements: rowStride,
+                                      normWeight: normBuf,
+                                      weights: wBuf,
+                                      scales: sBuf,
+                                      biases: bBuf,
+                                      logits: blockLogits,
+                                      d: UInt32(d),
+                                      vocab: UInt32(vocab),
+                                      rmsEps: eps)
         cb.commit()
         cb.waitUntilCompleted()
 

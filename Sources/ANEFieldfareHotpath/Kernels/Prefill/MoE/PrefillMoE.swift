@@ -14,11 +14,11 @@ final class PrefillMoE {
                                 h2: any MTLBuffer,
                                 queryCount: UInt32,
                                 topK: UInt32,
-                                d: UInt32) {
+                                d: UInt32) throws {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(topK > 0, "topK must be positive")
         precondition(d > 0, "D must be positive")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(reducePSO)
         enc.setBuffer(routePartials, offset: 0, index: 0)
         enc.setBuffer(routeWeights, offset: 0, index: 1)

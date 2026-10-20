@@ -54,23 +54,23 @@ import ANEFieldfareValidationSupport
         let outBuf = try #require(Fp16Buffer.make(ctx.device, count: qCount))
         let cb = try #require(ctx.queue.makeCommandBuffer())
         if let window {
-            kernel.encodeSWA(commandBuffer: cb,
-                             q: qBuf, k: kBuf, v: vBuf, out: outBuf,
-                             headDim: UInt32(headDim),
-                             numQHeads: UInt32(numQHeads),
-                             numKVHeads: UInt32(numKVHeads),
-                             seqLen: UInt32(seqLen),
-                             window: UInt32(window),
-                             scale: 1.0,
-                             ringCapacity: UInt32(ringCapacity))
+            try kernel.encodeSWA(commandBuffer: cb,
+                                 q: qBuf, k: kBuf, v: vBuf, out: outBuf,
+                                 headDim: UInt32(headDim),
+                                 numQHeads: UInt32(numQHeads),
+                                 numKVHeads: UInt32(numKVHeads),
+                                 seqLen: UInt32(seqLen),
+                                 window: UInt32(window),
+                                 scale: 1.0,
+                                 ringCapacity: UInt32(ringCapacity))
         } else {
-            kernel.encodeFull(commandBuffer: cb,
-                              q: qBuf, k: kBuf, v: vBuf, out: outBuf,
-                              headDim: UInt32(headDim),
-                              numQHeads: UInt32(numQHeads),
-                              numKVHeads: UInt32(numKVHeads),
-                              seqLen: UInt32(seqLen),
-                              scale: 1.0)
+            try kernel.encodeFull(commandBuffer: cb,
+                                  q: qBuf, k: kBuf, v: vBuf, out: outBuf,
+                                  headDim: UInt32(headDim),
+                                  numQHeads: UInt32(numQHeads),
+                                  numKVHeads: UInt32(numKVHeads),
+                                  seqLen: UInt32(seqLen),
+                                  scale: 1.0)
         }
         cb.commit()
         cb.waitUntilCompleted()

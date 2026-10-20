@@ -33,9 +33,9 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
             options: .storageModeShared))
         let linear = try VisionLinearBF16(context: context)
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
-        linear.encode(commandBuffer: commandBuffer,
-                      input: input, weights: weights, output: output,
-                      m: m, n: n, k: k)
+        try linear.encode(commandBuffer: commandBuffer,
+                          input: input, weights: weights, output: output,
+                          m: m, n: n, k: k)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)

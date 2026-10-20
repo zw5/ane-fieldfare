@@ -28,13 +28,13 @@ import ANEFieldfareValidationSupport
             Issue.record("alloc failed")
             return
         }
-        prefill.encodeReduceTokenMajor(commandBuffer: cb,
-                                       routePartials: partialsBuf,
-                                       routeWeights: weightsBuf,
-                                       h2: h2Buf,
-                                       queryCount: UInt32(rows),
-                                       topK: UInt32(topK),
-                                       d: UInt32(d))
+        try prefill.encodeReduceTokenMajor(commandBuffer: cb,
+                                           routePartials: partialsBuf,
+                                           routeWeights: weightsBuf,
+                                           h2: h2Buf,
+                                           queryCount: UInt32(rows),
+                                           topK: UInt32(topK),
+                                           d: UInt32(d))
         cb.commit()
         cb.waitUntilCompleted()
         #expect(cb.error == nil)

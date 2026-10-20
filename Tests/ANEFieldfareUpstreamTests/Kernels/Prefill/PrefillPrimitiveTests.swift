@@ -55,25 +55,25 @@ import ANEFieldfareValidationSupport
 
         let cb = ctx.queue.makeCommandBuffer()!
         for (row, token) in tokens.enumerated() {
-            scalar.encode(commandBuffer: cb,
-                          table: tableBuf,
-                          scales: scalesBuf,
-                          biases: biasesBuf,
-                          out: scalarOut,
-                          outOffset: row * Self.d * MemoryLayout<Float16>.size,
-                          tokenId: token,
-                          d: UInt32(Self.d),
-                          outScale: outScale)
+            try scalar.encode(commandBuffer: cb,
+                              table: tableBuf,
+                              scales: scalesBuf,
+                              biases: biasesBuf,
+                              out: scalarOut,
+                              outOffset: row * Self.d * MemoryLayout<Float16>.size,
+                              tokenId: token,
+                              d: UInt32(Self.d),
+                              outScale: outScale)
         }
-        block.encode(commandBuffer: cb,
-                     table: tableBuf,
-                     scales: scalesBuf,
-                     biases: biasesBuf,
-                     tokens: tokenBuf,
-                     out: blockOut,
-                     t: UInt32(tokens.count),
-                     d: UInt32(Self.d),
-                     outScale: outScale)
+        try block.encode(commandBuffer: cb,
+                         table: tableBuf,
+                         scales: scalesBuf,
+                         biases: biasesBuf,
+                         tokens: tokenBuf,
+                         out: blockOut,
+                         t: UInt32(tokens.count),
+                         d: UInt32(Self.d),
+                         outScale: outScale)
         cb.commit()
         cb.waitUntilCompleted()
 
@@ -107,22 +107,22 @@ import ANEFieldfareValidationSupport
         let rowBytes = dim * MemoryLayout<Float16>.size
         let cb = ctx.queue.makeCommandBuffer()!
         for row in 0..<rows {
-            scalar.encodeBF16W(commandBuffer: cb,
-                               x: xBuf,
-                               xOffset: row * rowBytes,
-                               weight: wBuf,
-                               out: scalarOut,
-                               outOffset: row * rowBytes,
-                               d: UInt32(dim),
-                               eps: eps)
+            try scalar.encodeBF16W(commandBuffer: cb,
+                                   x: xBuf,
+                                   xOffset: row * rowBytes,
+                                   weight: wBuf,
+                                   out: scalarOut,
+                                   outOffset: row * rowBytes,
+                                   d: UInt32(dim),
+                                   eps: eps)
         }
-        block.encodeBF16W(commandBuffer: cb,
-                          x: xBuf,
-                          weight: wBuf,
-                          out: blockOut,
-                          t: UInt32(rows),
-                          d: UInt32(dim),
-                          eps: eps)
+        try block.encodeBF16W(commandBuffer: cb,
+                              x: xBuf,
+                              weight: wBuf,
+                              out: blockOut,
+                              t: UInt32(rows),
+                              d: UInt32(dim),
+                              eps: eps)
         cb.commit()
         cb.waitUntilCompleted()
 

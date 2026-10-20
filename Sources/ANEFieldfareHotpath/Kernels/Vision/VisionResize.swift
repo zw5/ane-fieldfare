@@ -130,9 +130,7 @@ public final class VisionResize {
         gridWidth: Int,
         gridHeight: Int
     ) throws {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else {
-            throw MetalError.noQueue
-        }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         var params = params
         params.tapStride = UInt32(table.tapStride)
         params.precision = Int32(table.precision)

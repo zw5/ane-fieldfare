@@ -133,7 +133,7 @@ final class Sampler {
                 history: [Int32],
                 config: GenerationConfig,
                 position: Int,
-                outToken: any MTLBuffer) {
+                outToken: any MTLBuffer) throws {
         let v = UInt32(vocab)
 
         if config.repetitionPenalty != 1.0 && !history.isEmpty {
@@ -142,27 +142,27 @@ final class Sampler {
                                           penalty: config.repetitionPenalty)
         }
 
-        softcap.encode(commandBuffer: commandBuffer,
-                       logits: logits, probs: probs, v: v, softcap: logitSoftcap)
+        try softcap.encode(commandBuffer: commandBuffer,
+                           logits: logits, probs: probs, v: v, softcap: logitSoftcap)
 
         let isGreedy = config.temperature == 0
         let seed = Self.seedFor(config: config, position: position)
         if config.temperature > 0,
            config.topK == 64 {
-            topK64Kernel.encode(commandBuffer: commandBuffer,
-                                probs: probs,
-                                outToken: outToken,
-                                temperature: config.temperature,
-                                topP: config.topP ?? 1.0,
-                                seed: seed)
+            try topK64Kernel.encode(commandBuffer: commandBuffer,
+                                    probs: probs,
+                                    outToken: outToken,
+                                    temperature: config.temperature,
+                                    topP: config.topP ?? 1.0,
+                                    seed: seed)
         } else {
-            sampleKernel.encode(commandBuffer: commandBuffer,
-                                probs: probs, outToken: outToken, v: v,
-                                temperature: isGreedy ? 0.0 : config.temperature,
-                                topK: UInt32(config.topK ?? 0),
-                                topP: config.topP ?? 1.0,
-                                seed: seed,
-                                position: UInt32(position))
+            try sampleKernel.encode(commandBuffer: commandBuffer,
+                                    probs: probs, outToken: outToken, v: v,
+                                    temperature: isGreedy ? 0.0 : config.temperature,
+                                    topK: UInt32(config.topK ?? 0),
+                                    topP: config.topP ?? 1.0,
+                                    seed: seed,
+                                    position: UInt32(position))
         }
     }
 

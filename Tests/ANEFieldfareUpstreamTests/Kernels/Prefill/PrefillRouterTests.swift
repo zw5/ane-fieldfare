@@ -62,20 +62,20 @@ import ANEFieldfareValidationSupport
             Issue.record("Failed to make command buffer")
             return
         }
-        prefill.encodeGemma4Block(commandBuffer: cb,
-                                  weights: buffers.weights,
-                                  scales: buffers.scales,
-                                  biases: buffers.biases,
-                                  hidden: buffers.hidden,
-                                  effectiveScale: buffers.effectiveScale,
-                                  perExpertScale: buffers.perExpertScale,
-                                  outIndices: buffers.blockIndices,
-                                  outWeights: buffers.blockWeights,
-                                  queryCount: UInt32(rows),
-                                  numExperts: UInt32(Self.experts),
-                                  d: UInt32(Self.d),
-                                  topK: UInt32(Self.topK),
-                                  hiddenStrideElements: UInt32(hiddenStride))
+        try prefill.encodeGemma4Block(commandBuffer: cb,
+                                      weights: buffers.weights,
+                                      scales: buffers.scales,
+                                      biases: buffers.biases,
+                                      hidden: buffers.hidden,
+                                      effectiveScale: buffers.effectiveScale,
+                                      perExpertScale: buffers.perExpertScale,
+                                      outIndices: buffers.blockIndices,
+                                      outWeights: buffers.blockWeights,
+                                      queryCount: UInt32(rows),
+                                      numExperts: UInt32(Self.experts),
+                                      d: UInt32(Self.d),
+                                      topK: UInt32(Self.topK),
+                                      hiddenStrideElements: UInt32(hiddenStride))
         cb.commit()
         cb.waitUntilCompleted()
         #expect(cb.error == nil)
@@ -154,18 +154,18 @@ import ANEFieldfareValidationSupport
               let cb = ctx.queue.makeCommandBuffer() else {
             throw RouterTestError.allocationFailed
         }
-        moe.encodeRouterGemma4(commandBuffer: cb,
-                               weights: buffers.weights,
-                               scales: buffers.scales,
-                               biases: buffers.biases,
-                               hidden: hBuf,
-                               effectiveScale: buffers.effectiveScale,
-                               perExpertScale: buffers.perExpertScale,
-                               outIndices: idxBuf,
-                               outWeights: wtBuf,
-                               numExperts: UInt32(Self.experts),
-                               d: UInt32(Self.d),
-                               topK: UInt32(Self.topK))
+        try moe.encodeRouterGemma4(commandBuffer: cb,
+                                   weights: buffers.weights,
+                                   scales: buffers.scales,
+                                   biases: buffers.biases,
+                                   hidden: hBuf,
+                                   effectiveScale: buffers.effectiveScale,
+                                   perExpertScale: buffers.perExpertScale,
+                                   outIndices: idxBuf,
+                                   outWeights: wtBuf,
+                                   numExperts: UInt32(Self.experts),
+                                   d: UInt32(Self.d),
+                                   topK: UInt32(Self.topK))
         cb.commit()
         cb.waitUntilCompleted()
         if let error = cb.error {

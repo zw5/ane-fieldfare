@@ -83,22 +83,22 @@ import ANEFieldfareValidationSupport
             return ([], [])
         }
 
-        block.encode(commandBuffer: cb,
-                     q: qBlock,
-                     k: kBlock,
-                     v: vBlock,
-                     qWeight: qWeightBuf,
-                     kWeight: kWeightBuf,
-                     startPosition: UInt32(startPosition),
-                     queryCount: UInt32(rows),
-                     headDim: UInt32(headDim),
-                     numQHeads: UInt32(numQHeads),
-                     numKVHeads: UInt32(numKVHeads),
-                     qTokenStrideElements: UInt32(qStride),
-                     kvTokenStrideElements: UInt32(kvStride),
-                     theta: theta,
-                     rotatedPairs: rotatedPairs,
-                     eps: 1e-6)
+        try block.encode(commandBuffer: cb,
+                         q: qBlock,
+                         k: kBlock,
+                         v: vBlock,
+                         qWeight: qWeightBuf,
+                         kWeight: kWeightBuf,
+                         startPosition: UInt32(startPosition),
+                         queryCount: UInt32(rows),
+                         headDim: UInt32(headDim),
+                         numQHeads: UInt32(numQHeads),
+                         numKVHeads: UInt32(numKVHeads),
+                         qTokenStrideElements: UInt32(qStride),
+                         kvTokenStrideElements: UInt32(kvStride),
+                         theta: theta,
+                         rotatedPairs: rotatedPairs,
+                         eps: 1e-6)
         cb.commit()
         cb.waitUntilCompleted()
         if let err = cb.error {

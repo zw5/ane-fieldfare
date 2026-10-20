@@ -64,7 +64,7 @@ public final class SharedExpertInt4 {
             MetalFunctionConstant(index: 1, value: .uint32(f)),
             MetalFunctionConstant(index: 3, value: .bool(true)),
         ])
-        guard let encoder = cb.makeTracedComputeEncoder() else { return }
+        let encoder = try cb.makeTracedComputeEncoder()
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(gate.weights, offset: gate.weightsOffset, index: 0)
         encoder.setBuffer(gate.scales, offset: gate.scalesOffset, index: 1)
@@ -79,13 +79,13 @@ public final class SharedExpertInt4 {
         encoder.dispatchThreadgroups(MTLSize(width: (intermediate + 7) / 8, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         encoder.endEncoding()
-        int4.encode(commandBuffer: cb,
-                    weights: down.weights, weightsOffset: down.weightsOffset,
-                    scales: down.scales, scalesOffset: down.scalesOffset,
-                    biases: down.biases, biasesOffset: down.biasesOffset,
-                    x: scratchAct, xOffset: scratchActOffset,
-                    y: y, yOffset: yOffset,
-                    m: down.rows, n: down.cols)
+        try int4.encode(commandBuffer: cb,
+                        weights: down.weights, weightsOffset: down.weightsOffset,
+                        scales: down.scales, scalesOffset: down.scalesOffset,
+                        biases: down.biases, biasesOffset: down.biasesOffset,
+                        x: scratchAct, xOffset: scratchActOffset,
+                        y: y, yOffset: yOffset,
+                        m: down.rows, n: down.cols)
     }
 }
 

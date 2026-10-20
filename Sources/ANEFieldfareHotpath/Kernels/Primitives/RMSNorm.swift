@@ -23,8 +23,8 @@ final class RMSNorm {
                      weight: any MTLBuffer, weightOffset: Int = 0,
                      out: any MTLBuffer, outOffset: Int = 0,
                      d: UInt32,
-                     eps: Float) {
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+                     eps: Float) throws {
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         let pipeline = d == 2816 ? psoD2816 : pso
         enc.setComputePipelineState(pipeline)
         enc.setBuffer(x,      offset: xOffset,      index: 0)

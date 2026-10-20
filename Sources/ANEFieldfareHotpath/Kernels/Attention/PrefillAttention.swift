@@ -101,7 +101,7 @@ final class PrefillAttention {
         precondition(threadCount <= pipeline.maxTotalThreadsPerThreadgroup,
                      "tiled prefill attention requires headDim <= maxTotalThreadsPerThreadgroup")
 
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(pipeline)
         enc.setBuffer(q, offset: 0, index: 0)
         enc.setBuffer(k, offset: 0, index: 1)

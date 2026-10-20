@@ -61,10 +61,11 @@ final class FusedQKVEpilogue {
                     headDim: UInt32, numQHeads: UInt32, numKVHeads: UInt32,
                     position: UInt32, rows: Int,
                     qStrideElements: UInt32, kvStrideElements: UInt32,
-                    theta: Float, rotatedPairs: UInt32, eps: Float) -> Bool {
+                    theta: Float, rotatedPairs: UInt32, eps: Float) throws -> Bool {
         guard let pipeline = rowsPSOs[Shape(headDim: headDim, numQHeads: numQHeads,
-                                            numKVHeads: numKVHeads, rotatedPairs: rotatedPairs)],
-              let enc = cb.makeTracedComputeEncoder() else { return false }
+                                            numKVHeads: numKVHeads, rotatedPairs: rotatedPairs)]
+        else { return false }
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(pipeline)
         enc.setBuffer(q, offset: 0, index: 0)
         enc.setBuffer(k, offset: 0, index: 1)
@@ -73,13 +74,11 @@ final class FusedQKVEpilogue {
         enc.setBuffer(kWeight, offset: kWeightOffset, index: 4)
         let values: [UInt32] = [headDim, numQHeads, numKVHeads, position]
         for i in values.indices { enc.setValue(values[i], index: 5 + i) }
-        let thetaVar = theta, rotatedVar = rotatedPairs, epsVar = eps
-        let qStride = qStrideElements, kvStride = kvStrideElements
-        enc.setValue(thetaVar, index: 9)
-        enc.setValue(rotatedVar, index: 10)
-        enc.setValue(epsVar, index: 11)
-        enc.setValue(qStride, index: 12)
-        enc.setValue(kvStride, index: 13)
+        enc.setValue(theta, index: 9)
+        enc.setValue(rotatedPairs, index: 10)
+        enc.setValue(eps, index: 11)
+        enc.setValue(qStrideElements, index: 12)
+        enc.setValue(kvStrideElements, index: 13)
         let threads = min(Int(pipeline.maxTotalThreadsPerThreadgroup), 256)
         enc.dispatchThreadgroups(MTLSize(width: Int(numQHeads + 2 * numKVHeads), height: rows, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
@@ -104,38 +103,31 @@ final class FusedQKVEpilogue {
                        position: UInt32,
                        theta: Float,
                        rotatedPairs: UInt32,
-                       eps: Float) {
+                       eps: Float) throws {
         precondition(headDim <= 512,
                      "headDim > 512 exceeds the fused QKV epilogue scratch")
         precondition(rotatedPairs * 2 <= headDim,
                      "rotatedPairs must fit inside one NeoX head")
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
-        enc.setComputePipelineState(
-            specializedPSOs[Shape(headDim: headDim,
-                                  numQHeads: numQHeads,
-                                  numKVHeads: numKVHeads,
-                                  rotatedPairs: rotatedPairs)] ?? pso)
+        let enc = try cb.makeTracedComputeEncoder()
+        let pipeline = specializedPSOs[Shape(headDim: headDim,
+                                             numQHeads: numQHeads,
+                                             numKVHeads: numKVHeads,
+                                             rotatedPairs: rotatedPairs)] ?? pso
+        enc.setComputePipelineState(pipeline)
         enc.setBuffer(q,       offset: qOffset,       index: 0)
         enc.setBuffer(k,       offset: kOffset,       index: 1)
         enc.setBuffer(v,       offset: vOffset,       index: 2)
         enc.setBuffer(qWeight, offset: qWeightOffset, index: 3)
         enc.setBuffer(kWeight, offset: kWeightOffset, index: 4)
-        let headDimVar = headDim
-        let numQVar = numQHeads
-        let numKVVar = numKVHeads
-        let posVar = position
-        let thetaVar = theta
-        let rotatedVar = rotatedPairs
-        let epsVar = eps
-        enc.setValue(headDimVar, index: 5)
-        enc.setValue(numQVar, index: 6)
-        enc.setValue(numKVVar, index: 7)
-        enc.setValue(posVar, index: 8)
-        enc.setValue(thetaVar, index: 9)
-        enc.setValue(rotatedVar, index: 10)
-        enc.setValue(epsVar, index: 11)
+        enc.setValue(headDim, index: 5)
+        enc.setValue(numQHeads, index: 6)
+        enc.setValue(numKVHeads, index: 7)
+        enc.setValue(position, index: 8)
+        enc.setValue(theta, index: 9)
+        enc.setValue(rotatedPairs, index: 10)
+        enc.setValue(eps, index: 11)
 
-        let threads = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
+        let threads = min(Int(pipeline.maxTotalThreadsPerThreadgroup), 256)
         let groups = Int(numQHeads + 2 * numKVHeads)
         enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))

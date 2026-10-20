@@ -21,8 +21,8 @@ package final class VisionPrimitives {
 
     package func encodeNormalize(commandBuffer: any MTLCommandBuffer,
                                  input: any MTLBuffer, output: any MTLBuffer,
-                                 rows: Int, paddedRows: Int) {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+                                 rows: Int, paddedRows: Int) throws {
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(normalize)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(output, offset: 0, index: 1)
@@ -35,8 +35,8 @@ package final class VisionPrimitives {
     package func encodeAddPosition(commandBuffer: any MTLCommandBuffer,
                                    hidden: any MTLBuffer,
                                    table: any MTLBuffer, tableOffset: Int,
-                                   positions: any MTLBuffer, rows: Int) {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+                                   positions: any MTLBuffer, rows: Int) throws {
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(addPosition)
         encoder.setBuffer(hidden, offset: 0, index: 0)
         encoder.setBuffer(table, offset: tableOffset, index: 1)
@@ -49,8 +49,8 @@ package final class VisionPrimitives {
     package func encodeRMSNorm(commandBuffer: any MTLCommandBuffer,
                                input: any MTLBuffer, output: any MTLBuffer,
                                weightBuffer: any MTLBuffer, weightOffset: Int,
-                               rows: Int) {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+                               rows: Int) throws {
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(rmsnorm)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(weightBuffer, offset: weightOffset, index: 1)
@@ -66,8 +66,8 @@ package final class VisionPrimitives {
     package func encodePostnormResidual(commandBuffer: any MTLCommandBuffer,
                                         residual: any MTLBuffer, branch: any MTLBuffer,
                                         weightBuffer: any MTLBuffer, weightOffset: Int,
-                                        output: any MTLBuffer, rows: Int) {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+                                        output: any MTLBuffer, rows: Int) throws {
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(postnormResidual)
         encoder.setBuffer(residual, offset: 0, index: 0)
         encoder.setBuffer(branch, offset: 0, index: 1)
@@ -87,8 +87,8 @@ package final class VisionPrimitives {
                            q: any MTLBuffer, k: any MTLBuffer, v: any MTLBuffer,
                            weights: any MTLBuffer, qWeightOffset: Int, kWeightOffset: Int,
                            positions: any MTLBuffer, rows: Int, heads: Int,
-                           paddedRowStride: Int) {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+                           paddedRowStride: Int) throws {
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         let pipeline = qkvNormRoPEPadded
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(q, offset: 0, index: 0)
@@ -110,9 +110,9 @@ package final class VisionPrimitives {
                             weights: any MTLBuffer,
                             stdBiasOffset: Int, stdScaleOffset: Int,
                             output: any MTLBuffer,
-                            patchWidth: Int, patchHeight: Int) {
+                            patchWidth: Int, patchHeight: Int) throws {
         let rows = (patchWidth / 3) * (patchHeight / 3)
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(pool)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(weights, offset: stdBiasOffset, index: 1)
@@ -128,8 +128,8 @@ package final class VisionPrimitives {
 
     package func encodeBFloatToHalf(commandBuffer: any MTLCommandBuffer,
                                     input: any MTLBuffer, output: any MTLBuffer,
-                                    count: Int) {
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+                                    count: Int) throws {
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(bfloatToHalf)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(output, offset: 0, index: 1)

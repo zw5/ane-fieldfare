@@ -209,7 +209,7 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
             let cb = try runner.makeCommandBuffer()
             cb.label = "dflash context+accept ctx=\(position) rows=\(rows)"
             try drafter.encodeContextUpdate(cb, position: position, rows: rows)
-            drafter.encodeAccept(cb, verified: verified, rows: rows)
+            try drafter.encodeAccept(cb, verified: verified, rows: rows)
             cb.commit()
             update = cb
             guard nextLength >= 2 else { return cb }

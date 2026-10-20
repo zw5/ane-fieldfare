@@ -60,15 +60,15 @@ import ANEFieldfareValidationSupport
         let weights = try buffer(packed), scaleBuffer = try buffer(scales), biasBuffer = try buffer(biases)
         let output = try buffer([UInt32(0)])
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
-        chain.encodeGreedyDecode(commandBuffer: commandBuffer,
-                                 hidden: hidden,
-                                 normWeight: norm,
-                                 weights: weights,
-                                 scales: scaleBuffer,
-                                 biases: biasBuffer,
-                                 outToken: output,
-                                 d: UInt32(d),
-                                 vocab: UInt32(v))
+        try chain.encodeGreedyDecode(commandBuffer: commandBuffer,
+                                     hidden: hidden,
+                                     normWeight: norm,
+                                     weights: weights,
+                                     scales: scaleBuffer,
+                                     biases: biasBuffer,
+                                     outToken: output,
+                                     d: UInt32(d),
+                                     vocab: UInt32(v))
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         return unsafe output.contents().load(as: UInt32.self)
@@ -145,21 +145,21 @@ import ANEFieldfareValidationSupport
         var single: [UInt32] = []
         for row in 0..<rowsChecked {
             let cb = context.queue.makeCommandBuffer()!
-            chain.encodeGreedyDecode(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
-                                     normWeight: normBuffer, weights: w, scales: s, biases: b,
-                                     outToken: out, d: UInt32(d), vocab: UInt32(v))
+            try chain.encodeGreedyDecode(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
+                                         normWeight: normBuffer, weights: w, scales: s, biases: b,
+                                         outToken: out, d: UInt32(d), vocab: UInt32(v))
             cb.commit(); cb.waitUntilCompleted()
             single.append(unsafe out.contents().load(as: UInt32.self))
         }
         for count in 1...rowsChecked {
             let cb = context.queue.makeCommandBuffer()!
             for row in 0..<count {
-                chain.encodeNormRow(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
-                                    normWeight: normBuffer, normedRows: normed, row: row, d: UInt32(d))
+                try chain.encodeNormRow(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
+                                        normWeight: normBuffer, normedRows: normed, row: row, d: UInt32(d))
             }
-            chain.encodeGreedyCheck(commandBuffer: cb, normedRows: normed, rowCount: count,
-                                    weights: w, scales: s, biases: b, outTokens: out,
-                                    d: UInt32(d), vocab: UInt32(v))
+            try chain.encodeGreedyCheck(commandBuffer: cb, normedRows: normed, rowCount: count,
+                                        weights: w, scales: s, biases: b, outTokens: out,
+                                        d: UInt32(d), vocab: UInt32(v))
             cb.commit(); cb.waitUntilCompleted()
             let checked = (0..<count).map { unsafe out.contents().load(fromByteOffset: 4 * $0, as: UInt32.self) }
             #expect(checked == Array(single.prefix(count)), "\(count) rows")
@@ -177,9 +177,9 @@ import ANEFieldfareValidationSupport
         let table = try HotVocabulary(url: file, vocab: v, device: device)
         for row in 0..<rowsChecked {
             let cb = context.queue.makeCommandBuffer()!
-            chain.encodeHotGreedyDecode(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
-                                        normWeight: normBuffer, table: table, weights: w, scales: s, biases: b,
-                                        normedRows: normed, row: row, outToken: out, d: UInt32(d))
+            try chain.encodeHotGreedyDecode(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
+                                            normWeight: normBuffer, table: table, weights: w, scales: s, biases: b,
+                                            normedRows: normed, row: row, outToken: out, d: UInt32(d))
             cb.commit(); cb.waitUntilCompleted()
             #expect(unsafe out.contents().load(as: UInt32.self) == single[row], "hot guess row \(row)")
         }

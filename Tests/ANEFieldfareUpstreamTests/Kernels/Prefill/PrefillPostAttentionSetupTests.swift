@@ -71,17 +71,17 @@ import ANEFieldfareValidationSupport
                 return
             }
             let cb = ctx.queue.makeCommandBuffer()!
-            scalar.encode(commandBuffer: cb,
-                          hidden: hBuf,
-                          attn: aBuf,
-                          denseX: denseBuf,
-                          routedX: routedBuf,
-                          routerX: routerBuf,
-                          postAttentionWeight: wPostBuf,
-                          preFFNWeight: wPreBuf,
-                          preFFN2Weight: wPre2Buf,
-                          d: UInt32(Self.d),
-                          eps: Self.eps)
+            try scalar.encode(commandBuffer: cb,
+                              hidden: hBuf,
+                              attn: aBuf,
+                              denseX: denseBuf,
+                              routedX: routedBuf,
+                              routerX: routerBuf,
+                              postAttentionWeight: wPostBuf,
+                              preFFNWeight: wPreBuf,
+                              preFFN2Weight: wPre2Buf,
+                              d: UInt32(Self.d),
+                              eps: Self.eps)
             cb.commit()
             cb.waitUntilCompleted()
             if let err = cb.error {
@@ -107,23 +107,23 @@ import ANEFieldfareValidationSupport
         }
 
         let cb = ctx.queue.makeCommandBuffer()!
-        block.encode(commandBuffer: cb,
-                     hidden: hiddenBlock,
-                     attn: attnBlock,
-                     denseX: denseBlock,
-                     routedX: routedBlock,
-                     routerX: routerBlock,
-                     postAttentionWeight: wPostBuf,
-                     preFFNWeight: wPreBuf,
-                     preFFN2Weight: wPre2Buf,
-                     queryCount: UInt32(rows),
-                     d: UInt32(Self.d),
-                     hiddenStrideElements: UInt32(hiddenStride),
-                     attnStrideElements: UInt32(attnStride),
-                     denseStrideElements: UInt32(outStride),
-                     routedStrideElements: UInt32(outStride),
-                     routerStrideElements: UInt32(outStride),
-                     eps: Self.eps)
+        try block.encode(commandBuffer: cb,
+                         hidden: hiddenBlock,
+                         attn: attnBlock,
+                         denseX: denseBlock,
+                         routedX: routedBlock,
+                         routerX: routerBlock,
+                         postAttentionWeight: wPostBuf,
+                         preFFNWeight: wPreBuf,
+                         preFFN2Weight: wPre2Buf,
+                         queryCount: UInt32(rows),
+                         d: UInt32(Self.d),
+                         hiddenStrideElements: UInt32(hiddenStride),
+                         attnStrideElements: UInt32(attnStride),
+                         denseStrideElements: UInt32(outStride),
+                         routedStrideElements: UInt32(outStride),
+                         routerStrideElements: UInt32(outStride),
+                         eps: Self.eps)
         cb.commit()
         cb.waitUntilCompleted()
         if let err = cb.error {

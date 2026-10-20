@@ -26,9 +26,7 @@ struct DraftFeatureTap {
         guard rows <= capacity else {
             throw DFlashError.invalidState("\(rows) feature rows exceed the \(capacity)-row ring")
         }
-        guard let blit = commandBuffer.makeTracedBlitEncoder() else {
-            throw DFlashError.invalidState("feature tap blit encoder")
-        }
+        let blit = try commandBuffer.makeTracedBlitEncoder()
         let first = position % capacity
         let head = min(rows, capacity - first)
         let base = slot * capacity * rowBytes

@@ -5,7 +5,7 @@ using namespace metal;
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
 
-constant constexpr uint kW4A8GroupSize = 64;
+constant constexpr uint kGroupSize = 64;
 
 constant constexpr int kMPPAffineTileM = 64;
 constant constexpr int kMPPAffineTileN = 32;
@@ -52,7 +52,7 @@ kernel void mpp_prefill_affine_threadgroup_f16(
     }
 
     const uint rowBytes = K / 2u;
-    const uint groupsPerRow = K / kW4A8GroupSize;
+    const uint groupsPerRow = K / kGroupSize;
     const uint lid = lid3.x;
     const uint threads = threads3.x;
     for (uint group = 0; group < groupsPerRow; ++group) {
@@ -112,7 +112,7 @@ constant constexpr int kMPPAffineApple10TileM = 64;
 constant constexpr int kMPPAffineApple10TileN = 64;
 constant constexpr int kMPPAffineApple10TileK = 128;
 
-kernel void mpp_prefill_affine_threadgroup_bf16_apple10_v1(
+kernel void mpp_prefill_affine_threadgroup_bf16_apple10(
     device const uint8_t* packedWeights [[buffer(0)]],
     device const bfloat* scales         [[buffer(1)]],
     device const bfloat* biases         [[buffer(2)]],
@@ -155,7 +155,7 @@ kernel void mpp_prefill_affine_threadgroup_bf16_apple10_v1(
     }
 
     const uint rowBytes = K / 2u;
-    const uint groupsPerRow = K / kW4A8GroupSize;
+    const uint groupsPerRow = K / kGroupSize;
     const uint lid = lid3.x;
     const uint threads = threads3.x;
     for (uint tileKStart = 0; tileKStart < K;
@@ -176,7 +176,7 @@ kernel void mpp_prefill_affine_threadgroup_bf16_apple10_v1(
                 const uint q = (globalK & 1u) == 0u
                     ? uint(packed & 0x0fu)
                     : uint(packed >> 4);
-                const uint affineGroup = globalK / uint(kW4A8GroupSize);
+                const uint affineGroup = globalK / uint(kGroupSize);
                 const float scale = float(scales[
                     globalN * groupsPerRow + affineGroup]);
                 const float bias = float(biases[
@@ -214,8 +214,6 @@ kernel void mpp_prefill_affine_threadgroup_bf16_apple10_v1(
     }
 }
 
-#if defined(TURBO_FIELDFARE_VISION_TENSOROPS)
-
 constant constexpr int kVisionAttentionQueries = 16;
 constant constexpr int kVisionAttentionKeys = 64;
 constant constexpr int kVisionAttentionHeadDim = 80;
@@ -235,9 +233,8 @@ struct VisionAttentionLayout {
     uint unpaddedOutputHeadDim;
 };
 
-/// `PVOutputDim` is how many head lanes the PV matmul produces. Threadgroup
-/// memory is passed in because MSL forbids declaring it in a non-kernel function.
-template <int PVOutputDim>
+/// Threadgroup memory is passed in because MSL forbids declaring it in a
+/// non-kernel function.
 inline void mpp_vision_attention_bf16_impl(
     device bfloat* Q, device bfloat* K, device bfloat* V, device bfloat* O,
     constant uint& sequenceLength,
@@ -257,7 +254,7 @@ inline void mpp_vision_attention_bf16_impl(
         false, true, false);
     constexpr auto pvDescriptor = matmul2d_descriptor(
         kVisionAttentionQueries,
-        PVOutputDim,
+        kVisionAttentionRealHeadDim,
         kVisionAttentionKeys,
         false, false, false);
     matmul2d<qkDescriptor, execution_simdgroups<4>> qkOperation;
@@ -287,7 +284,7 @@ inline void mpp_vision_attention_bf16_impl(
         array<int32_t, 2>({1, int32_t(rowStride)}));
     device_bfloat_tensor valueTensor(
         V + headBase,
-        dextents<int32_t, 2>(PVOutputDim, int32_t(sequenceLength)),
+        dextents<int32_t, 2>(kVisionAttentionRealHeadDim, int32_t(sequenceLength)),
         array<int32_t, 2>({1, int32_t(rowStride)}));
     threadgroup_float_tensor weights(
         weightTile,
@@ -450,11 +447,9 @@ kernel void mpp_vision_attention_bf16(
     threadgroup float rowSum[kVisionAttentionQueries];
     threadgroup float oldScale[kVisionAttentionQueries];
     threadgroup float nextMaxTile[kVisionAttentionQueries];
-    mpp_vision_attention_bf16_impl<kVisionAttentionRealHeadDim>(
+    mpp_vision_attention_bf16_impl(
         Q, K, V, O, sequenceLength, numHeads, layout, tg, lid, simdLane,
         simdIndex, scoreTile, weightTile, rowMax, rowSum, oldScale, nextMaxTile);
 }
-
-#endif
 
 #endif // __HAVE_TENSOR__

@@ -41,10 +41,10 @@ public final class VisionLinearBF16 {
                        output: any MTLBuffer,
                        m: Int, n: Int, k: Int,
                        paddedHeadStore: PaddedHeadStore? = nil,
-                       fusesGeGLU: Bool = false) {
+                       fusesGeGLU: Bool = false) throws {
         precondition(m > 0 && n > 0 && k > 0)
         precondition(!(fusesGeGLU && paddedHeadStore != nil))
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)
         encoder.setBuffer(output, offset: 0, index: 2)

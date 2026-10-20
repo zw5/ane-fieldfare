@@ -303,7 +303,6 @@ final class PrefillGroupedRoutedMoE {
             sortedPairs: reusableSortedPairsBuffer)
     }
 
-    @discardableResult
     func encodeStreamedBatched(commandBuffer: any MTLCommandBuffer,
                                hidden: any MTLBuffer,
                                sortedPairs: any MTLBuffer,
@@ -313,62 +312,55 @@ final class PrefillGroupedRoutedMoE {
                                argumentBuffer: PrefillStreamedTileArgumentBuffer,
                                binding: PrefillStreamedTileBinding,
                                params: PrefillGroupedRoutedMoEStreamedParams,
-                               pairMicrobatchRows: Int) -> Int {
-        guard params.pairCount > 0,
-              params.liveExpertCount == UInt32(binding.views.count),
-              pairMicrobatchRows > 0 else { return 0 }
+                               pairMicrobatchRows: Int) throws {
+        precondition(params.liveExpertCount == UInt32(binding.views.count) && pairMicrobatchRows > 0)
         var consumed: UInt32 = 0
-        var microbatchCount = 0
         while consumed < params.pairCount {
             var p = params
             p.pairStart = params.pairStart + consumed
             p.pairCount = min(UInt32(pairMicrobatchRows), params.pairCount - consumed)
 
-            if let enc = commandBuffer.makeTracedComputeEncoder() {
-                enc.setComputePipelineState(batchedPhase1PSO)
-                enc.setBuffer(hidden, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
-                enc.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
-                enc.setBuffer(gateUpActScratch, offset: 0,
-                              index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
-                enc.setBuffer(argumentBuffer.buffer, offset: 0,
-                              index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
-                enc.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
-                for view in binding.views {
-                    enc.useResource(view.buffer, usage: .read)
-                }
-                enc.dispatchThreads(MTLSize(width: Int(p.routedIntermediate),
-                                            height: Int(p.pairCount),
-                                            depth: 1),
-                                    threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
-                enc.endEncoding()
+            let gateUp = try commandBuffer.makeTracedComputeEncoder()
+            gateUp.setComputePipelineState(batchedPhase1PSO)
+            gateUp.setBuffer(hidden, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
+            gateUp.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
+            gateUp.setBuffer(gateUpActScratch, offset: 0,
+                             index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
+            gateUp.setBuffer(argumentBuffer.buffer, offset: 0,
+                             index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
+            gateUp.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
+            for view in binding.views {
+                gateUp.useResource(view.buffer, usage: .read)
             }
+            gateUp.dispatchThreads(MTLSize(width: Int(p.routedIntermediate),
+                                           height: Int(p.pairCount),
+                                           depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+            gateUp.endEncoding()
 
-            if let enc = commandBuffer.makeTracedComputeEncoder() {
-                enc.setComputePipelineState(batchedDownPSO)
-                enc.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
-                enc.setBuffer(routePartials, offset: 0,
-                              index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
-                enc.setBuffer(gateUpActScratch, offset: 0,
-                              index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
-                enc.setBuffer(downScratch, offset: 0,
-                              index: PrefillGroupedRoutedMoEBufferIndex.downScratch)
-                enc.setBuffer(argumentBuffer.buffer, offset: 0,
-                              index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
-                enc.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
-                for view in binding.views {
-                    enc.useResource(view.buffer, usage: .read)
-                }
-                enc.dispatchThreads(MTLSize(width: Int(p.d),
-                                            height: Int(p.pairCount),
-                                            depth: 1),
-                                    threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
-                enc.endEncoding()
+            let down = try commandBuffer.makeTracedComputeEncoder()
+            down.setComputePipelineState(batchedDownPSO)
+            down.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
+            down.setBuffer(routePartials, offset: 0,
+                           index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
+            down.setBuffer(gateUpActScratch, offset: 0,
+                           index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
+            down.setBuffer(downScratch, offset: 0,
+                           index: PrefillGroupedRoutedMoEBufferIndex.downScratch)
+            down.setBuffer(argumentBuffer.buffer, offset: 0,
+                           index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
+            down.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
+            for view in binding.views {
+                down.useResource(view.buffer, usage: .read)
             }
+            down.dispatchThreads(MTLSize(width: Int(p.d),
+                                         height: Int(p.pairCount),
+                                         depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+            down.endEncoding()
 
             consumed += p.pairCount
-            microbatchCount += 1
         }
-        return microbatchCount
     }
 
     /// A verify tile's routed experts: per live expert, gate + up + GELU then
@@ -404,7 +396,7 @@ final class PrefillGroupedRoutedMoE {
         let constants = [MetalFunctionConstant(index: 90, value: .uint32(UInt32(rows)))]
         for (name, width) in [("verify_routed_gate_up_act", Int(params.routedIntermediate)),
                               ("verify_routed_down", (Int(params.d) + 1) / 2)] {
-            guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+            let enc = try commandBuffer.makeTracedComputeEncoder()
             enc.setComputePipelineState(try context.pipeline(name, constants: constants))
             enc.setBuffer(hidden, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
             enc.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
@@ -457,7 +449,7 @@ final class PrefillGroupedRoutedMoE {
         let count = UInt32(routeCount), bounds = UInt32(boundCount)
         // One serial encoder, so the experts are made resident once (each
         // costs ~2.7 µs of host time per encoder).
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setBuffer(hidden, offset: 0, index: 0)
         enc.setBuffer(routeIDs, offset: 0, index: 1)
         enc.setBuffer(bound, offset: boundOffset, index: 2)

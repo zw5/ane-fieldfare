@@ -14,8 +14,8 @@ public final class VisionAttention {
 
     /// Zeroes the padded lanes the projections never write. Called once per image;
     /// nothing writes lanes 72 to 79 afterwards, so they stay zero across layers.
-    public func encodeClearPadding(commandBuffer: any MTLCommandBuffer) {
-        guard let blit = commandBuffer.makeTracedBlitEncoder() else { return }
+    public func encodeClearPadding(commandBuffer: any MTLCommandBuffer) throws {
+        let blit = try commandBuffer.makeTracedBlitEncoder()
         for buffer in [fusedQ, fusedK, fusedV] {
             blit.fill(buffer: buffer, range: 0..<buffer.length, value: 0)
         }
@@ -23,9 +23,7 @@ public final class VisionAttention {
     }
 
     public init(context: MetalContext) throws {
-        let library = try MetalContext.privateLibrary(
-            device: context.device, module: "tensorops",
-            includeVisionTensorOps: true)
+        let library = try MetalContext.privateLibrary(device: context.device, module: "tensorops")
         guard let function = library.makeFunction(name: "mpp_vision_attention_bf16") else {
             throw MetalError.missingFunction("mpp_vision_attention_bf16")
         }
@@ -48,12 +46,12 @@ public final class VisionAttention {
                        q: any MTLBuffer, k: any MTLBuffer, v: any MTLBuffer,
                        output: any MTLBuffer,
                        sequenceLength: Int, numHeads: Int,
-                       inputRowStride: Int) {
+                       inputRowStride: Int) throws {
         precondition(sequenceLength > 0 && numHeads > 0)
         precondition(
             inputRowStride >= sequenceLength,
             "the fused layout reads head-major padded Q/K/V and needs their row stride")
-        guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
         let rows = UInt32(sequenceLength), heads = UInt32(numHeads)
         let layout = VisionAttentionLayout(
             inputRowStride: UInt32(inputRowStride),

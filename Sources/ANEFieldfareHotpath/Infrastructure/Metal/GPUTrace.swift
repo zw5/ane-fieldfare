@@ -66,12 +66,19 @@ public enum GPUTrace {
 
 extension MTLCommandBuffer {
     /// `makeComputeCommandEncoder()`, timestamped when GPU tracing is on.
+    /// Metal returns no encoder only for a misused or failed command buffer,
+    /// which the caller must see as an error.
     func makeTracedComputeEncoder(fileID: StaticString = #fileID,
                                   function: StaticString = #function,
-                                  line: UInt = #line) -> (any MTLComputeCommandEncoder)? {
-        guard let sink = GPUTrace.sink,
-              let slot = sink.reserve(device: device,
-                                      name: GPUTrace.callSiteName(fileID, function, line)) else {
+                                  line: UInt = #line) throws -> any MTLComputeCommandEncoder {
+        guard let encoder = tracedComputeEncoder(name: GPUTrace.callSiteName(fileID, function, line)) else {
+            throw MetalError.encoderUnavailable
+        }
+        return encoder
+    }
+
+    private func tracedComputeEncoder(name: @autoclosure () -> String) -> (any MTLComputeCommandEncoder)? {
+        guard let sink = GPUTrace.sink, let slot = sink.reserve(device: device, name: name()) else {
             return makeComputeCommandEncoder()
         }
         let pass = MTLComputePassDescriptor()
@@ -83,12 +90,19 @@ extension MTLCommandBuffer {
     }
 
     /// `makeBlitCommandEncoder()`, timestamped when GPU tracing is on.
+    /// Metal returns no encoder only for a misused or failed command buffer,
+    /// which the caller must see as an error.
     func makeTracedBlitEncoder(fileID: StaticString = #fileID,
                                function: StaticString = #function,
-                               line: UInt = #line) -> (any MTLBlitCommandEncoder)? {
-        guard let sink = GPUTrace.sink,
-              let slot = sink.reserve(device: device,
-                                      name: GPUTrace.callSiteName(fileID, function, line)) else {
+                               line: UInt = #line) throws -> any MTLBlitCommandEncoder {
+        guard let encoder = tracedBlitEncoder(name: GPUTrace.callSiteName(fileID, function, line)) else {
+            throw MetalError.encoderUnavailable
+        }
+        return encoder
+    }
+
+    private func tracedBlitEncoder(name: @autoclosure () -> String) -> (any MTLBlitCommandEncoder)? {
+        guard let sink = GPUTrace.sink, let slot = sink.reserve(device: device, name: name()) else {
             return makeBlitCommandEncoder()
         }
         let pass = MTLBlitPassDescriptor()

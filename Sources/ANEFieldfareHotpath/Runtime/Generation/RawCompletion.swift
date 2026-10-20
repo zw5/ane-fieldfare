@@ -282,9 +282,9 @@ public func runRawCompletion(producer: some LogitProducer,
 private func sampleOnce(scratch: RawCompletionScratch, context: MetalContext,
                         history: [Int32], config: GenerationConfig, position: Int) throws -> Int32 {
     let cb = try context.makeCommandBuffer()
-    scratch.sampler.sample(commandBuffer: cb, logits: scratch.logits, probs: scratch.probs,
-                           history: history, config: config, position: position,
-                           outToken: scratch.outToken)
+    try scratch.sampler.sample(commandBuffer: cb, logits: scratch.logits, probs: scratch.probs,
+                               history: history, config: config, position: position,
+                               outToken: scratch.outToken)
     cb.commit(); cb.waitUntilCompleted()
     try checkCommandBufferError(cb)
     return unsafe Int32(bitPattern: scratch.outToken.contents().load(as: UInt32.self))

@@ -39,12 +39,12 @@ public struct SharedExpertProjection {
 final class SharedExpertInt8 {
     private let int8: DequantInt8GEMV
     private let fusedGateUpActPSO: any MTLComputePipelineState
-    private let specializedFusedGateUpActPSO: any MTLComputePipelineState?
+    private let specializedFusedGateUpActPSO: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.int8 = try DequantInt8GEMV(context: context)
         self.fusedGateUpActPSO = try context.pipeline("shared_int8_gate_up_act_simd")
-        self.specializedFusedGateUpActPSO = try? context.pipeline(
+        self.specializedFusedGateUpActPSO = try context.pipeline(
             "shared_int8_gate_up_act_simd",
             constants: [
                 MetalFunctionConstant(index: 70, value: .uint32(2112)),
@@ -86,13 +86,13 @@ final class SharedExpertInt8 {
 
         try encodeFusedGateUpAct(commandBuffer: cb, x: x, xOffset: xOffset, gate: gate, up: up,
                                  scratchAct: scratchAct, scratchActOffset: scratchActOffset)
-        int8.encode(commandBuffer: cb,
-                    weights: down.weights, weightsOffset: down.weightsOffset,
-                    scales:  down.scales,  scalesOffset:  down.scalesOffset,
-                    biases:  down.biases,  biasesOffset:  down.biasesOffset,
-                    x: scratchAct, xOffset: scratchActOffset,
-                    y: y, yOffset: yOffset,
-                    m: down.rows, n: down.cols)
+        try int8.encode(commandBuffer: cb,
+                        weights: down.weights, weightsOffset: down.weightsOffset,
+                        scales:  down.scales,  scalesOffset:  down.scalesOffset,
+                        biases:  down.biases,  biasesOffset:  down.biasesOffset,
+                        x: scratchAct, xOffset: scratchActOffset,
+                        y: y, yOffset: yOffset,
+                        m: down.rows, n: down.cols)
     }
 
     private func encodeFusedGateUpAct(commandBuffer cb: any MTLCommandBuffer,
@@ -102,12 +102,9 @@ final class SharedExpertInt8 {
                                       up: SharedExpertProjection,
                                       scratchAct: any MTLBuffer,
                                       scratchActOffset: Int) throws {
-        guard let enc = cb.makeTracedComputeEncoder() else {
-            throw SharedExpertError.dimensionMismatch("encoder alloc failed")
-        }
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(
-            (gate.rows == 2112 && gate.cols == 2816 ? specializedFusedGateUpActPSO : nil)
-            ?? fusedGateUpActPSO)
+            gate.rows == 2112 && gate.cols == 2816 ? specializedFusedGateUpActPSO : fusedGateUpActPSO)
         enc.setBuffer(gate.weights, offset: gate.weightsOffset, index: 0)
         enc.setBuffer(gate.scales,  offset: gate.scalesOffset,  index: 1)
         enc.setBuffer(gate.biases,  offset: gate.biasesOffset,  index: 2)

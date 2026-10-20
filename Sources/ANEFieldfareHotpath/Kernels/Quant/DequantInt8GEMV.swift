@@ -32,11 +32,11 @@ final class DequantInt8GEMV {
                        y:       any MTLBuffer,
                        yOffset: Int = 0,
                        m: UInt32,
-                       n: UInt32) {
+                       n: UInt32) throws {
         precondition(n % UInt32(Quantization.groupSize) == 0,
                      "N must be a multiple of \(Quantization.groupSize)")
         precondition(xOffset >= 0 && yOffset >= 0, "buffer offsets must be non-negative")
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
+        let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setComputePipelineState(m == 2816 && n == 2112 ? psoDown : pso)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(scales,  offset: scalesOffset,  index: 1)

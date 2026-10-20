@@ -20,8 +20,7 @@ final class PrefillSharedExpert {
         self.shared = try SharedExpertRuntime(context: context, weightBits: weightBits)
         self.context = context
         if batched && weightBits == 4 {
-            let qmm = MPPPrefillInt4QMM(context: context)
-            self.batched = qmm.isAvailable ? qmm : nil
+            self.batched = try MPPPrefillInt4QMM(context: context)
             self.geluMulPSO = try context.pipeline("gelu_mul_fp16")
             self.multiRow = try DequantInt4GEMV(context: context)
         } else {
@@ -71,7 +70,7 @@ final class PrefillSharedExpert {
                                     xStrideElements: Int(p.cols), yStrideElements: Int(p.rows))
                 return true
             }
-            return batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
+            return try batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                            scales: p.scales, scalesOffset: p.scalesOffset,
                            biases: p.biases, biasesOffset: p.biasesOffset,
                            x: x, y: y,
@@ -80,10 +79,10 @@ final class PrefillSharedExpert {
         // A fallback on the first projection leaves nothing encoded; any
         // later one is a contract violation for these fixed shapes.
         guard try project(gate, x: x, y: buffers.gate) else { return false }
-        guard try project(up, x: x, y: buffers.up),
-              let encoder = cb.makeTracedComputeEncoder() else {
+        guard try project(up, x: x, y: buffers.up) else {
             throw SharedExpertError.dimensionMismatch("batched shared expert up projection fell back")
         }
+        let encoder = try cb.makeTracedComputeEncoder()
         encoder.setComputePipelineState(geluMulPSO)
         encoder.setBuffer(buffers.gate, offset: 0, index: 0)
         encoder.setBuffer(buffers.up, offset: 0, index: 1)

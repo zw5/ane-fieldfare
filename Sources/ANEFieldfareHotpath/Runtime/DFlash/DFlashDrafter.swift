@@ -241,14 +241,14 @@ public final class DFlashDrafter {
         var done = 0
         while done < rows {
             let n = min(Self.maxRows, rows - done), p0 = position + done
-            dispatch(cb, gatherPSO, [tap.buffer, feature],
-                     [UInt32(n), UInt32(layers), UInt32(D), UInt32(p0), UInt32(tap.capacity)],
-                     grid: MTLSize(width: layers * D, height: n, depth: 1))
+            try dispatch(cb, gatherPSO, [tap.buffer, feature],
+                         [UInt32(n), UInt32(layers), UInt32(D), UInt32(p0), UInt32(tap.capacity)],
+                         grid: MTLSize(width: layers * D, height: n, depth: 1))
             try project(cb, weights.fc, x: feature, y: contextHidden, rows: n)
-            norm(cb, normBF16PSO, x: contextHidden, weight: weights.hiddenNorm, out: contextHidden, rows: n)
+            try norm(cb, normBF16PSO, x: contextHidden, weight: weights.hiddenNorm, out: contextHidden, rows: n)
             for (l, layer) in weights.layers.enumerated() {
                 try project(cb, layer.qkv.rows(config.qWidth..<config.qkvWidth), x: contextHidden, y: contextKV, rows: n)
-                guard let enc = cb.makeTracedComputeEncoder() else { throw DFlashError.invalidState("encoder") }
+                let enc = try cb.makeTracedComputeEncoder()
                 enc.setComputePipelineState(storeKVPSO)
                 enc.setBuffer(contextKV, offset: 0, index: 0)
                 enc.setBuffer(weights.buffer, offset: layer.kNorm, index: 1)
@@ -280,7 +280,8 @@ public final class DFlashDrafter {
         GPUTrace.setScope("draft")
         let D = config.hiddenSize, F = config.intermediateSize
         let emb = model.embedding
-        if let enc = cb.makeTracedComputeEncoder() {
+        do {
+            let enc = try cb.makeTracedComputeEncoder()
             enc.setComputePipelineState(embedPSO)
             enc.setBuffer(emb.buffer, offset: Int(emb.offset), index: 0)
             enc.setBuffer(emb.buffer, offset: Int(emb.scaleOffset), index: 1)
@@ -293,10 +294,11 @@ public final class DFlashDrafter {
                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             enc.endEncoding()
         }
-        norm(cb, normF32PSO, x: residual, weight: weights.layers[0].inputNorm, out: normed, rows: R)
+        try norm(cb, normF32PSO, x: residual, weight: weights.layers[0].inputNorm, out: normed, rows: R)
         for (l, layer) in weights.layers.enumerated() {
             try project(cb, layer.qkv, x: normed, y: qkv, rows: R)
-            if let enc = cb.makeTracedComputeEncoder() {
+            do {
+                let enc = try cb.makeTracedComputeEncoder()
                 enc.setComputePipelineState(qkNormRopePSO)
                 enc.setBuffer(qkv, offset: 0, index: 0)
                 enc.setBuffer(weights.buffer, offset: layer.qNorm, index: 1)
@@ -310,7 +312,8 @@ public final class DFlashDrafter {
                                          threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
                 enc.endEncoding()
             }
-            if let enc = cb.makeTracedComputeEncoder() {
+            do {
+                let enc = try cb.makeTracedComputeEncoder()
                 enc.setComputePipelineState(attentionPSO)
                 enc.setBuffer(qkv, offset: 0, index: 0)
                 enc.setBuffer(kCache[l], offset: 0, index: 1)
@@ -327,17 +330,17 @@ public final class DFlashDrafter {
                 enc.endEncoding()
             }
             try project(cb, layer.o, x: attention, y: delta, rows: R)
-            addNorm(cb, weight: layer.postAttentionNorm, rows: R)
+            try addNorm(cb, weight: layer.postAttentionNorm, rows: R)
             try project(cb, layer.gateUp, x: normed, y: gateUp, rows: R)
-            dispatch(cb, siluPSO, [gateUp, act], [UInt32(F)], grid: MTLSize(width: F, height: R, depth: 1))
+            try dispatch(cb, siluPSO, [gateUp, act], [UInt32(F)], grid: MTLSize(width: F, height: R, depth: 1))
             try project(cb, layer.down, x: act, y: delta, rows: R)
             if l + 1 < weights.layers.count {
-                addNorm(cb, weight: weights.layers[l + 1].inputNorm, rows: R)
+                try addNorm(cb, weight: weights.layers[l + 1].inputNorm, rows: R)
             }
         }
         // Rows 1..<R predict the drafts; the head applies the final norm.
-        dispatch(cb, addHeadRowsPSO, [residual, delta, headRows], [UInt32((R - 1) * D), UInt32(D)],
-                 grid: MTLSize(width: (R - 1) * D, height: 1, depth: 1))
+        try dispatch(cb, addHeadRowsPSO, [residual, delta, headRows], [UInt32((R - 1) * D), UInt32(D)],
+                     grid: MTLSize(width: (R - 1) * D, height: 1, depth: 1))
         if let hot = hotVocabulary {
             try head.encodeHotGreedyRows(commandBuffer: cb, hidden: headRows, rowCount: R - 1,
                                          normWeight: weights.buffer, normOffset: weights.norm, table: hot,
@@ -357,8 +360,8 @@ public final class DFlashDrafter {
                                       rmsEps: config.rmsEps, softcap: Float(model.config.finalLogitSoftcap),
                                       sampling: sampling.map { .init(rule: $0, keyBase: 1, keyOffset: state) })
         }
-        dispatch(cb, finishPSO, [picks, hotVocabulary?.ids ?? picks, block],
-                 [UInt32(R - 1), hotVocabulary == nil ? 0 : 1], grid: MTLSize(width: R - 1, height: 1, depth: 1))
+        try dispatch(cb, finishPSO, [picks, hotVocabulary?.ids ?? picks, block],
+                     [UInt32(R - 1), hotVocabulary == nil ? 0 : 1], grid: MTLSize(width: R - 1, height: 1, depth: 1))
     }
 
     /// After a verify of `rows` rows of `block` starting at position
@@ -366,8 +369,8 @@ public final class DFlashDrafter {
     /// advances the context past the anchor and the accepted drafts and
     /// anchors the next block at the target's next token. The verify's
     /// context rows must already be in the cache (`encodeContextUpdate`).
-    func encodeAccept(_ cb: any MTLCommandBuffer, verified: any MTLBuffer, rows: Int) {
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
+    func encodeAccept(_ cb: any MTLCommandBuffer, verified: any MTLBuffer, rows: Int) throws {
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(acceptPSO)
         enc.setBuffer(block, offset: 0, index: 0)
         enc.setBuffer(verified, offset: 0, index: 1)
@@ -392,8 +395,8 @@ public final class DFlashDrafter {
     }
 
     private func dispatch(_ cb: any MTLCommandBuffer, _ pso: any MTLComputePipelineState, _ buffers: [any MTLBuffer],
-                          _ constants: [UInt32], grid: MTLSize) {
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
+                          _ constants: [UInt32], grid: MTLSize) throws {
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         for (i, b) in buffers.enumerated() { enc.setBuffer(b, offset: 0, index: i) }
         for i in constants.indices { enc.setValue(constants[i], index: buffers.count + i) }
@@ -402,8 +405,8 @@ public final class DFlashDrafter {
     }
 
     private func norm(_ cb: any MTLCommandBuffer, _ pso: any MTLComputePipelineState, x: any MTLBuffer,
-                      weight: Int, out: any MTLBuffer, rows: Int) {
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
+                      weight: Int, out: any MTLBuffer, rows: Int) throws {
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(pso)
         enc.setBuffer(x, offset: 0, index: 0)
         enc.setBuffer(weights.buffer, offset: weight, index: 1)
@@ -416,8 +419,8 @@ public final class DFlashDrafter {
     }
 
     /// residual += delta, normed = rmsnorm(residual) * weight.
-    private func addNorm(_ cb: any MTLCommandBuffer, weight: Int, rows: Int) {
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
+    private func addNorm(_ cb: any MTLCommandBuffer, weight: Int, rows: Int) throws {
+        let enc = try cb.makeTracedComputeEncoder()
         enc.setComputePipelineState(addNormPSO)
         enc.setBuffer(residual, offset: 0, index: 0)
         enc.setBuffer(delta, offset: 0, index: 1)

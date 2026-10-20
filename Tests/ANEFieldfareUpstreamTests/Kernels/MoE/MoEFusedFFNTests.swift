@@ -79,7 +79,7 @@ import ANEFieldfareValidationSupport
         let argumentBuffer = kernel.makeReusedRoutedArgumentBuffer(routedViews: views, topK: UInt32(Self.topK))
 
         let fullCommand = try #require(context.queue.makeCommandBuffer())
-        kernel.encodeRoutedPersistentPhase1U16Load(
+        try kernel.encodeRoutedPersistentPhase1U16Load(
             commandBuffer: fullCommand,
             routedArgBuffer: argumentBuffer,
             routedBlobs: routedBuffers,
@@ -89,7 +89,7 @@ import ANEFieldfareValidationSupport
             d: UInt32(Self.dimension),
             f: UInt32(Self.intermediate),
             topK: UInt32(Self.topK))
-        kernel.encodeRoutedPersistentPhase2Reduce(
+        try kernel.encodeRoutedPersistentPhase2Reduce(
             commandBuffer: fullCommand,
             routedArgBuffer: argumentBuffer,
             routedBlobs: routedBuffers,
@@ -108,7 +108,7 @@ import ANEFieldfareValidationSupport
         let splitCommand = try #require(context.queue.makeCommandBuffer())
         for (slots, activeSlots) in [([UInt32](0...3), lowSlots),
                                      ([UInt32](4...7), highSlots)] {
-            kernel.encodeRoutedPersistentPhase1SubsetU16Load(
+            try kernel.encodeRoutedPersistentPhase1SubsetU16Load(
                 commandBuffer: splitCommand,
                 routedArgBuffer: argumentBuffer,
                 routedBlobs: routedBuffers,
@@ -122,7 +122,7 @@ import ANEFieldfareValidationSupport
                 f: UInt32(Self.intermediate),
                 topK: UInt32(Self.topK))
         }
-        kernel.encodeRoutedPersistentPhase2Reduce(
+        try kernel.encodeRoutedPersistentPhase2Reduce(
             commandBuffer: splitCommand,
             routedArgBuffer: argumentBuffer,
             routedBlobs: routedBuffers,

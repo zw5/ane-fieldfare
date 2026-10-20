@@ -17,65 +17,24 @@ public final class MPPPrefillInt4QMM {
     private static let tileN = 32
     private static let tileK = Quantization.groupSize
 
-    private let context: MetalContext
-    private let controlPSO: any MTLComputePipelineState?
-    private let apple10BF16PSO: any MTLComputePipelineState?
+    private let pso: any MTLComputePipelineState
     private let variant: Variant
-    public let unavailableReason: String?
 
-    public init(context: MetalContext, variant: Variant = .control) {
-        self.context = context
-        self.variant = variant
-        var controlPSO: any MTLComputePipelineState?
-        var apple10BF16PSO: any MTLComputePipelineState?
-        var unavailableReason: String?
-        let apple10FunctionName: String? = variant == .apple10BF16
-            ? "mpp_prefill_affine_threadgroup_bf16_apple10_v1" : nil
-        do {
-            if let apple10FunctionName {
-                guard context.device.supportsFamily(.apple10) else {
-                    throw NSError(
-                        domain: "MPPPrefillInt4QMM",
-                        code: 2,
-                        userInfo: [NSLocalizedDescriptionKey:
-                            "\(apple10FunctionName) needs an Apple10 GPU family device"])
-                }
-            }
-            let library = try MetalContext.privateLibrary(device: context.device, module: "tensorops")
-            guard let controlFunction = library.makeFunction(
-                name: "mpp_prefill_affine_threadgroup_f16") else {
-                throw NSError(
-                    domain: "MPPPrefillInt4QMM",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey:
-                        "mpp_prefill_affine_threadgroup_f16 symbol unavailable"])
-            }
-            controlPSO = try context.device.makeComputePipelineState(
-                function: controlFunction)
-            if let apple10FunctionName {
-                guard let apple10Function = library.makeFunction(
-                    name: apple10FunctionName) else {
-                    throw NSError(
-                        domain: "MPPPrefillInt4QMM",
-                        code: 2,
-                        userInfo: [NSLocalizedDescriptionKey:
-                            "\(apple10FunctionName) symbol unavailable"])
-                }
-                apple10BF16PSO = try context.device.makeComputePipelineState(
-                    function: apple10Function)
-            }
-        } catch {
-            unavailableReason = String(describing: error)
+    /// `apple10BF16` (the vision projector) needs an Apple10 GPU.
+    public init(context: MetalContext, variant: Variant = .control) throws {
+        let name = switch variant {
+        case .control: "mpp_prefill_affine_threadgroup_f16"
+        case .apple10BF16: "mpp_prefill_affine_threadgroup_bf16_apple10"
         }
-        self.controlPSO = controlPSO
-        self.apple10BF16PSO = apple10BF16PSO
-        self.unavailableReason = unavailableReason
-    }
-
-    public var isAvailable: Bool {
-        controlPSO != nil && (
-            variant == .control
-                || variant == .apple10BF16 && apple10BF16PSO != nil)
+        if variant == .apple10BF16, !context.device.supportsFamily(.apple10) {
+            throw MetalError.missingFunction("\(name) needs an Apple10 GPU")
+        }
+        let library = try MetalContext.privateLibrary(device: context.device, module: "tensorops")
+        guard let function = library.makeFunction(name: name) else {
+            throw MetalError.missingFunction(name)
+        }
+        self.pso = try context.device.makeComputePipelineState(function: function)
+        self.variant = variant
     }
 
     @discardableResult
@@ -87,27 +46,17 @@ public final class MPPPrefillInt4QMM {
                        y: any MTLBuffer,
                        m: Int,
                        n: Int,
-                       k: Int) -> Path {
-        let supportedShape = m > 0 && n > 0 && k > 0
-            && k.isMultiple(of: Self.tileK)
-        // The BF16 variant (the vision projector) has no control kernel, so it
-        // takes the Apple10 kernel at any M: it bound-checks every store
-        // against M and the dispatch rounds up to a whole tile.
+                       k: Int) throws -> Path {
+        // The Apple10 kernel takes any M: it bound-checks every store against
+        // M and the dispatch rounds up to a whole tile.
         let useApple10 = variant == .apple10BF16
-            && context.device.supportsFamily(.apple10)
-            && k.isMultiple(of: 128)
-            && apple10BF16PSO != nil
-        let selectedPSO = variant == .apple10BF16
-            ? (useApple10 ? apple10BF16PSO : nil)
-            : controlPSO
-        guard supportedShape,
+        guard m > 0, n > 0, k > 0, k.isMultiple(of: useApple10 ? 128 : Self.tileK),
               weightsOffset >= 0,
               scalesOffset.isMultiple(of: MemoryLayout<UInt16>.stride),
-              biasesOffset.isMultiple(of: MemoryLayout<UInt16>.stride),
-              let pso = selectedPSO,
-              let encoder = commandBuffer.makeTracedComputeEncoder() else {
+              biasesOffset.isMultiple(of: MemoryLayout<UInt16>.stride) else {
             return .fallback
         }
+        let encoder = try commandBuffer.makeTracedComputeEncoder()
 
         encoder.setComputePipelineState(pso)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)

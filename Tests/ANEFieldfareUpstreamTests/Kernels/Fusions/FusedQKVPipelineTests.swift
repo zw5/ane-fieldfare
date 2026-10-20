@@ -57,31 +57,31 @@ import ANEFieldfareValidationSupport
         let qFused = try output(qRows), kFused = try output(kvRows), vFused = try output(kvRows)
         let commandBuffer = try #require(ctx.queue.makeCommandBuffer())
 
-        gemv.encode(commandBuffer: commandBuffer,
-                    weights: qWeights, scales: qScales, biases: qBiases,
-                    x: xBuffer, y: qProjected,
-                    m: UInt32(qRows), n: UInt32(n))
-        gemv.encode(commandBuffer: commandBuffer,
-                    weights: kvWeights, scales: kvScales, biases: kvBiases,
-                    x: xBuffer, y: kvProjected,
-                    m: UInt32(kvRows), n: UInt32(n))
-        fusedGEMV.encode(commandBuffer: commandBuffer,
-                         qWeights: qWeights, qScales: qScales, qBiases: qBiases,
-                         kWeights: kvWeights, kScales: kvScales, kBiases: kvBiases,
-                         vWeights: kvWeights, vScales: kvScales, vBiases: kvBiases,
-                         x: xBuffer,
-                         qOut: qFused, kOut: kFused, vOut: vFused,
-                         qRows: UInt32(qRows), kvRows: UInt32(kvRows), n: UInt32(n))
-        fusedEpilogue.encode(commandBuffer: commandBuffer,
-                             q: qFused, k: kFused, v: vFused,
-                             qWeight: qNormBuffer, kWeight: kNormBuffer,
-                             headDim: UInt32(headDim),
-                             numQHeads: UInt32(numQHeads),
-                             numKVHeads: UInt32(numKVHeads),
-                             position: UInt32(position),
-                             theta: theta,
-                             rotatedPairs: rotatedPairs,
-                             eps: 1e-6)
+        try gemv.encode(commandBuffer: commandBuffer,
+                        weights: qWeights, scales: qScales, biases: qBiases,
+                        x: xBuffer, y: qProjected,
+                        m: UInt32(qRows), n: UInt32(n))
+        try gemv.encode(commandBuffer: commandBuffer,
+                        weights: kvWeights, scales: kvScales, biases: kvBiases,
+                        x: xBuffer, y: kvProjected,
+                        m: UInt32(kvRows), n: UInt32(n))
+        try fusedGEMV.encode(commandBuffer: commandBuffer,
+                             qWeights: qWeights, qScales: qScales, qBiases: qBiases,
+                             kWeights: kvWeights, kScales: kvScales, kBiases: kvBiases,
+                             vWeights: kvWeights, vScales: kvScales, vBiases: kvBiases,
+                             x: xBuffer,
+                             qOut: qFused, kOut: kFused, vOut: vFused,
+                             qRows: UInt32(qRows), kvRows: UInt32(kvRows), n: UInt32(n))
+        try fusedEpilogue.encode(commandBuffer: commandBuffer,
+                                 q: qFused, k: kFused, v: vFused,
+                                 qWeight: qNormBuffer, kWeight: kNormBuffer,
+                                 headDim: UInt32(headDim),
+                                 numQHeads: UInt32(numQHeads),
+                                 numKVHeads: UInt32(numKVHeads),
+                                 position: UInt32(position),
+                                 theta: theta,
+                                 rotatedPairs: rotatedPairs,
+                                 eps: 1e-6)
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
