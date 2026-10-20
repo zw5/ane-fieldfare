@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end check of ANEFieldfareServer against the installed model.
 #
-# Runs the CLI and the server on the same prompts and requires the server's
-# output to equal the CLI's: greedy chat (non-streaming and streaming),
+# Runs the CLI and the server on the same prompts, both with --drafter off,
+# and requires the server's output to equal the CLI's: greedy chat (non-streaming and streaming),
 # seeded sampled chat, and a raw /v1/completions prompt. With SMOKE_DRAFTER
 # set it restarts the server with --drafter and compares a greedy and a seeded
 # sampled request with the CLI's --drafter runs (reported, not required:
@@ -52,11 +52,11 @@ footer_tps() { sed -n 's/.*tok\/s=\([0-9.]*\).*/\1/p' "$1" | tail -1; }
 
 echo "== CLI reference runs"
 "$bin/ANEFieldfareHotpathCLI" --model "$model" --max-context "$context" --chat-prompt "$chat_prompt" \
-  --temperature 0 --max-new "$max_new" > "$work/cli-greedy.txt" 2> "$work/cli-greedy.err"
+  --temperature 0 --max-new "$max_new" --drafter off > "$work/cli-greedy.txt" 2> "$work/cli-greedy.err"
 "$bin/ANEFieldfareHotpathCLI" --model "$model" --max-context "$context" --chat-prompt "$chat_prompt" \
-  --temperature 0.7 --top-k 40 --top-p 0.9 --seed 7 --max-new "$max_new" --quiet > "$work/cli-sampled.txt"
+  --temperature 0.7 --top-k 40 --top-p 0.9 --seed 7 --max-new "$max_new" --drafter off --quiet > "$work/cli-sampled.txt"
 "$bin/ANEFieldfareHotpathCLI" --model "$model" --max-context "$context" --prompt "$raw_prompt" \
-  --temperature 0 --max-new "$max_new" --quiet > "$work/cli-raw.txt"
+  --temperature 0 --max-new "$max_new" --drafter off --quiet > "$work/cli-raw.txt"
 cli_tps="$(footer_tps "$work/cli-greedy.err")"
 if [[ -n "$drafter" ]]; then
   "$bin/ANEFieldfareHotpathCLI" --model "$model" --max-context "$context" --chat-prompt "$chat_prompt" \
@@ -87,7 +87,7 @@ stop_server() {
 content() { python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["choices"][0]; sys.stdout.write(c["message"]["content"] if "message" in c else c["text"])'; }
 
 echo "== server"
-start_server
+start_server --drafter off
 base="http://127.0.0.1:$port/v1"
 greedy=$(python3 -c 'import json,sys; print(json.dumps({"model":"x","messages":[{"role":"user","content":sys.argv[1]}],"temperature":0,"max_tokens":int(sys.argv[2])}))' "$chat_prompt" "$max_new")
 curl -sS "$base/chat/completions" -H 'Content-Type: application/json' -d "$greedy" > "$work/greedy.json"
