@@ -1,48 +1,69 @@
 # ANE Fieldfare
 
-This project uses DFlash alongside the Apple Neural Engine to run Google's **Gemma 4 26B-A4B**, a 26-billion-parameter
-mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
+**Gemma 4 26B-A4B at up to 99 tokens/s on a 16 GB Mac.** Google's
+26-billion-parameter mixture-of-experts model, with 13 GB of 4-bit weights,
+on the base M5. The prompt is processed on the Apple Neural Engine and the GPU
+together, generation is speculatively decoded on the GPU, and the weights are
+read in place from the OS file cache instead of being loaded into the process.
 
-
-| Throughput on M5, 16 GB | |
+| M5 (base chip), 16 GB, macOS 27 | |
 | --- | ---: |
-| Generation | 73–99 tok/s |
-| Prefill, 3,015-token prompt, GPU + ANE | 8.8 s (down from 22.2 s) |
-| Prefill, 3,015-token prompt, GPU only | 15.3 s (down from 24.0 s) |
+| Generation, greedy, with the DFlash drafter | **73–99 tok/s** |
+| Generation, sampled (temperature 0.6–1.0), with the drafter | 58–82 tok/s |
+| Generation, one token at a time | 49–51 tok/s, over 80% of measured memory bandwidth |
+| Prefill, 3,015-token prompt, ANE + GPU | **8.8 s (343 tok/s)** |
+| Prefill, same prompt, GPU only | 15.3 s |
+| Process memory footprint, short prompts | 0.93 GB; the weights stay in the file cache |
+| Where the [performance log](PERFORMANCE.md) started | 13–14 tok/s; prefill 22–24 s |
 
-## Repo contents
+Every figure has a measured run behind it; [PERFORMANCE.md](PERFORMANCE.md)
+logs each change that got here, with its A/B result and what was tried and
+rejected.
+
+## Architecture
+
+```
+ PROMPT (prefill)                              GENERATION (decode)
+
+ GPU  attention, router, shared FFN            GPU  DFlash drafter drafts a block
+  │                                             │
+ GPU  unpacks the next 4 INT4 experts ──┐      GPU  the model verifies the whole block
+ ANE  computes the previous 4      ◄────┘           in one pass, routing experts on the GPU
+  │                                             │
+  └───── 13 GB of experts, memory-mapped and zero-copy: the OS file cache is the expert cache
+```
 
 - **The OS file cache is the expert cache.** Every expert is a zero-copy Metal
-  buffer over a mmaped file.
-- **Prefill on the Neural Engine.** An Objective-C layer runs Apple's
-  private ANE runtime directly, compiling one program that computes 4 experts
-  at a time. During prefill the two run as a pipeline: the ANE can't unpack
-  4-bit weights, so the GPU unpacks the next 4 experts into one buffer set
-  while the ANE computes from the other. On long prompts that is 1.7× faster
-  than the GPU alone.
-- **DFlash speculative decoding.** Plain decoding has to read roughly 2 GB
-  of weights per token, so its speed is bound by the machine's memory
-  bandwidth. Speculative decoding with a DFlash drafter checks several tokens
-  per read, which takes code generation from around 50 to 99 tok/s. On a model whose experts
-  stream from disk, checking drafts costs more than writing them (8 draft
-  tokens touch ~29 experts per layer instead of 8), so a scheduler decides
-  every step, from measured timings, how much to draft and how much to check.
-- **Speculation that stays on the GPU.** Checking a block routes each layer's
-  experts on the GPU, from the previous layer's guess, instead of waiting for
-  the CPU at every layer. The drafter reads the main model's hidden states
-  straight from GPU memory, accepts drafts and advances its own position on
-  the GPU, and queues its next draft right behind the check, so the CPU waits
-  once per step and the GPU is busy 93–95% of the time.
-- **A smaller head most of the time.** The head has 262,144 rows. Greedy
-  decoding scores only the 56k most common tokens for three steps, then
-  checks all four steps against the full head at once and repairs any miss:
-  the full head is read a quarter as often, and the output is bit-identical.
+  buffer over the memory-mapped model file, so there is no app-level cache to
+  size or evict. On a 16 GB machine about 9 GB of experts stay resident, and
+  plain decode misses about one expert per token.
+- **Prefill on the Neural Engine.** An Objective-C layer drives Apple's
+  private ANE runtime directly: one compiled program computes 4 experts per
+  call. The ANE can't unpack 4-bit weights, so the GPU unpacks the next 4
+  experts into one buffer set while the ANE computes from the other. On long
+  prompts this is 1.7× faster than the GPU alone, and a supervisor can hand
+  the rest of a prompt back to the GPU if the ANE faults
+  (`--fault-policy failover-metal`).
+- **Decode at the memory-bandwidth limit.** One token reads about 2.2 GB of
+  weights; at the ~132 GB/s this machine measures, that is a 16.4 ms floor,
+  and a plain decode step takes about 21 ms.
+- **DFlash speculative decoding, entirely on the GPU.** Speculation gets past
+  that limit by checking several drafted tokens per weight read. Checking a
+  block routes each layer's experts on the GPU from the previous layer's
+  guess, the drafter reads the target's hidden states straight from GPU
+  memory and queues its next draft right behind the check, and the CPU waits
+  once per step: the GPU is busy 93–95% of the time. Checking 8 drafts
+  touches ~29 experts per layer instead of 8, so a scheduler decides every
+  step, from measured timings, how much to draft and how much to check.
+- **A smaller head most of the time.** Greedy decoding scores only the 56k most
+  common of the 262,144 vocabulary rows for three steps, then checks all four
+  against the full head at once and repairs any miss: the full head is read a
+  quarter as often, with bit-identical output.
 
-> **Status: experimental research software.** The ANE path uses private,
-> undocumented Apple frameworks. Any macOS update can break it, and it cannot be
-> used in App Store apps. The ANE computes in FP16, so output with the default
-> `hybrid-ane` backend is close to, but not bit-identical to, `--backend metal`
-> (GPU-only) output.
+The ANE path uses private, undocumented Apple frameworks: a macOS update can
+break it (`--backend metal` runs everything on the GPU), and it cannot ship in
+App Store apps. The ANE computes in FP16, so `hybrid-ane` output is close to,
+but not bit-identical to, GPU-only output.
 
 ## Requirements
 
