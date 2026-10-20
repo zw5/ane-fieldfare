@@ -1,24 +1,21 @@
 # ANE Fieldfare
 
-**Gemma 4 26B-A4B at up to 99 tokens/s on a 16 GB Mac.** Google's
-26-billion-parameter mixture-of-experts model, with 13 GB of 4-bit weights,
-on the base M5. The prompt is processed on the Apple Neural Engine and the GPU
-together, generation is speculatively decoded on the GPU, and the weights are
-read in place from the OS file cache instead of being loaded into the process.
+**Gemma 4 26B-A4B at up to 99 tokens/s on a 16 GB Mac.** Prefill on the Apple
+Neural Engine, speculative decoding on the GPU, and 13 GB of experts served
+straight from the OS file cache.
 
-| M5 (base chip), 16 GB, macOS 27 | |
-| --- | ---: |
-| Generation, greedy, with the DFlash drafter | **73–99 tok/s** |
-| Generation, sampled (temperature 0.6–1.0), with the drafter | 58–82 tok/s |
-| Generation, one token at a time | 49–51 tok/s, over 80% of measured memory bandwidth |
-| Prefill, 3,015-token prompt, ANE + GPU | **8.8 s (343 tok/s)** |
-| Prefill, same prompt, GPU only | 15.3 s |
-| Process memory footprint, short prompts | 0.93 GB; the weights stay in the file cache |
-| Where the [performance log](PERFORMANCE.md) started | 13–14 tok/s; prefill 22–24 s |
+| Same M5, 16 GB, same prompts | ANE Fieldfare | [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) | llama.cpp |
+| --- | ---: | ---: | ---: |
+| Generation | **37–53 tok/s** | 21–25 tok/s | 5–9 tok/s |
+| First token, 3,015-token prompt | **10 s** | 48 s | ~110 s (est.) |
 
-Every figure has a measured run behind it; [PERFORMANCE.md](PERFORMANCE.md)
-logs each change that got here, with its A/B result and what was tried and
-rejected.
+Turbo Fieldfare's own benchmark (its three prompts, temperature 0.2), run on
+both engines on 2026-10-20; first token includes model load. llama.cpp runs
+Google's Q4_0 GGUF, which is over Metal's 12.7 GB limit on a 16 GB Mac, so its
+best layer split pages (`llama-bench`; its first token is estimated from
+its 24–32 tok/s prefill). Greedy, the drafter reaches 73–99
+tok/s, and prefill of the long prompt alone takes 8.8 s. How each number was
+reached: [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Architecture
 
@@ -33,37 +30,19 @@ rejected.
   └───── 13 GB of experts, memory-mapped and zero-copy: the OS file cache is the expert cache
 ```
 
-- **The OS file cache is the expert cache.** Every expert is a zero-copy Metal
-  buffer over the memory-mapped model file, so there is no app-level cache to
-  size or evict. On a 16 GB machine about 9 GB of experts stay resident, and
-  plain decode misses about one expert per token.
-- **Prefill on the Neural Engine.** An Objective-C layer drives Apple's
-  private ANE runtime directly: one compiled program computes 4 experts per
-  call. The ANE can't unpack 4-bit weights, so the GPU unpacks the next 4
-  experts into one buffer set while the ANE computes from the other. On long
-  prompts this is 1.7× faster than the GPU alone, and a supervisor can hand
-  the rest of a prompt back to the GPU if the ANE faults
-  (`--fault-policy failover-metal`).
-- **Decode at the memory-bandwidth limit.** One token reads about 2.2 GB of
-  weights; at the ~132 GB/s this machine measures, that is a 16.4 ms floor,
-  and a plain decode step takes about 21 ms.
-- **DFlash speculative decoding, entirely on the GPU.** Speculation gets past
-  that limit by checking several drafted tokens per weight read. Checking a
-  block routes each layer's experts on the GPU from the previous layer's
-  guess, the drafter reads the target's hidden states straight from GPU
-  memory and queues its next draft right behind the check, and the CPU waits
-  once per step: the GPU is busy 93–95% of the time. Checking 8 drafts
-  touches ~29 experts per layer instead of 8, so a scheduler decides every
-  step, from measured timings, how much to draft and how much to check.
-- **A smaller head most of the time.** Greedy decoding scores only the 56k most
-  common of the 262,144 vocabulary rows for three steps, then checks all four
-  against the full head at once and repairs any miss: the full head is read a
-  quarter as often, with bit-identical output.
+- **The file cache is the expert cache.** Experts are zero-copy Metal buffers
+  over the mapped model file, so a 13 GB model runs in under 1 GB of process
+  memory on short prompts.
+- **The Neural Engine does prefill.** It can't unpack 4-bit weights, so the GPU
+  unpacks the next 4 experts while the ANE computes the current ones: 1.7×
+  faster than the GPU alone on long prompts.
+- **Speculation never leaves the GPU.** The drafter, the verify's expert
+  routing and the acceptance all run on the GPU, so the CPU waits once per
+  step and the GPU stays 93–95% busy.
 
-The ANE path uses private, undocumented Apple frameworks: a macOS update can
-break it (`--backend metal` runs everything on the GPU), and it cannot ship in
-App Store apps. The ANE computes in FP16, so `hybrid-ane` output is close to,
-but not bit-identical to, GPU-only output.
+The ANE path uses private Apple frameworks: a macOS update can break it
+(`--backend metal` runs everything on the GPU), and it can't ship in App Store
+apps.
 
 ## Requirements
 
