@@ -56,8 +56,8 @@ mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
   result at `checkpoints/gturbo/gemma4.gturbo` (git ignores `checkpoints/`).
 - `z-lab/gemma-4-26B-A4B-it-DFlash` (dflash drafter) at
   `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash` (or beside the model), where
-  the CLI and the server find it. Without it the model still runs, at half the
-  speed. The first run quantizes it to this runtime's 4-bit format into
+  the CLI and the server find it. Without it the model still runs,
+  1.5–1.9× slower. The first run quantizes it to this runtime's 4-bit format into
   `fieldfare-dflash-int4.bin` (242 MB) in the same directory.
 
 ## Quick start
@@ -340,7 +340,8 @@ Scripts/test.sh    # lint, build, then every test suite
 ```
 
 Most tests use small synthetic model files the tests generate themselves (the
-code calls these *fixtures*), so they need no download. Some tests call the real
+code calls these *fixtures*). The tokenizer and server tests download Gemma's
+tokenizer from the Hugging Face Hub on first run. Some tests call the real
 ANE and need ANE hardware. Tests that need the real model run when it is at the
 default path or `ANE_FIELDFARE_TEST_CHECKPOINT`, and are skipped otherwise.
 
@@ -348,13 +349,14 @@ Important checks:
 
 - **Failover gives the GPU answer** (`DeviceSupervisorFailoverTests`, needs the
   model). A fake ANE that writes garbage (NaN) into the output and then reports
-  failure must leave the final logits bit-identical to a GPU-only run. A real
-  ANE failure injected at layer 7 must match a run that used the ANE for layers
-  0–6 only. With `fail-closed` the request must stop.
+  failure must leave the final logits bit-identical to a GPU-only run. A
+  fault injected around the real ANE at layer 7 must match a run that used the
+  ANE for layers 0–6 only. With `fail-closed` the request must stop.
 - **Shortcuts are exact where they claim to be.** The hot-vocabulary head and
   the multi-token matrix × vector kernel (up to 4 tokens) are tested to give
   bit-identical results to the one-token path. The matrix-unit kernel used for
-  5–16 tokens is tested to match within FP32 rounding.
+  5–16 tokens is tested against a CPU reference at 7 and 12 tokens, within
+  0.5% relative error.
 
 ## Benchmarking a change
 
