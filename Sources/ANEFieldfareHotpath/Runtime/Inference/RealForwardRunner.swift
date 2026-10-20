@@ -134,7 +134,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private let headCheckRows: any MTLBuffer
     private let headCheckTokens: any MTLBuffer
     private var prefillChunkState = PrefillChunkCommitState()
-    private var prefillScratch: PrefillChunkScratchBuffers?
+    private(set) var prefillScratch: PrefillChunkScratchBuffers?
     /// Owns the ANE guest; the forward loop asks it per layer whether the
     /// guest runs routed prefill.
     let supervisor: DeviceSupervisor
@@ -182,8 +182,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private var routerEventValue: UInt64 = 0
     /// Verify routes a layer's experts on the GPU, from the previous layer's
     /// guess, before the host has read its routes;
-    /// `ANE_FIELDFARE_HOST_ROUTED_VERIFY` plans every layer on the host.
-    private let gpuRoutedVerify = ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOST_ROUTED_VERIFY"] == nil
+    /// `ANE_FIELDFARE_HOST_ROUTED_VERIFY` plans every layer on the host, and
+    /// tests compare the two.
+    var gpuRoutedVerify = ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOST_ROUTED_VERIFY"] == nil
     /// Guessed experts per verify row a GPU-routed layer binds.
     private lazy var verifyBindTop = max(1, min(cfg.numExperts,
         ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_BIND_TOP"].flatMap(Int.init) ?? 48))
