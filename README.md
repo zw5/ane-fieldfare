@@ -358,6 +358,22 @@ Important checks:
   5–16 tokens is tested against a CPU reference at 7 and 12 tokens, within
   0.5% relative error.
 
+## Contributing
+
+- **Concurrency by design.** The code builds under Swift 6 strict
+  concurrency without silencing it. Shared mutable state has one owner (a
+  `Mutex` or an actor), and values that cross isolation are `Sendable` because
+  their parts are. Types holding `MTLBuffer`, `MTLCommandBuffer` or raw
+  pointers stay inside the task that owns them; only plans and indices cross.
+  Blocking file I/O leaves the cooperative pool through `BlockingIO`.
+- **Lint.** `Scripts/lint_escape_hatches.py` (run by `Scripts/test.sh`)
+  rejects `@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency`,
+  `assumeIsolated`, `DispatchQueue` and `Task.detached` unless a `// SAFETY:`
+  comment states the invariant the compiler cannot check, and rejects `try!`,
+  `as!` and force unwraps in `Sources/`.
+- **Receipts.** A performance or correctness claim comes with a machine
+  receipt: host, OS build, exact command, exit status and the measured result.
+
 ## Benchmarking a change
 
 `ANEFieldfareBench` loads the model once and runs a fixed set of prompts, with

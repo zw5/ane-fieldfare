@@ -81,18 +81,21 @@ def justified(lines: list[str], index: int) -> bool:
 
 def lint(path: Path, check_crash_hatches: bool) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    rules = CONCURRENCY_HATCHES + (CRASH_HATCHES if check_crash_hatches else [])
     problems = []
     in_multiline = False
     for index, raw in enumerate(lines):
         if raw.lstrip().startswith("//"):
             continue
         code, in_multiline = strip_code(raw, in_multiline)
-        for pattern, name in rules:
+        for pattern, name in CONCURRENCY_HATCHES:
             if pattern.search(code) and not justified(lines, index):
                 rel = path.relative_to(ROOT)
                 problems.append(f"{rel}:{index + 1}: {name} without a // {SAFETY} justification"
                                 f"\n    {raw.strip()}")
+        for pattern, name in CRASH_HATCHES if check_crash_hatches else []:
+            if pattern.search(code):
+                rel = path.relative_to(ROOT)
+                problems.append(f"{rel}:{index + 1}: {name} in Sources/\n    {raw.strip()}")
     return problems
 
 
@@ -105,7 +108,7 @@ def main() -> int:
     for problem in problems:
         print(problem)
     if problems:
-        print(f"{len(problems)} unjustified escape hatch(es)", file=sys.stderr)
+        print(f"{len(problems)} escape hatch problem(s)", file=sys.stderr)
         return 1
     return 0
 
