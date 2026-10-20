@@ -90,12 +90,11 @@ final class ANERoutedPrefillBackend {
     let layerCount: Int
     let batchExperts = 4
     /// Activation positions per expert in one request. Each request streams
-    /// all four experts' expanded weights (about 0.95 ms), so more lanes
-    /// amortize that transfer over more rows; past 128 the ANE is compute
-    /// bound and padding outweighs the saving.
+    /// all four experts' expanded weights, so more lanes amortize that
+    /// transfer over more rows; past 128 the ANE is compute bound and padding
+    /// outweighs the saving.
     let lanes = 128
-    /// Upcoming expert groups read concurrently. SSD throughput rises from
-    /// 4.7 GB/s at queue depth 1 to 6.7 GB/s at depth 2.
+    /// Upcoming expert groups read concurrently.
     let fetchLookahead = 4
     private let argumentEncoder: any MTLArgumentEncoder
     struct Job {
@@ -203,14 +202,14 @@ final class ANERoutedPrefillBackend {
 
     var profile: [String: Any] {
         let info = unsafe ANEExpertCarrierGetInfo(program.handle)
-        return ["layers": layerCount, "compile_count": 1, "load_count": 1,
+        return ["layers": layerCount, "compile_count": info.compileCount, "load_count": info.loadCount,
             "compile_ms": info.compileMilliseconds, "load_ms": info.loadMilliseconds,
             "evaluations": info.evaluations, "useful_rows": evaluatedRows,
             "evaluation_ms": info.evaluationMilliseconds, "read_bytes": readBytes,
             "read_seconds": Double(readNanos) / 1e9, "request_banks": banks.count, "experts_per_request": batchExperts,
             "input_gpu_ms": inputGPUMilliseconds, "consumer_gpu_ms": consumerGPUMilliseconds,
             "carrier_bytes": banks.reduce(0) { $0 + $1.input.length + $1.output.length },
-            "input_scale": 64, "lanes": lanes, "weight_pack_tile": "32x32", "fetch_lookahead": fetchLookahead,
+            "lanes": lanes, "fetch_lookahead": fetchLookahead,
             "claim_boundary": "Routed top-8 prefill on ANE with ordinary runtime-input weights expanded by Metal; no mutable-weight or resident-expert claim."]
     }
 

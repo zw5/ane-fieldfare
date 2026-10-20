@@ -198,6 +198,7 @@ ANEExpertCarrier *ANEExpertCarrierCreate(uint32_t lanes, const char **errorMessa
             ANEExpertCarrierDestroy(carrier);
             return NULL;
         }
+        carrier->info.compileCount += 1;
         started = mach_absolute_time();
         ok = ((BOOL (*)(id, SEL, unsigned int, id, NSError **))objc_msgSend)(
             model, @selector(loadWithQoS:options:error:), 21, @{}, &error);
@@ -208,6 +209,7 @@ ANEExpertCarrier *ANEExpertCarrierCreate(uint32_t lanes, const char **errorMessa
             ANEExpertCarrierDestroy(carrier);
             return NULL;
         }
+        carrier->info.loadCount += 1;
         uint64_t inputBytes = (uint64_t)BatchExperts * Hidden * (lanes + 3 * Intermediate) * sizeof(__fp16);
         uint64_t outputBytes = (uint64_t)BatchExperts * Hidden * lanes * sizeof(float);
         for (uint32_t bank = 0; bank < Banks; ++bank) {

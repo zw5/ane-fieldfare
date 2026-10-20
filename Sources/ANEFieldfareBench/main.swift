@@ -216,7 +216,7 @@ import Metal
                 "decode_attention_gpu_s": s(runner.decodeAttentionGPUNanos),
                 "decode_shared_gpu_s": s(runner.decodeSharedGPUNanos),
                 "decode_routed_gpu_s": s(runner.decodeRoutedGPUNanos),
-                "decode_io_s": s(runner.totalIoNanos),
+                "decode_io_s": s(runner.decodeExpertReadNanos),
             ]
         }
 

@@ -14,6 +14,8 @@
 typedef struct ANEExpertCarrier ANEExpertCarrier;
 
 typedef struct {
+    uint32_t compileCount;
+    uint32_t loadCount;
     double compileMilliseconds;
     double loadMilliseconds;
     uint64_t evaluations;

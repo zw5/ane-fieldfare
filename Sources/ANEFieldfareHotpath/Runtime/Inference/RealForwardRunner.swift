@@ -880,7 +880,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         prefillChunkState.markCommitted()
     }
 
-    public private(set) var totalIoNanos: UInt64 = 0
+    /// Host time reading absent routed experts in decode.
+    public private(set) var decodeExpertReadNanos: UInt64 = 0
     public private(set) var prefillPreRouterGPUNanos: UInt64 = 0
     public private(set) var prefillSharedGPUNanos: UInt64 = 0
     public private(set) var prefillRoutedGPUNanos: UInt64 = 0
@@ -1968,7 +1969,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             if !absent.isEmpty {
                 let tIoStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                 try await model.readRoutedExperts(layer: L, experts: absent)
-                totalIoNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tIoStart
+                decodeExpertReadNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tIoStart
                 GPUTrace.end("expert_read", since: tIoStart, track: .io)
             }
             let tEncode = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)

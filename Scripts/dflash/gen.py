@@ -21,6 +21,6 @@ for name, text in prompts.items():
            "prompt_token_ids": prof["prompt_token_ids"], "generated_token_ids": prof["generated_token_ids"],
            "decode_tps": prof["recurrent_decode_tokens_per_second"],
            "cache_hits": prof["routed_expert_cache_hits"], "cache_misses": prof["routed_expert_cache_misses"],
-           "io_seconds": prof["io_seconds"], "decode_seconds": prof["decode_seconds"]}
+           "expert_read_seconds": prof["decode_expert_read_seconds"], "decode_seconds": prof["decode_seconds"]}
     json.dump(rec, open(f"{here}/{name}.gen.json", "w"), indent=1)
     print(name, p.returncode, len(rec["prompt_token_ids"]), len(rec["generated_token_ids"]), round(rec["decode_tps"], 2), flush=True)
