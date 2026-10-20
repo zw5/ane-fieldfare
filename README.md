@@ -50,10 +50,12 @@ mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
   measurements below used an M5 with 16 GB.
 - macOS 26 or later. Measured on macOS 27 build `26A5406e`.
 - Xcode with Swift 6.2 or later.
-- The model in `.gturbo` format (about 13 GB). This repository reads that
-  format but cannot create it. Use the installer from
-  [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) and put the
-  result at `checkpoints/gturbo/gemma4.gturbo` (git ignores `checkpoints/`).
+- About 15 GB of free disk for the model, and a one-time 15.6 GB download.
+  `ANEFieldfareInstall` (below) builds the model from Google's
+  quantization-aware-trained 4-bit release,
+  [`google/gemma-4-26B-A4B-it-qat-q4_0-gguf`](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf),
+  into `checkpoints/gemma-4-26b-a4b-it-qat.fieldfare` (git ignores
+  `checkpoints/`).
 - `z-lab/gemma-4-26B-A4B-it-DFlash` (dflash drafter) at
   `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash` (or beside the model), where
   the CLI and the server find it. Without it the model still runs, at half the
@@ -63,10 +65,14 @@ mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
 ## Quick start
 
 ```bash
-Scripts/build.sh     # builds the CLI and the server into .build/
+Scripts/build.sh     # builds the installer, the CLI and the server into .build/
+
+# Once: download, verify and convert the model (resumable; --no-vision skips
+# the 1.2 GB vision tower).
+.build/swift-hotpath/release/ANEFieldfareInstall
 
 .build/swift-hotpath/release/ANEFieldfareHotpathCLI \
-  --model checkpoints/gturbo/gemma4.gturbo \
+  --model checkpoints/gemma-4-26b-a4b-it-qat.fieldfare \
   --chat-prompt "What is the capital of France? Answer briefly." \
   --temperature 0 --max-new 64
 ```
@@ -115,7 +121,7 @@ it returns the CLI's text.
 Scripts/build.sh     # also builds the server
 
 .build/swift-hotpath/release/ANEFieldfareServer \
-  --model checkpoints/gturbo/gemma4.gturbo
+  --model checkpoints/gemma-4-26b-a4b-it-qat.fieldfare
 # [server] listening on http://127.0.0.1:8080/v1 (model id gemma-4-26b-a4b-it)
 
 curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{
@@ -131,7 +137,7 @@ expect OpenRouter's base URL can use `http://127.0.0.1:8080/api/v1`.
 
 | Server option | What it does |
 | --- | --- |
-| `--model <dir>` | The `.gturbo` model. Required. |
+| `--model <dir>` | The `.fieldfare` model. Required. |
 | `--drafter <dir\|off>` | DFlash drafter, if not in the default place: greedy and sampled requests decode speculatively (not with a repetition penalty). `off` turns it off. |
 | `--host <address>`, `--port <n>` | Where to listen. Default `127.0.0.1:8080`; `--host 0.0.0.0` for other machines. |
 | `--max-context <n>` | Prompt plus completion limit in tokens. Default 32768. |
@@ -384,7 +390,8 @@ build. The quick suite takes about 90 s.
 | `Sources/ANEFieldfareHotpathCLI`, `…CLICore` | The command-line program. |
 | `Sources/ANEFieldfareServer`, `…ServerCore` | The OpenAI-compatible HTTP server: HTTP/1.1 on Network.framework, the OpenAI request and response shapes, and the serialized engine. |
 | `Sources/ANEFieldfareANECarrier` | The Objective-C ANE wrapper. |
-| `Sources/ANEFieldfareImportedFormat` | Reader for the `.gturbo` format. |
+| `Sources/ANEFieldfareModelFormat` | The `.fieldfare` manifest: types, codec and validation, shared by the runtime and the installer. |
+| `Sources/ANEFieldfareInstall`, `…InstallCore` | The installer: GGUF reader, streaming converter, Hugging Face range download, resume and verification. |
 | `Sources/ANEFieldfareBench` | The benchmark program used by `Scripts/bench/`. |
 | `Sources/ANEFieldfareDFlashCapture` | Records hidden states and routes for drafter work (`Scripts/dflash/`). |
 | `Tests/` | Test suites, CPU reference implementations and fixture generators. |
@@ -395,9 +402,10 @@ build. The quick suite takes about 90 s.
 
 Apache License 2.0; see [LICENSE](LICENSE). Parts are adapted from
 [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) by drumih (Apache
-2.0): the Swift runtime, the `.gturbo` format, the CLI and the upstream
-regression tests. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+2.0): the Swift runtime, the CLI and the upstream regression tests. The
+`.fieldfare` format and its installer are this repository's own. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
 [UPSTREAM.json](UPSTREAM.json) for what came from where.
 
-Gemma is a model family from Google. Its weights are distributed under Google's
-Gemma terms and are not included in this repository.
+Gemma is a model family from Google. The installer downloads Google's QAT
+release, published under Apache 2.0; the weights are not included in this
+repository.

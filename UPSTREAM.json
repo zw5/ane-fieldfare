@@ -7,7 +7,6 @@
  "method": "Namespace-adapted three-way merge against the original imported seed, preserving existing local changes",
  "source_mappings": {
   "Sources/TurboFieldfare": "Sources/ANEFieldfareHotpath",
-  "Sources/TurboFieldfareFormat": "Sources/ANEFieldfareImportedFormat",
   "Sources/TurboFieldfareCLI": "Sources/ANEFieldfareHotpathCLICore",
   "Sources/TurboFieldfareCLI/Command": "Sources/ANEFieldfareHotpathCLI"
  },
@@ -20,7 +19,7 @@
   "32K CLI context default and legacy --prefill-chunk alias",
   "Device supervisor with ANE routed-prefill guest, local profiling and numerical oracles"
  ],
- "scope": "Imported runtime, compact format, CLI, and their regression tests. Upstream GUI and server remain outside this repository. Repack writers are test-fixture support only.",
+ "scope": "Imported runtime, CLI, and their regression tests. The .gturbo format reader was replaced by this repository's .fieldfare format and installer (2026-10-20). Upstream GUI and server remain outside this repository.",
  "benchmark_boundary": "September 16 post-merge comparison uses unmodified latest Turbo 4c6db1e with matched release toolchain, official generation fixtures/settings, nine discarded warmups and eighteen measured runs. See results/turbo-latest-20260916/REPORT.md and summary.json. September 8 receipts remain historical comparisons against 6c044011.",
  "additional_imports": [
   {
