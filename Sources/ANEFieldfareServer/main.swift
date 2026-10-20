@@ -1,12 +1,13 @@
 import Darwin
 import Dispatch
 import Foundation
+import ANEFieldfareHotpathCLICore
 import ANEFieldfareServerCore
 
 let options: ServerOptions
 do {
     options = try ServerOptions.parse(Array(CommandLine.arguments.dropFirst()))
-} catch ServerOptions.ParseError.helpRequested {
+} catch ArgsError.helpRequested {
     print(ServerOptions.usage)
     exit(0)
 } catch {

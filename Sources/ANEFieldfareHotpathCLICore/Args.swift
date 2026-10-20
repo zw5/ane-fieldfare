@@ -60,10 +60,10 @@ public struct Args: Equatable, Sendable {
                 visionPack: String? = nil,
                 visionResidency: VisionResidencyPolicy = .defaultPolicy,
                 maxNew: Int = 1_024,
-                maxContext: Int = 32_768,
-                temperature: Float = 0.2,
-                topK: Int? = 64,
-                topP: Float? = 0.95,
+                maxContext: Int = OptionDefaults.maxContext,
+                temperature: Float = OptionDefaults.temperature,
+                topK: Int? = OptionDefaults.topK,
+                topP: Float? = OptionDefaults.topP,
                 repetitionPenalty: Float = 1.0,
                 seed: UInt64? = nil,
                 stops: [String] = [],
@@ -198,7 +198,24 @@ extension Args {
 
     public func resolvedRuntimeConfiguration(
         forceLogitsHead: Bool,
-        imagePrompt: Bool = false,
+        environment: [String: String] = [:]) throws -> RuntimeConfiguration {
+        try Self.runtimeConfiguration(
+            backend: backend, expertTopK: expertTopK, prefillExpertCap: prefillExpertCap,
+            prefillPolicy: prefillPolicy, prefillChunkTokens: prefillChunkTokens, faultPolicy: faultPolicy,
+            earlyExpertRead: earlyExpertRead, forceLogitsHead: forceLogitsHead, environment: environment)
+    }
+
+    /// The runtime configuration these options select, validated as the
+    /// CLI's flags are. The server builds its runner through this too.
+    public static func runtimeConfiguration(
+        backend: RuntimeBackend,
+        expertTopK: Int = 8,
+        prefillExpertCap: Int? = nil,
+        prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration.production.prefillPolicy,
+        prefillChunkTokens: Int,
+        faultPolicy: RuntimeFaultPolicy,
+        earlyExpertRead: RuntimeEarlyExpertRead,
+        forceLogitsHead: Bool,
         environment: [String: String] = [:]) throws -> RuntimeConfiguration {
         let activeExperts = expertTopK
         let expertCap = prefillExpertCap ?? (activeExperts < 8 ? activeExperts * 8 : nil)
@@ -243,10 +260,10 @@ extension Args {
         var visionPack: String?
         var visionResidency: VisionResidencyPolicy = .defaultPolicy
         var maxNew = 1_024
-        var maxContext = 32_768
-        var temperature: Float = 0.2
-        var topK: Int? = 64
-        var topP: Float? = 0.95
+        var maxContext = OptionDefaults.maxContext
+        var temperature = OptionDefaults.temperature
+        var topK = OptionDefaults.topK
+        var topP = OptionDefaults.topP
         var repetitionPenalty: Float = 1.0
         var seed: UInt64?
         var stops: [String] = []
@@ -258,117 +275,68 @@ extension Args {
         var earlyExpertRead = runtimeDefaults.earlyExpertRead
         var drafter: String?
 
-        var index = 0
-        while index < argv.count {
-            let flag = argv[index]
+        var cursor = ArgumentCursor(argv)
+        while let flag = cursor.nextFlag() {
             switch flag {
-            case "--help":
+            case "--help", "-h":
                 throw ArgsError.helpRequested
             case "--backend":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = RuntimeBackend(rawValue: value) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                backend = parsed
+                backend = try cursor.choice(for: flag, as: RuntimeBackend.self)
             case "--fault-policy":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = RuntimeFaultPolicy(rawValue: value) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                faultPolicy = parsed
+                faultPolicy = try cursor.choice(for: flag, as: RuntimeFaultPolicy.self)
             case "--prompt-file":
-                promptFile = try takeValue(argv, &index, flag: flag)
+                promptFile = try cursor.value(for: flag)
             case "--count-tokens":
                 countTokens = true
-                index += 1
-            case "--expert-top-k", "--prefill-expert-cap":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Int(value), (1...(flag == "--expert-top-k" ? 8 : 128)).contains(parsed) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                if flag == "--expert-top-k" { expertTopK = parsed } else { prefillExpertCap = parsed }
+            case "--expert-top-k":
+                expertTopK = try cursor.value(for: flag, as: Int.self) { (1...8).contains($0) }
+            case "--prefill-expert-cap":
+                prefillExpertCap = try cursor.value(for: flag, as: Int.self) { (1...128).contains($0) }
             case "--quiet":
                 quiet = true
-                index += 1
             case "--model":
-                model = try takeValue(argv, &index, flag: flag)
+                model = try cursor.value(for: flag)
             case "--prompt":
-                prompt = try takeValue(argv, &index, flag: flag)
+                prompt = try cursor.value(for: flag)
             case "--chat-prompt":
-                chatPrompt = try takeValue(argv, &index, flag: flag)
+                chatPrompt = try cursor.value(for: flag)
             case "--image":
-                images.append(try takeValue(argv, &index, flag: flag))
+                images.append(try cursor.value(for: flag))
             case "--vision-pack":
-                visionPack = try takeValue(argv, &index, flag: flag)
+                visionPack = try cursor.value(for: flag)
             case "--vision-residency":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let policy = VisionResidencyPolicy(rawValue: value) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                visionResidency = policy
+                visionResidency = try cursor.choice(for: flag, as: VisionResidencyPolicy.self)
             case "--messages-file":
-                messagesFile = try takeValue(argv, &index, flag: flag)
+                messagesFile = try cursor.value(for: flag)
             case "--max-new":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Int(value), parsed > 0 else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                maxNew = parsed
+                maxNew = try cursor.value(for: flag, as: Int.self) { $0 > 0 }
             case "--max-context":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Int(value), parsed > 0 else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                maxContext = parsed
+                maxContext = try cursor.maxContext(for: flag)
             case "--temperature":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Float(value), parsed >= 0 else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                temperature = parsed
+                temperature = try cursor.temperature(for: flag)
             case "--top-k":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Int(value), (0...256).contains(parsed) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                topK = parsed == 0 ? nil : parsed
+                topK = try cursor.topK(for: flag)
             case "--top-p":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Float(value), parsed > 0, parsed <= 1 else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                topP = parsed
+                topP = try cursor.topP(for: flag)
             case "--repetition-penalty":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Float(value), parsed > 0 else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                repetitionPenalty = parsed
+                repetitionPenalty = try cursor.value(for: flag, as: Float.self) { $0.isFinite && $0 > 0 }
             case "--seed":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = UInt64(value) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                seed = parsed
+                seed = try cursor.value(for: flag, as: UInt64.self)
             case "--stop":
-                stops.append(try takeValue(argv, &index, flag: flag))
+                stops.append(try cursor.value(for: flag))
             case "--early-expert-read":
-                let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = RuntimeEarlyExpertRead(rawValue: value) else {
-                    throw ArgsError.invalidValue(flag: flag, value: value)
-                }
-                earlyExpertRead = parsed
+                earlyExpertRead = try cursor.choice(for: flag, as: RuntimeEarlyExpertRead.self)
             case "--drafter":
-                drafter = try takeValue(argv, &index, flag: flag)
+                drafter = try cursor.value(for: flag)
             case "--prefill":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try cursor.value(for: flag)
                 switch value {
                 case "on": prefillPolicy = .chunked
                 case "off": prefillPolicy = .off
                 default: throw ArgsError.invalidValue(flag: flag, value: value)
                 }
-            case "--prefill-chunk-tokens", "--prefill-chunk":
-                let value = try takeValue(argv, &index, flag: flag)
+            case "--prefill-chunk-tokens":
+                let value = try cursor.value(for: flag)
                 if value == "auto" {
                     prefillChunkTokensAuto = true
                     break
@@ -377,9 +345,7 @@ extension Args {
                       RuntimeConfiguration.allowedPrefillChunkTokens.contains(parsed) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
-                // A repeated flag is last-one-wins in both directions: without
-                // this clear, an explicit size after `auto` parses and is then
-                // overridden at run time by the resolved size.
+                // Repeated flags are last-one-wins, `auto` included.
                 prefillChunkTokensAuto = false
                 prefillChunkTokens = parsed
             default:
@@ -401,9 +367,8 @@ extension Args {
             throw ArgsError.mutuallyExclusive("--prompt", "--image")
         }
         if !images.isEmpty, chatPrompt == nil {
-            // Naming the flag the user actually left out. Reporting a conflict
-            // with `--messages-file` sent them looking for a flag they never
-            // passed, in the most likely first-run mistake there is.
+            // Name the flag the user left out, unless they passed the one
+            // images conflict with.
             throw messagesFile == nil
                 ? ArgsError.requiredMissing("--chat-prompt")
                 : ArgsError.mutuallyExclusive("--image", "--messages-file")
@@ -443,11 +408,7 @@ extension Args {
             drafter = DrafterLocation.find(model: model)?.path
             drafterOrigin = drafter == nil ? .missing : .found
         }
-        if temperature > 0, topK == nil, let topP, topP < 1 {
-            throw ArgsError.invalidValue(
-                flag: "--top-p",
-                value: "\(topP) requires --top-k between 1 and 256")
-        }
+        try validateTruncation(temperature: temperature, topK: topK, topP: topP)
         // The ANE rail serves prefill with all eight routed experts, uncapped.
         let aneFits = expertTopK == 8 && prefillExpertCap == nil && prefillPolicy != .off
         let arguments = Args(model: model,
@@ -480,14 +441,5 @@ extension Args {
                              drafterOrigin: drafterOrigin)
         _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         return arguments
-    }
-
-    private static func takeValue(_ argv: [String],
-                                  _ index: inout Int,
-                                  flag: String) throws -> String {
-        guard index + 1 < argv.count else { throw ArgsError.missingValue(flag: flag) }
-        let value = argv[index + 1]
-        index += 2
-        return value
     }
 }

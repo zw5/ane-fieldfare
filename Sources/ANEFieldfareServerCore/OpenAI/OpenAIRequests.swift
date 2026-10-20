@@ -1,8 +1,9 @@
 public import Foundation
 import ANEFieldfareHotpath
+public import ANEFieldfareHotpathCLICore
 
 /// Sampling defaults for requests that leave a field out. The server's flags
-/// set them; the built-in values are the CLI's.
+/// set them; the built-in values are the CLI's (`OptionDefaults`).
 public struct SamplingDefaults: Sendable, Equatable {
     public var temperature: Float
     public var topK: Int?
@@ -10,7 +11,8 @@ public struct SamplingDefaults: Sendable, Equatable {
     /// nil: until a stop or the end of the context.
     public var maxTokens: Int?
 
-    public init(temperature: Float = 0.2, topK: Int? = 64, topP: Float? = 0.95, maxTokens: Int? = nil) {
+    public init(temperature: Float = OptionDefaults.temperature, topK: Int? = OptionDefaults.topK,
+                topP: Float? = OptionDefaults.topP, maxTokens: Int? = nil) {
         self.temperature = temperature
         self.topK = topK
         self.topP = topP

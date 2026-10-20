@@ -23,8 +23,6 @@ let package = Package(
     products: [
         .library(name: "ANEFieldfareHotpath", targets: ["ANEFieldfareHotpath"]),
         .executable(name: "ANEFieldfareHotpathCLI", targets: ["ANEFieldfareHotpathCLI"]),
-        .executable(name: "ANEFieldfareDFlashCapture", targets: ["ANEFieldfareDFlashCapture"]),
-        .executable(name: "ANEFieldfareBench", targets: ["ANEFieldfareBench"]),
         .executable(name: "ANEFieldfareServer", targets: ["ANEFieldfareServer"]),
     ],
     dependencies: [
@@ -126,7 +124,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "ANEFieldfareServer",
-            dependencies: ["ANEFieldfareServerCore"],
+            dependencies: ["ANEFieldfareServerCore", "ANEFieldfareHotpathCLICore"],
             path: "Sources/ANEFieldfareServer",
             swiftSettings: strictSwiftSettings
         ),
@@ -138,7 +136,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "ANEFieldfareBench",
-            dependencies: ["ANEFieldfareHotpath"],
+            dependencies: ["ANEFieldfareHotpath", "ANEFieldfareHotpathCLICore"],
             path: "Sources/ANEFieldfareBench",
             swiftSettings: strictSwiftSettings
         ),
