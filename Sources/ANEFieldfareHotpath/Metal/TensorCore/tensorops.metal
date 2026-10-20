@@ -219,8 +219,7 @@ constant constexpr int kVisionAttentionKeys = 64;
 constant constexpr int kVisionAttentionHeadDim = 80;
 // The QK contraction needs a K that is a multiple of 16, so it keeps 80. The PV
 // matmul carries the head dimension as N, which only needs a multiple of 8, so
-// it contracts over the 72 real lanes; lanes 72 to 79 hold zero V and their
-// outputs were discarded anyway.
+// it contracts over the 72 real lanes; lanes 72 to 79 hold zero V.
 constant constexpr int kVisionAttentionRealHeadDim = 72;
 
 /// Mirrors `VisionAttentionLayout` in VisionAttention.swift. `inputRowStride`
@@ -402,6 +401,8 @@ inline void mpp_vision_attention_bf16_impl(
             const auto position =
                 outputAccumulator.get_multidimensional_index(element);
             const uint query = uint(position[1]);
+            // fma(1, ...) rounds the rescaled accumulator before the add;
+            // fast math could otherwise contract the add into one fma.
             outputAccumulator[element] = fma(
                 1.0f,
                 outputProduct[element],

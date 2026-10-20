@@ -45,10 +45,6 @@ import ANEFieldfareValidationSupport
 
     @Test(arguments: [1, 65, 129, 1_025])
     func tensorOps2DFullAttentionMatchesReferenceAtTileBoundaries(_ visibleKeys: Int) throws {
-        let context = try MetalContext()
-        // GPU family is not the capability test: this pipeline compiles and
-        // dispatches on the project's Apple8 M2 minimum.
-        guard (try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")) != nil else { return }
         let fixture = Self.makeFixture(start: visibleKeys - 1,
                                        chunk: 1,
                                        window: 0,

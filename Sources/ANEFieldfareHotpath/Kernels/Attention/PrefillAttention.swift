@@ -33,7 +33,7 @@ final class PrefillAttention {
         self.psoCausalTiled = try context.pipeline("attention_prefill_causal_tiled")
         do {
             self.psoFullTensorOps2DValidityV2 = try context.pipeline(
-                "attention_prefill_full_tensorops_2d_validity_v2")
+                "attention_prefill_full_tensorops")
         } catch {
             self.psoFullTensorOps2DValidityV2 = nil
             FileHandle.standardError.write(Data(

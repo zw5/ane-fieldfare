@@ -382,8 +382,8 @@ void sample(
         // mlx-lm applies Top-P before Top-K. The probabilities still carry
         // their full-vocabulary normalization here, so comparing the raw
         // descending cumulative mass to top_p produces the same intersection
-        // without sorting the entire vocabulary. If Top-64 holds less than
-        // top_p mass, all 64 survive and Top-K is the limiting filter.
+        // without sorting the entire vocabulary. If the top k hold less than
+        // top_p mass, all k survive and Top-K is the limiting filter.
         if (top_p > 0.0f && top_p < 1.0f) {
             float cum = 0.0f;
             uint  cut = kept;

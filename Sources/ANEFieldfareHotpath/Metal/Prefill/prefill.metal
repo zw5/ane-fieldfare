@@ -908,7 +908,7 @@ constant constexpr int kPrefillTensorOpsOutputs = 8;
 constant constexpr int kPrefillTensorOpsKeys = 64;
 constant constexpr int kPrefillTensorOpsHeadDim = 512;
 
-static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
+static inline void attention_prefill_full_tensorops_impl(
     device const half* Q,
     device half* K,
     device half* V,
@@ -946,8 +946,6 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
 
     const uint query_start = tg.x;
     const uint qh_start = tg.y * uint(kPrefillTensorOpsOutputs);
-    const uint valid_query_rows =
-        min(1u, p.queryCount - min(query_start, p.queryCount));
     const uint q_per_kv = p.numQHeads / p.numKVHeads;
     const uint kvh = qh_start / q_per_kv;
 
@@ -957,14 +955,10 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
         const uint output_row =
             linear / uint(kPrefillTensorOpsHeadDim);
         const uint d = linear % uint(kPrefillTensorOpsHeadDim);
-        if (valid_query_rows != 0u) {
-            query_tile[linear] = Q[
-                query_start * p.qTokenStrideElements
-                + (qh_start + output_row) * p.headDim
-                + d];
-        } else {
-            query_tile[linear] = half(0.0f);
-        }
+        query_tile[linear] = Q[
+            query_start * p.qTokenStrideElements
+            + (qh_start + output_row) * p.headDim
+            + d];
     }
     if (lid < uint(kPrefillTensorOpsOutputs)) {
         row_max[lid] = -INFINITY;
@@ -1014,8 +1008,8 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
 
     // This full-attention kernel starts at key zero and ignores slidingWindow.
     // The Swift selector must dispatch it only when every prior key is visible.
-    const uint last =
-        min(p.kvValidCount, p.startPosition + query_start + valid_query_rows);
+    // One threadgroup per query row, so the grid never runs past queryCount.
+    const uint last = min(p.kvValidCount, p.startPosition + query_start + 1u);
     for (uint key_start = 0u;
          key_start < last;
          key_start += uint(kPrefillTensorOpsKeys)) {
@@ -1050,13 +1044,7 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
 
         if (lid < uint(kPrefillTensorOpsOutputs)) {
             const uint output_row = lid;
-            const uint causal_last = valid_query_rows != 0u
-                ? min(p.kvValidCount, p.startPosition + query_start + 1u)
-                : 0u;
-            const uint visible =
-                causal_last > key_start
-                    ? min(uint(kPrefillTensorOpsKeys), causal_last - key_start)
-                    : 0u;
+            const uint visible = min(uint(kPrefillTensorOpsKeys), last - key_start);
 
             float tile_max = -INFINITY;
             for (uint key = 0u; key < visible; ++key) {
@@ -1114,6 +1102,8 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
             const auto position =
                 output_accumulator.get_multidimensional_index(element);
             const uint output_row = uint(position[1]);
+            // fma(1, ...) rounds the rescaled accumulator before the add;
+            // fast math could otherwise contract the add into one fma.
             output_accumulator[element] =
                 fma(
                     1.0f,
@@ -1132,19 +1122,17 @@ static inline void attention_prefill_full_tensorops_2d_validity_v2_impl(
             output_accumulator.get_multidimensional_index(element);
         const uint d = uint(position[0]);
         const uint output_row = uint(position[1]);
-        if (valid_query_rows != 0u) {
-            const float denominator = row_sum[output_row];
-            O[
-                query_start * p.oTokenStrideElements
-                + (qh_start + output_row) * p.headDim
-                + d] = denominator > 0.0f
-                    ? half(output_accumulator[element] / denominator)
-                    : half(0.0f);
-        }
+        const float denominator = row_sum[output_row];
+        O[
+            query_start * p.oTokenStrideElements
+            + (qh_start + output_row) * p.headDim
+            + d] = denominator > 0.0f
+                ? half(output_accumulator[element] / denominator)
+                : half(0.0f);
     }
 }
 
-kernel void attention_prefill_full_tensorops_2d_validity_v2(
+kernel void attention_prefill_full_tensorops(
     device const half* Q [[buffer(0)]],
     device half* K [[buffer(1)]],
     device half* V [[buffer(2)]],
@@ -1163,7 +1151,7 @@ kernel void attention_prefill_full_tensorops_2d_validity_v2(
     threadgroup float row_max[kPrefillTensorOpsOutputs];
     threadgroup float row_sum[kPrefillTensorOpsOutputs];
     threadgroup float row_old_scale[kPrefillTensorOpsOutputs];
-    attention_prefill_full_tensorops_2d_validity_v2_impl(
+    attention_prefill_full_tensorops_impl(
         Q, K, V, O, p, tg, lid, threads3.x,
         query_tile, score_tile, weight_tile,
         row_max, row_sum, row_old_scale);

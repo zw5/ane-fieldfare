@@ -25,10 +25,10 @@ public final class VisionLinearBF16 {
     public init(context: MetalContext) throws {
         let library = try MetalContext.privateLibrary(
             device: context.device, module: "vision_register_gemm")
-        guard let function = library.makeFunction(name: "tff_vision_register_gemm"),
+        guard let function = library.makeFunction(name: "vision_register_gemm"),
               let geglu = library.makeFunction(
-                name: "tff_vision_register_gemm_geglu") else {
-            throw MetalError.missingFunction("tff_vision_register_gemm")
+                name: "vision_register_gemm_geglu") else {
+            throw MetalError.missingFunction("vision_register_gemm")
         }
         registerPipeline = try context.device.makeComputePipelineState(function: function)
         registerGeGLUPipeline = try context.device.makeComputePipelineState(

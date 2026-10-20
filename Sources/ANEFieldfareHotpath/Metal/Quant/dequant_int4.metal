@@ -358,8 +358,8 @@ template [[host_name("dequant_int4_gemv_rows_f32")]] kernel void dequant_int4_ge
 
 // y[r][o] = sum_k W[o, k] * x[r][k] for 5..16 input rows on the SIMD-group
 // matrix units. dequant_int4_gemv_rows converts and multiplies each weight
-// once per input row, so past four rows it is ALU-bound (8 rows cost 2x, 16
-// rows 4x, measured on M5). Here each SIMD group owns 8 weight rows and
+// once per input row, so past four rows it is ALU-bound. Here each SIMD group
+// owns 8 weight rows and
 // dequantizes each weight once, as q * s + b in FP32, into an 8x8 fragment;
 // one multiply covers 8 input rows. Results match the ALU kernel to FP32
 // rounding but not bitwise. K % 128 may be 64: the last group runs as a

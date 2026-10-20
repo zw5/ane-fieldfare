@@ -1917,7 +1917,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                             tableOffset: L * numExperts * MemoryLayout<UInt64>.stride,
                                             slots: routedSlots,
                                             hidden: hidden, saved: savedHidden,
-                                            topK: topK, numExperts: UInt32(numExperts), d: D,
+                                            topK: topK, d: D,
                                             fallback: routedFallback.gpuAddress)
             try moe.encodeRoutedPersistentGPUSlots(commandBuffer: routedCB,
                                                    slots: routedSlots,

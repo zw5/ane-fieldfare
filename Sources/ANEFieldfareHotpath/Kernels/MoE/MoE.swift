@@ -461,10 +461,9 @@ final class MoE {
                                  table: any MTLBuffer, tableOffset: Int,
                                  slots: any MTLBuffer,
                                  hidden: any MTLBuffer, saved: any MTLBuffer,
-                                 topK: UInt32, numExperts: UInt32, d: UInt32,
+                                 topK: UInt32, d: UInt32,
                                  fallback: UInt64) throws {
         precondition(topK <= UInt32(Self.maxStreamedExperts))
-        let k = topK, n = numExperts, dimension = d, zero = fallback
         let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(gatherRoutedSlotsPSO)
         encoder.setBuffer(indices, offset: 0, index: 0)
@@ -472,10 +471,9 @@ final class MoE {
         encoder.setBuffer(slots, offset: 0, index: 2)
         encoder.setBuffer(hidden, offset: 0, index: 3)
         encoder.setBuffer(saved, offset: 0, index: 4)
-        encoder.setValue(k, index: 5)
-        encoder.setValue(n, index: 6)
-        encoder.setValue(dimension, index: 7)
-        encoder.setValue(zero, index: 8)
+        encoder.setValue(topK, index: 5)
+        encoder.setValue(d, index: 7)
+        encoder.setValue(fallback, index: 8)
         encoder.dispatchThreads(MTLSize(width: 256, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         encoder.endEncoding()

@@ -2,7 +2,7 @@
 using namespace metal;
 
 // ============================================================================
-// fused.metal — current decode fusions:
+// fused.metal — decode fusions:
 //   fused_qkv_epilogue:     per-head Q/K/V RMSNorm + NeoX RoPE after projection.
 //   fused_post_attn_setup:  post-attention residual + pre-FFN/router norms.
 //   fused_layer_tail:       real Gemma 4 decoder-layer tail.
@@ -12,8 +12,8 @@ using namespace metal;
 
 constant constexpr uint kFusedThreads        = 256;
 constant constexpr uint kFusedMaxSimdGroups  = kFusedThreads / 32;  // 8
-// Threadgroup-memory cap for the normalized-hidden staging slot. Sized for
-// D=2816 (production hidden dim) with headroom; consumes 8 KB per threadgroup.
+// Threadgroup-memory cap for the hidden-size staging arrays: D=2816 with
+// headroom, 8 KB of halves per array.
 constant constexpr uint kFusedMaxD           = 4096;
 constant constexpr uint kFusedMaxHeadDim     = 512;
 constant uint FC_FUSED_D [[function_constant(80)]];

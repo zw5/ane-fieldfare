@@ -4,8 +4,6 @@
 using namespace metal;
 using namespace mpp::tensor_ops;
 
-#if defined(__HAVE_TENSOR__)
-
 /// Head-major padded store descriptor. `rowStride == 0` selects the plain
 /// row-major store `output[m * columns + n]`; otherwise column `n` is split into
 /// head `n / headDim` and lane `n % headDim` and written at
@@ -32,7 +30,7 @@ inline bfloat vision_geglu_combine(bfloat gate, float up) {
 /// `up` projection and combines it with the `gate` values a previous dispatch
 /// already wrote to `output`.
 template <bool FuseGeGLU>
-inline void tff_vision_register_gemm_impl(
+inline void vision_register_gemm_impl(
     device bfloat* input,
     device bfloat* weights,
     device bfloat* output,
@@ -74,13 +72,9 @@ inline void tff_vision_register_gemm_impl(
         remove_addrspace_t<decltype(a0)>, remove_addrspace_t<decltype(b)>, float>();
     auto accumulator1 = operation.get_destination_cooperative_tensor<
         remove_addrspace_t<decltype(a1)>, remove_addrspace_t<decltype(b)>, float>();
-    // Each thread owns (simdTileM * simdTileN) / 32 destination elements of the
-    // 16x32 simdgroup tile, and the sums arrays are sized for exactly that.
-    // get_capacity() is an implementation-defined runtime value, so a GPU
-    // family that reports more would run the loops below off the fixed arrays
-    // and corrupt thread-private stack. Bail out instead: the encode then
-    // produces detectably wrong output that the parity gates catch, not
-    // undefined behavior.
+    // The sums arrays hold the (simdTileM * simdTileN) / 32 elements each
+    // thread owns of the 16x32 tile. get_capacity() is only known at run
+    // time; a larger one would overrun them, so the tile is left unwritten.
     constexpr int accumulatorSlots = (simdTileM * simdTileN) / 32;
     if (int(accumulator0.get_capacity()) > accumulatorSlots ||
         int(accumulator1.get_capacity()) > accumulatorSlots) {
@@ -150,7 +144,7 @@ inline void tff_vision_register_gemm_impl(
     }
 }
 
-kernel void tff_vision_register_gemm(
+kernel void vision_register_gemm(
     device bfloat* input [[buffer(0)]],
     device bfloat* weights [[buffer(1)]],
     device bfloat* output [[buffer(2)]],
@@ -160,12 +154,12 @@ kernel void tff_vision_register_gemm(
     constant VisionGEMMPaddedStore& paddedStore [[buffer(6)]],
     uint2 group [[threadgroup_position_in_grid]],
     ushort simdgroup [[simdgroup_index_in_threadgroup]]) {
-    tff_vision_register_gemm_impl<false>(
+    vision_register_gemm_impl<false>(
         input, weights, output, rows, columns, inner, paddedStore,
         group, simdgroup);
 }
 
-kernel void tff_vision_register_gemm_geglu(
+kernel void vision_register_gemm_geglu(
     device bfloat* input [[buffer(0)]],
     device bfloat* weights [[buffer(1)]],
     device bfloat* output [[buffer(2)]],
@@ -175,9 +169,7 @@ kernel void tff_vision_register_gemm_geglu(
     constant VisionGEMMPaddedStore& paddedStore [[buffer(6)]],
     uint2 group [[threadgroup_position_in_grid]],
     ushort simdgroup [[simdgroup_index_in_threadgroup]]) {
-    tff_vision_register_gemm_impl<true>(
+    vision_register_gemm_impl<true>(
         input, weights, output, rows, columns, inner, paddedStore,
         group, simdgroup);
 }
-
-#endif

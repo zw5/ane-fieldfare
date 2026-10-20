@@ -580,14 +580,13 @@ kernel void moe_gather_routed_slots(
     device const half* hidden [[buffer(3)]],
     device half* saved [[buffer(4)]],
     constant uint& top_k [[buffer(5)]],
-    constant uint& num_experts [[buffer(6)]],
     constant uint& D [[buffer(7)]],
     constant ulong& fallback [[buffer(8)]],
     uint tid [[thread_position_in_grid]],
     uint threads [[threads_per_grid]]
 ) {
     if (tid < top_k) {
-        const ulong address = table[min(indices[tid], num_experts - 1)];
+        const ulong address = table[indices[tid]];
         slots[tid] = address != 0 ? address : fallback;
     }
     for (uint i = tid; i < D; i += threads) saved[i] = hidden[i];

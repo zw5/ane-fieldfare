@@ -7,8 +7,8 @@ using namespace metal;
 //   inv     = rsqrt(mean(x[i]^2) + eps)
 //   y[i]    = x[i] * inv * weight[i]
 //
-// FP32 accumulator (numerical stability: D=2816 with FP16 inputs can overflow
-// FP16 sum-of-squares once activations grow past ~1.2 in magnitude).
+// FP32 accumulator: an FP16 sum of squares over D=2816 overflows once the
+// activations average past ~4.8 in magnitude.
 // FP16 storage in and out. Learned weights are BF16 where present.
 //
 // Dispatch: one threadgroup per row, 256 threads per group. Two-stage block
