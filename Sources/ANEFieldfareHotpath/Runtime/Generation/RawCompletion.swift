@@ -20,8 +20,6 @@ public struct RawDecodeResult: Sendable {
     public let reason: StopReason
     public let kvPosition: Int
     public let kvBackedTokenIDs: [Int32]
-    public let uncommittedBoundaryTokenIDs: [Int32]
-    public let withheldTrailingKVTokens: Int
     /// Prompt tokens kept from the producer's cache (`reusingPrefix`); the
     /// rest of the prompt was prefilled.
     public let reusedPrefixTokens: Int
@@ -45,7 +43,7 @@ public struct RawCompletionScratch {
               let outToken = context.device.makeBuffer(length: MemoryLayout<UInt32>.size,
                                                        options: .storageModeShared)
         else {
-            throw ModelError.residentBufferWrapFailed
+            throw MetalError.allocationFailed("completion scratch")
         }
         self.logits = logits
         self.probs = probs
@@ -155,7 +153,7 @@ public func runRawCompletion(producer: some LogitProducer,
     var prefillSeed: PrefillSeed?
     let prefillTokens = promptIds[reused...]
     switch (multimodalInput, prefillConfig.mode) {
-    case (.some(let input), .chunked):
+    case (.some(let input), _):
         guard let multimodal = producer as? any MultimodalPrefillRunner else {
             throw PrefillError.chunkedUnsupported(
                 "multimodal prefill requires a MultimodalPrefillRunner-backed runtime")
@@ -173,9 +171,6 @@ public func runRawCompletion(producer: some LogitProducer,
         position = result.newPosition
         prefillSeed = result.seed
         history.append(contentsOf: prefillTokens)
-    case (.some, _):
-        throw PrefillError.chunkedUnsupported(
-            "multimodal prefill requires a MultimodalPrefillRunner-backed runtime")
     case (.none, .chunked):
         guard let chunked = producer as? any ChunkedPrefillRunner else {
             throw PrefillError.chunkedUnsupported(
@@ -207,8 +202,6 @@ public func runRawCompletion(producer: some LogitProducer,
     var stopMatcher = StreamingStopMatcher(stops: config.stopStrings)
     var generated = 0
     var reason: StopReason = .maxTokens
-    var uncommittedBoundaryTokenIDs: [Int32] = []
-    var trailingInvisibleTokens = 0
 
     while true {
         try Task.checkCancellation()
@@ -229,7 +222,6 @@ public func runRawCompletion(producer: some LogitProducer,
                                      history: history, config: config, position: generated)
         }
         generated += 1
-        uncommittedBoundaryTokenIDs = [tokenID]
 
         if tokenizer.stopTokenIDs.contains(tokenID) || config.extraStopTokens.contains(tokenID) {
             if tokenID == tokenizer.endOfTurnID {
@@ -253,7 +245,6 @@ public func runRawCompletion(producer: some LogitProducer,
         let cancelled = !hitStopString && shouldStop()
         let hitMax = generated >= config.maxNewTokens
         if hitStopString || cancelled || hitMax {
-            if !visible.isEmpty { trailingInvisibleTokens = 0 }
             let tail = stopMatcher.push(detok.flush()) + stopMatcher.finish()
             if !tail.isEmpty { onProgress(.tail(tail)) }
             reason = hitStopString ? .stopString : (cancelled ? .cancelled : .maxTokens)
@@ -261,10 +252,8 @@ public func runRawCompletion(producer: some LogitProducer,
         }
 
         history.append(tokenID)
-        trailingInvisibleTokens = visible.isEmpty ? trailingInvisibleTokens + 1 : 0
         try await producer.produce(token: tokenID, position: position, into: scratch.logits)
         position += 1
-        uncommittedBoundaryTokenIDs.removeAll(keepingCapacity: true)
     }
 
     return RawDecodeResult(prefillTokens: promptIds.count,
@@ -274,8 +263,6 @@ public func runRawCompletion(producer: some LogitProducer,
                            reason: reason,
                            kvPosition: position,
                            kvBackedTokenIDs: history,
-                           uncommittedBoundaryTokenIDs: uncommittedBoundaryTokenIDs,
-                           withheldTrailingKVTokens: reason == .stopString ? trailingInvisibleTokens : 0,
                            reusedPrefixTokens: reused)
 }
 

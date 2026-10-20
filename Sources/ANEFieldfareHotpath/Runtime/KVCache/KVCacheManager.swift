@@ -56,7 +56,7 @@ public final class KVCacheManager {
             let length = capacity * stride
             guard let kBuf = device.makeBuffer(length: length, options: .storageModeShared),
                   let vBuf = device.makeBuffer(length: length, options: .storageModeShared) else {
-                throw ModelError.residentBufferWrapFailed
+                throw MetalError.allocationFailed("KV cache")
             }
             kBuf.label = "kv.K.layer\(layer)"
             vBuf.label = "kv.V.layer\(layer)"

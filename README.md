@@ -94,10 +94,8 @@ prompt runs on the Neural Engine (`hybrid-ane`) unless you pass `--backend metal
 | --- | --- |
 | `ANE_FIELDFARE_HOTPATH_PROFILE=1` | Write a JSON timing profile to stderr, including which work ran on the ANE and any ANE failures. |
 | `ANE_FIELDFARE_GPU_TRACE=<path>` | Record every GPU encoder's execution and the host's waits on one clock, and write a Chrome trace to `<path>` (open it at ui.perfetto.dev). `Scripts/profile/summarize.py <path>` prints GPU time per kernel and GPU idle time by what the host was doing. Costs no measurable speed. |
-| `ANE_FIELDFARE_KERNEL_PROFILE=1` | Print a per-kernel breakdown of GPU time in decode. Each kernel runs in its own command buffer, which inflates small kernels; prefer `ANE_FIELDFARE_GPU_TRACE`. |
 | `ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS=n` | Use the ANE for layers `0..<n` only. |
 | `ANE_FIELDFARE_HOT_HEAD=0` | `ANEFieldfareBench` only: turn off the [hot-vocabulary shortcut](#hot-vocabulary-shortcut). |
-| `ANE_FIELDFARE_DRAFT_HOT_HEAD=0` | Let the drafter score the full vocabulary instead of a 16k-token list. |
 | `ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` | Plan every verify layer's experts on the CPU instead of routing them on the GPU. Slower; meant for checking the GPU routing. |
 | `ANE_FIELDFARE_VERIFY_BIND_TOP=n` | Guessed experts per verify row bound for GPU routing. Default 48. |
 | `ANE_FIELDFARE_TEST_CHECKPOINT=<path>` | Model location for tests, if not the default. |

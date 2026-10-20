@@ -31,7 +31,7 @@ extension RawCompletionLoopTests {
     #expect(collected.tokens.map(\.0) == [0, 1, 2, 3, 4])
   }
 
-  @Test func stopStringSpanningTokensReportsWithheldKVTokens() async throws {
+  @Test func stopStringSpanningTokensKeepsEveryTokenInKV() async throws {
     let tok = try await GFTokenizer.load()
     let idA = tok.encode("a", addBOS: false).first!
     let textA = tok.decode([idA], skipSpecialTokens: true)
@@ -40,14 +40,12 @@ extension RawCompletionLoopTests {
       config: GenerationConfig(maxNewTokens: 50, temperature: 0,
                                stopStrings: [textA + textA]))
     #expect(result.reason == .stopString)
-    #expect(result.withheldTrailingKVTokens == 1)
     #expect(result.kvBackedTokenIDs.count == result.kvPosition)
     #expect(result.kvBackedTokenIDs.last == idA)
-    #expect(result.uncommittedBoundaryTokenIDs == [idA])
     #expect(collected.tails.isEmpty)
   }
 
-  @Test func stopMatchThatFlushesHeldTextDoesNotOvercountWithheldTokens() async throws {
+  @Test func stopMatchThatFlushesHeldTextReportsTheFlushedText() async throws {
     let tok = try await GFTokenizer.load()
     let idA = try #require(tok.tokenizer.convertTokenToId("a").map(Int32.init))
     let idCab = try #require(tok.tokenizer.convertTokenToId("cab").map(Int32.init))
@@ -55,7 +53,6 @@ extension RawCompletionLoopTests {
       seq: [idA, idCab], end: idA,
       config: GenerationConfig(maxNewTokens: 50, temperature: 0, stopStrings: ["ab"]))
     #expect(result.reason == .stopString)
-    #expect(result.withheldTrailingKVTokens == 0)
     #expect(result.kvBackedTokenIDs.last == idA)
     #expect(collected.tokens.map(\.2) == ["", "ac"])
   }
@@ -82,9 +79,7 @@ extension RawCompletionLoopTests {
       }
     #expect(result.reason == .cancelled)
     #expect(result.newTokens == 2)
-    #expect(result.withheldTrailingKVTokens == 0)
     #expect(result.kvBackedTokenIDs.count == promptIds.count + 1)
-    #expect(result.uncommittedBoundaryTokenIDs.count == 1)
   }
 
   @Test func cancellationPropagatesMidDecode() async throws {

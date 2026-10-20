@@ -9,7 +9,6 @@ import ANEFieldfareImportedFormat
 public struct Model {
     public let device: any MTLDevice
     public let config: ArchConfig
-    public var modelID: String { manifest.modelID }
     public var sourceSnapshotHash: String? { manifest.sourceSnapshotHash }
     public var sharedExpertWeightBits: Int { manifest.quant?.sharedExpert.weightBits ?? 8 }
 
@@ -216,6 +215,7 @@ public struct Model {
     /// the background without waiting for the first expert fetch. A failure is
     /// dropped here and resurfaces from the first real fetch of the layer.
     public func beginOpeningRoutedExpertLayer(layer L: Int) {
+        guard !routedLayers.isOpen(L) else { return }
         BlockingIO.detach { [routedLayers] in
             _ = try? routedLayers.layer(L)
         }
@@ -535,18 +535,8 @@ extension Model {
     /// next touch.
     ///
     /// The caller must serialize this transition against forward execution.
-    public func prepareExpertResidencyForVision(
-        _ policy: VisionResidencyPolicy,
-        gpuDrainNanoseconds: UInt64 = 0
-    ) -> VisionExpertResidencyTransition {
-        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-        let released = policy == .onDemand ? routedLayers.release() : 0
-        return VisionExpertResidencyTransition(
-            policy: policy,
-            gpuDrainNanoseconds: gpuDrainNanoseconds,
-            releasedLayerCount: released,
-            remainingOpenLayerCount: routedLayers.openLayerCount,
-            wallNanoseconds: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+    public func prepareExpertResidencyForVision(_ policy: VisionResidencyPolicy) {
+        if policy == .onDemand { _ = routedLayers.release() }
     }
 
 }

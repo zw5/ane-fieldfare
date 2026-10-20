@@ -72,7 +72,7 @@ final class NextLayerGuessWeights {
 
         guard let ones = device.makeBuffer(length: hiddenSize * MemoryLayout<UInt16>.size,
                                            options: .storageModeShared) else {
-            throw MetalError.noDevice
+            throw MetalError.allocationFailed("next-layer guess scale")
         }
         let one = Quantization.bf16Bits(1)
         unsafe ones.contents().initializeMemory(as: UInt16.self, repeating: one, count: hiddenSize)

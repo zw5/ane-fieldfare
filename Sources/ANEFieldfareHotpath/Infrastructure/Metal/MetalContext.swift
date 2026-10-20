@@ -10,6 +10,8 @@ enum MetalError: Error, CustomStringConvertible {
     case libraryCompileFailed(String)
     case commandBufferFailed(String)
     case commandBufferUnavailable
+    case encoderUnavailable
+    case allocationFailed(String)
 
     public var description: String {
         switch self {
@@ -20,6 +22,8 @@ enum MetalError: Error, CustomStringConvertible {
         case .libraryCompileFailed(let s):return "Metal library compile failed: \(s)"
         case .commandBufferFailed(let s): return "Metal command buffer failed: \(s)"
         case .commandBufferUnavailable:   return "Metal command queue returned no command buffer"
+        case .encoderUnavailable:         return "Metal command buffer returned no encoder"
+        case .allocationFailed(let what): return "Metal allocation failed: \(what)"
         }
     }
 }

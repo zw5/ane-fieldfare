@@ -147,7 +147,7 @@ import Testing
     @Test func adownscaleDecodesAtTheSourceSize() throws {
         let metadata = VisionImageMetadata(orientedWidth: 4_032, orientedHeight: 3_024)
         let geometry = try Gemma4ImageGeometry(
-            sourceWidth: 4_032, sourceHeight: 3_024, config: VisionConfig())
+            sourceWidth: 4_032, sourceHeight: 3_024)
         #expect(geometry.processedWidth < 4_032, "this fixture is not a downscale")
         #expect(Gemma4ImagePreprocessor.decodeMaxPixelSize(metadata: metadata) == 4_032,
                 "the reduction was handed back to ImageIO's scaler")

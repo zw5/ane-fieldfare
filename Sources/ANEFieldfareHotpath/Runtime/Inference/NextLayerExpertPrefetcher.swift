@@ -43,8 +43,15 @@ final class NextLayerExpertPrefetcher {
     let readsPerLayer: Int
 
     init(model: Model, guess: RuntimeEarlyExpertRead, device: any MTLDevice) throws {
-        readsPerLayer = ProcessInfo.processInfo.environment["ANE_FIELDFARE_EARLY_EXPERT_READS"]
-            .flatMap(Int.init).flatMap { (1...8).contains($0) ? $0 : nil } ?? 2
+        let variable = "ANE_FIELDFARE_EARLY_EXPERT_READS"
+        if let raw = ProcessInfo.processInfo.environment[variable] {
+            guard let reads = Int(raw), (1...8).contains(reads) else {
+                throw RuntimeEnvironmentError(variable: variable, value: raw, expected: "an integer in 1...8")
+            }
+            readsPerLayer = reads
+        } else {
+            readsPerLayer = 2
+        }
         let config = model.config
         guessWeights = guess == .fitted
             ? try NextLayerGuessWeights.bundled(

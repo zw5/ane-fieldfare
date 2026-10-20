@@ -14,24 +14,24 @@ package final class VisionScratch {
     /// Gate projection output; the up projection folds GeGLU into it.
     package let gate: any MTLBuffer
 
-    package init(device: any MTLDevice, rows: Int, config: VisionConfig) throws {
+    package init(device: any MTLDevice, rows: Int) throws {
         paddedRows = VisionAttention.paddedRowCount(rows)
         self.rows = rows
-        self.hiddenSize = config.hiddenSize
+        self.hiddenSize = VisionConfig.hiddenSize
         func buffer(_ elements: Int) throws -> any MTLBuffer {
             guard let value = device.makeBuffer(
                 length: elements * MemoryLayout<UInt16>.stride,
                 options: .storageModePrivate) else {
-                throw MetalError.noDevice
+                throw MetalError.allocationFailed("vision scratch")
             }
             return value
         }
-        normalizedPatches = try buffer(paddedRows * config.patchDimension)
-        hiddenA = try buffer(paddedRows * config.hiddenSize)
-        hiddenB = try buffer(paddedRows * config.hiddenSize)
-        q = try buffer(paddedRows * config.hiddenSize)
-        attention = try buffer(paddedRows * config.hiddenSize)
-        gate = try buffer(paddedRows * config.intermediateSize + 64)
+        normalizedPatches = try buffer(paddedRows * VisionConfig.patchDimension)
+        hiddenA = try buffer(paddedRows * VisionConfig.hiddenSize)
+        hiddenB = try buffer(paddedRows * VisionConfig.hiddenSize)
+        q = try buffer(paddedRows * VisionConfig.hiddenSize)
+        attention = try buffer(paddedRows * VisionConfig.hiddenSize)
+        gate = try buffer(paddedRows * VisionConfig.intermediateSize + 64)
     }
 
     /// Zeroes the padding rows of `hiddenB` and `attention`, the only buffers
@@ -39,7 +39,7 @@ package final class VisionScratch {
     /// pad included, by the dispatch that fills it.
     package func encodeClear(commandBuffer: any MTLCommandBuffer) throws {
         guard let blit = commandBuffer.makeTracedBlitEncoder() else {
-            throw MetalError.noDevice
+            throw MetalError.encoderUnavailable
         }
         let liveBytes = rows * hiddenSize * MemoryLayout<UInt16>.stride
         for buffer in [hiddenB, attention] {

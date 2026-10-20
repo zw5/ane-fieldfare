@@ -45,10 +45,6 @@ import ANEFieldfareValidationSupport
 
     @Test(arguments: [1, 65, 129, 1_025])
     func tensorOps2DFullAttentionMatchesReferenceAtTileBoundaries(_ visibleKeys: Int) throws {
-        let context = try MetalContext()
-        // GPU family is not the capability test: this pipeline compiles and
-        // dispatches on the project's Apple8 M2 minimum.
-        guard (try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")) != nil else { return }
         let fixture = Self.makeFixture(start: visibleKeys - 1,
                                        chunk: 1,
                                        window: 0,
@@ -56,12 +52,9 @@ import ANEFieldfareValidationSupport
                                        headDim: 512,
                                        qHeads: 16,
                                        kvHeads: 2)
-        let candidate = try Self.runKernel(
-            fixture,
-            path: .fullTensorOps2DValidityV2)
-        let repeated = try Self.runKernel(
-            fixture,
-            path: .fullTensorOps2DValidityV2)
+        // Full attention at the production shape runs the TensorOps kernel.
+        let candidate = try Self.runKernel(fixture)
+        let repeated = try Self.runKernel(fixture)
         let reference = Self.reference(fixture)
         let maxAbs = RelError.maxAbsDiff(candidate, reference)
         let rel = RelError.compute(actual: candidate, reference: reference)
@@ -121,10 +114,7 @@ import ANEFieldfareValidationSupport
         #expect(rel <= 2e-2, "\(label) rel=\(rel) maxAbs=\(maxAbs)")
     }
 
-    private static func runKernel(
-        _ fixture: Fixture,
-        path: RuntimePrefillAttentionPath = .causalTiled
-    ) throws -> [Float] {
+    private static func runKernel(_ fixture: Fixture) throws -> [Float] {
         let ctx = try MetalContext()
         let prefill = try PrefillAttention(context: ctx)
         let outCount = fixture.chunk * fixture.oStride
@@ -160,8 +150,7 @@ import ANEFieldfareValidationSupport
                              out: outBuf,
                              params: params,
                              kvRingCapacity: 0,
-                             layerKind: fixture.window == 0 ? .full : .slidingWindow,
-                             path: path)
+                             layerKind: fixture.window == 0 ? .full : .slidingWindow)
         cb.commit()
         cb.waitUntilCompleted()
         try checkCommandBufferError(cb)

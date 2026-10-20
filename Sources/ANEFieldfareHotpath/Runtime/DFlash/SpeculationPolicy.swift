@@ -46,8 +46,7 @@ public struct SpeculationPolicy: Sendable {
     public init(maxBlock: Int) {
         precondition(maxBlock >= 2)
         self.maxBlock = maxBlock
-        // Priors measured on an M5 (16 GB): ~30 ms per decode step, a drafter
-        // call of ~4 ms + 1.2 ms per row, a verify of ~26 ms + 5.5 ms per row.
+        // Priors until the first observations: a fixed cost plus a cost per row.
         draftSeconds = (0...maxBlock).map { Self.priorDraft($0) }
         verifySeconds = (0...maxBlock).map { Self.priorVerify($0) }
         // Two pseudo-observations per decile at its midpoint: trust the

@@ -47,7 +47,7 @@ private func poison(_ buffer: any MTLBuffer, on context: MetalContext) throws {
         await #expect(throws: CancellationError.self) {
             _ = try await failover.supervise(layer: 0) { throw CancellationError() }
         }
-        #expect(RuntimeConfiguration.production.faultPolicy == .failClosed)
+        #expect(RuntimeConfiguration().faultPolicy == .failClosed)
     }
 }
 
@@ -83,7 +83,7 @@ struct DeviceSupervisorFailoverTests {
     struct Fixture {
         let model: Model
         let context: MetalContext
-        let config = RuntimeConfiguration(prefillChunkTokens: 64, forceLogitsHead: true)
+        let config = RuntimeConfiguration(prefillChunkTokens: 64, headPath: .logits)
         let tokens: [Int32] = (0..<40).map { Int32(1_000 + 731 * $0) }
 
         init() throws {

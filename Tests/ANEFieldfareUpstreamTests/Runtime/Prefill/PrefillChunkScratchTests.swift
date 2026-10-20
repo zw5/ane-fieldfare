@@ -7,7 +7,7 @@ import Testing
         let text = PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 32)
         #expect(text.chunkTokens == 32)
 
-        let tokens = VisionConfig().maximumPooledTokens
+        let tokens = VisionConfig.maximumPooledTokens
         let image = PrefillChunkScratchLayout(
             config: .gemma4_26B_A4B,
             chunkTokens: tokens,

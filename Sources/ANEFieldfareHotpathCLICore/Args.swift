@@ -68,11 +68,11 @@ public struct Args: Equatable, Sendable {
                 seed: UInt64? = nil,
                 stops: [String] = [],
                 quiet: Bool = false,
-                prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration.production.prefillPolicy,
-                prefillChunkTokens: Int = RuntimeConfiguration.production.prefillChunkTokens,
+                prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration().prefillPolicy,
+                prefillChunkTokens: Int = RuntimeConfiguration().prefillChunkTokens,
                 prefillChunkTokensAuto: Bool = true,
-                faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration.production.faultPolicy,
-                earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration.production.earlyExpertRead,
+                faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration().faultPolicy,
+                earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration().earlyExpertRead,
                 drafter: String? = nil,
                 drafterOrigin: DrafterOrigin? = nil) {
         self.model = model
@@ -197,12 +197,11 @@ extension Args {
     """
 
     public func resolvedRuntimeConfiguration(
-        forceLogitsHead: Bool,
-        environment: [String: String] = [:]) throws -> RuntimeConfiguration {
+        forceLogitsHead: Bool) throws -> RuntimeConfiguration {
         try Self.runtimeConfiguration(
             backend: backend, expertTopK: expertTopK, prefillExpertCap: prefillExpertCap,
             prefillPolicy: prefillPolicy, prefillChunkTokens: prefillChunkTokens, faultPolicy: faultPolicy,
-            earlyExpertRead: earlyExpertRead, forceLogitsHead: forceLogitsHead, environment: environment)
+            earlyExpertRead: earlyExpertRead, forceLogitsHead: forceLogitsHead)
     }
 
     /// The runtime configuration these options select, validated as the
@@ -211,20 +210,15 @@ extension Args {
         backend: RuntimeBackend,
         expertTopK: Int = 8,
         prefillExpertCap: Int? = nil,
-        prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration.production.prefillPolicy,
+        prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration().prefillPolicy,
         prefillChunkTokens: Int,
         faultPolicy: RuntimeFaultPolicy,
         earlyExpertRead: RuntimeEarlyExpertRead,
-        forceLogitsHead: Bool,
-        environment: [String: String] = [:]) throws -> RuntimeConfiguration {
+        forceLogitsHead: Bool) throws -> RuntimeConfiguration {
         let activeExperts = expertTopK
         let expertCap = prefillExpertCap ?? (activeExperts < 8 ? activeExperts * 8 : nil)
         guard (1...8).contains(activeExperts), expertCap.map({ (1...128).contains($0) }) ?? true else {
             throw ArgsError.invalidValue(flag: "--expert-top-k/--prefill-expert-cap", value: "out of range")
-        }
-        let attentionName = environment["ANE_FIELDFARE_PREFILL_ATTENTION"] ?? "causal-simd"
-        guard let attention = RuntimePrefillAttentionPath(rawValue: attentionName) else {
-            throw ArgsError.invalidValue(flag: "ANE_FIELDFARE_PREFILL_ATTENTION", value: attentionName)
         }
         guard backend != .hybridANE || (activeExperts == 8 && expertCap == nil) else {
             throw ArgsError.invalidValue(flag: "--backend", value: "hybrid-ane requires all eight routed experts and no prefill expert cap")
@@ -235,10 +229,9 @@ extension Args {
         }
         return RuntimeConfiguration(
             backend: backend,
-            prefillEnabled: prefillPolicy == .chunked,
+            prefillPolicy: prefillPolicy,
             prefillChunkTokens: prefillChunkTokens,
-            prefillAttentionPath: attention,
-            forceLogitsHead: forceLogitsHead,
+            headPath: forceLogitsHead ? .logits : .fusedRows,
             activeRoutedExperts: activeExperts,
             prefillExpertUnionCap: expertCap,
             faultPolicy: faultPolicy,
@@ -247,7 +240,7 @@ extension Args {
 
     public static func parse(_ argv: [String]) throws -> Args {
         var backend: RuntimeBackend?
-        var faultPolicy = RuntimeConfiguration.production.faultPolicy
+        var faultPolicy = RuntimeConfiguration().faultPolicy
         var promptFile: String?
         var countTokens = false
         var expertTopK = 8
@@ -268,7 +261,7 @@ extension Args {
         var seed: UInt64?
         var stops: [String] = []
         var quiet = false
-        let runtimeDefaults = RuntimeConfiguration.production
+        let runtimeDefaults = RuntimeConfiguration()
         var prefillPolicy = runtimeDefaults.prefillPolicy
         var prefillChunkTokens = runtimeDefaults.prefillChunkTokens
         var prefillChunkTokensAuto = true

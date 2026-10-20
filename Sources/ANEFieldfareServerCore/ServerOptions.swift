@@ -13,8 +13,8 @@ public struct ServerOptions: Sendable, Equatable {
     public var maxQueue: Int = 8
     public var defaults = SamplingDefaults()
     public var backend: RuntimeBackend = .hybridANE
-    public var faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration.production.faultPolicy
-    public var earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration.production.earlyExpertRead
+    public var faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration().faultPolicy
+    public var earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration().earlyExpertRead
 
     public init(model: String) {
         self.model = model

@@ -20,8 +20,7 @@ public struct Gemma4ImageGeometry: Sendable, Equatable {
 
     public init(
         sourceWidth: Int,
-        sourceHeight: Int,
-        config: VisionConfig = VisionConfig()
+        sourceHeight: Int
     ) throws {
         guard sourceWidth > 0, sourceHeight > 0 else {
             throw VisionImageError.invalidMetadata("source dimensions must be positive")
@@ -31,16 +30,16 @@ public struct Gemma4ImageGeometry: Sendable, Equatable {
         guard !sourceOverflow else {
             throw VisionImageError.invalidMetadata("source dimensions overflow")
         }
-        let patchPixels = config.patchSize * config.patchSize
-        let targetPixels = config.maximumPatches * patchPixels
+        let patchPixels = VisionConfig.patchSize * VisionConfig.patchSize
+        let targetPixels = VisionConfig.maximumPatches * patchPixels
         let factor = sqrt(Double(targetPixels) / Double(sourcePixels))
-        let sideMultiple = config.patchSize * config.poolingKernel
+        let sideMultiple = VisionConfig.patchSize * VisionConfig.poolingKernel
         var height = Int(floor(factor * Double(sourceHeight) / Double(sideMultiple)))
             * sideMultiple
         var width = Int(floor(factor * Double(sourceWidth) / Double(sideMultiple)))
             * sideMultiple
-        let maximumSide = (config.maximumPatches
-            / (config.poolingKernel * config.poolingKernel)) * sideMultiple
+        let maximumSide = (VisionConfig.maximumPatches
+            / (VisionConfig.poolingKernel * VisionConfig.poolingKernel)) * sideMultiple
         if height == 0 && width == 0 {
             throw VisionImageError.invalidMetadata("aspect ratio produces zero target dimensions")
         } else if height == 0 {
@@ -55,13 +54,13 @@ public struct Gemma4ImageGeometry: Sendable, Equatable {
             throw VisionImageError.invalidMetadata("target geometry exceeds patch budget")
         }
 
-        let gridWidth = width / config.patchSize
-        let gridHeight = height / config.patchSize
+        let gridWidth = width / VisionConfig.patchSize
+        let gridHeight = height / VisionConfig.patchSize
         let patches = gridWidth * gridHeight
         guard gridWidth > 0, gridHeight > 0,
-              gridWidth.isMultiple(of: config.poolingKernel),
-              gridHeight.isMultiple(of: config.poolingKernel),
-              patches <= config.maximumPatches else {
+              gridWidth.isMultiple(of: VisionConfig.poolingKernel),
+              gridHeight.isMultiple(of: VisionConfig.poolingKernel),
+              patches <= VisionConfig.maximumPatches else {
             throw VisionImageError.invalidMetadata("target patch grid is invalid")
         }
         processedWidth = width
@@ -69,6 +68,6 @@ public struct Gemma4ImageGeometry: Sendable, Equatable {
         patchGridWidth = gridWidth
         patchGridHeight = gridHeight
         patchCount = patches
-        softTokenCount = patches / (config.poolingKernel * config.poolingKernel)
+        softTokenCount = patches / (VisionConfig.poolingKernel * VisionConfig.poolingKernel)
     }
 }

@@ -33,7 +33,7 @@ struct TokenizerLoadCoordinatorTests {
         let model = root.appendingPathComponent("model.gturbo", isDirectory: true)
         let modelTokenizer = model.appendingPathComponent("tokenizer", isDirectory: true)
         try FileManager.default.createDirectory(at: modelTokenizer, withIntermediateDirectories: true)
-        #expect(GFTokenizer.tokenizerFolder(forModelDirectory: model, environment: [:]) == nil)
+        #expect(GFTokenizer.tokenizerFolder(forModelDirectory: model) == nil)
 
         try Data("{}".utf8).write(to: modelTokenizer.appendingPathComponent("tokenizer.json"))
         #expect(GFTokenizer.tokenizerFolder(forModelDirectory: model) == modelTokenizer.standardizedFileURL)

@@ -33,8 +33,6 @@ public final class DFlashDrafter {
     /// prompt's and accepted tokens: a draft outside it is a rejected draft,
     /// which verify catches. nil scores all.
     let hotVocabulary: HotVocabulary?
-    /// Measured on the quick suite, 8k to 56k listed tokens left acceptance
-    /// unchanged within noise.
     static let hotVocabularyCount = 16 * 1024
     /// Rows one projection dispatch takes; longer context updates loop.
     static let maxRows = DequantInt4GEMV.maxBatchRows
@@ -78,12 +76,10 @@ public final class DFlashDrafter {
                                               device: context.device)
         self.int4 = try DequantInt4GEMV(context: context)
         self.head = try LMHeadChainInt4(context: context, maxD: config.hiddenSize, maxVocab: model.config.vocabSize)
-        self.hotVocabulary = try ProcessInfo.processInfo.environment["ANE_FIELDFARE_DRAFT_HOT_HEAD"] == "0"
-            ? nil
-            : HotVocabulary.shipped(vocab: model.config.vocabSize).map {
-                try HotVocabulary(url: $0, vocab: model.config.vocabSize, device: context.device,
-                                  shipped: Self.hotVocabularyCount)
-            }
+        self.hotVocabulary = try HotVocabulary.shipped(vocab: model.config.vocabSize).map {
+            try HotVocabulary(url: $0, vocab: model.config.vocabSize, device: context.device,
+                              shipped: Self.hotVocabularyCount)
+        }
         embedPSO = try context.pipeline("dflash_embed_block")
         normF32PSO = try context.pipeline("dflash_rmsnorm_rows_f32")
         normBF16PSO = try context.pipeline("dflash_rmsnorm_rows_bf16")
@@ -241,14 +237,14 @@ public final class DFlashDrafter {
         var done = 0
         while done < rows {
             let n = min(Self.maxRows, rows - done), p0 = position + done
-            dispatch(cb, gatherPSO, [tap.buffer, feature],
+            try dispatch(cb, gatherPSO, [tap.buffer, feature],
                      [UInt32(n), UInt32(layers), UInt32(D), UInt32(p0), UInt32(tap.capacity)],
                      grid: MTLSize(width: layers * D, height: n, depth: 1))
             try project(cb, weights.fc, x: feature, y: contextHidden, rows: n)
-            norm(cb, normBF16PSO, x: contextHidden, weight: weights.hiddenNorm, out: contextHidden, rows: n)
+            try norm(cb, normBF16PSO, x: contextHidden, weight: weights.hiddenNorm, out: contextHidden, rows: n)
             for (l, layer) in weights.layers.enumerated() {
                 try project(cb, layer.qkv.rows(config.qWidth..<config.qkvWidth), x: contextHidden, y: contextKV, rows: n)
-                guard let enc = cb.makeTracedComputeEncoder() else { throw DFlashError.invalidState("encoder") }
+                let enc = try encoder(cb)
                 enc.setComputePipelineState(storeKVPSO)
                 enc.setBuffer(contextKV, offset: 0, index: 0)
                 enc.setBuffer(weights.buffer, offset: layer.kNorm, index: 1)
@@ -280,63 +276,60 @@ public final class DFlashDrafter {
         GPUTrace.setScope("draft")
         let D = config.hiddenSize, F = config.intermediateSize
         let emb = model.embedding
-        if let enc = cb.makeTracedComputeEncoder() {
-            enc.setComputePipelineState(embedPSO)
-            enc.setBuffer(emb.buffer, offset: Int(emb.offset), index: 0)
-            enc.setBuffer(emb.buffer, offset: Int(emb.scaleOffset), index: 1)
-            enc.setBuffer(emb.buffer, offset: Int(emb.biasOffset), index: 2)
-            enc.setBuffer(block, offset: 0, index: 3)
-            enc.setBuffer(residual, offset: 0, index: 4)
-            enc.setValue(UInt32(D), index: 5)
-            enc.setValue(Float(D).squareRoot(), index: 6)
-            enc.dispatchThreads(MTLSize(width: D, height: R, depth: 1),
-                                threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
-            enc.endEncoding()
-        }
-        norm(cb, normF32PSO, x: residual, weight: weights.layers[0].inputNorm, out: normed, rows: R)
+        let embed = try encoder(cb)
+        embed.setComputePipelineState(embedPSO)
+        embed.setBuffer(emb.buffer, offset: Int(emb.offset), index: 0)
+        embed.setBuffer(emb.buffer, offset: Int(emb.scaleOffset), index: 1)
+        embed.setBuffer(emb.buffer, offset: Int(emb.biasOffset), index: 2)
+        embed.setBuffer(block, offset: 0, index: 3)
+        embed.setBuffer(residual, offset: 0, index: 4)
+        embed.setValue(UInt32(D), index: 5)
+        embed.setValue(Float(D).squareRoot(), index: 6)
+        embed.dispatchThreads(MTLSize(width: D, height: R, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        embed.endEncoding()
+        try norm(cb, normF32PSO, x: residual, weight: weights.layers[0].inputNorm, out: normed, rows: R)
         for (l, layer) in weights.layers.enumerated() {
             try project(cb, layer.qkv, x: normed, y: qkv, rows: R)
-            if let enc = cb.makeTracedComputeEncoder() {
-                enc.setComputePipelineState(qkNormRopePSO)
-                enc.setBuffer(qkv, offset: 0, index: 0)
-                enc.setBuffer(weights.buffer, offset: layer.qNorm, index: 1)
-                enc.setBuffer(weights.buffer, offset: layer.kNorm, index: 2)
-                enc.setBuffer(state, offset: 0, index: 3)
-                enc.setValue(UInt32(config.heads), index: 4)
-                enc.setValue(UInt32(config.kvHeads), index: 5)
-                enc.setValue(config.ropeTheta, index: 6)
-                enc.setValue(config.rmsEps, index: 7)
-                enc.dispatchThreadgroups(MTLSize(width: config.heads + config.kvHeads, height: R, depth: 1),
-                                         threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
-                enc.endEncoding()
-            }
-            if let enc = cb.makeTracedComputeEncoder() {
-                enc.setComputePipelineState(attentionPSO)
-                enc.setBuffer(qkv, offset: 0, index: 0)
-                enc.setBuffer(kCache[l], offset: 0, index: 1)
-                enc.setBuffer(vCache[l], offset: 0, index: 2)
-                enc.setBuffer(attention, offset: 0, index: 3)
-                enc.setBuffer(state, offset: 0, index: 4)
-                let params: [UInt32] = [UInt32(config.heads), UInt32(config.kvHeads), UInt32(R),
-                                        config.slidingLayers[l] ? 1 : 0,
-                                        UInt32(min(config.slidingWindow, Int(UInt32.max))),
-                                        UInt32(cacheCapacity[l])]
-                for i in params.indices { enc.setValue(params[i], index: 5 + i) }
-                enc.dispatchThreadgroups(MTLSize(width: config.heads, height: R, depth: 1),
-                                         threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
-                enc.endEncoding()
-            }
+            let rope = try encoder(cb)
+            rope.setComputePipelineState(qkNormRopePSO)
+            rope.setBuffer(qkv, offset: 0, index: 0)
+            rope.setBuffer(weights.buffer, offset: layer.qNorm, index: 1)
+            rope.setBuffer(weights.buffer, offset: layer.kNorm, index: 2)
+            rope.setBuffer(state, offset: 0, index: 3)
+            rope.setValue(UInt32(config.heads), index: 4)
+            rope.setValue(UInt32(config.kvHeads), index: 5)
+            rope.setValue(config.ropeTheta, index: 6)
+            rope.setValue(config.rmsEps, index: 7)
+            rope.dispatchThreadgroups(MTLSize(width: config.heads + config.kvHeads, height: R, depth: 1),
+                                      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+            rope.endEncoding()
+            let attend = try encoder(cb)
+            attend.setComputePipelineState(attentionPSO)
+            attend.setBuffer(qkv, offset: 0, index: 0)
+            attend.setBuffer(kCache[l], offset: 0, index: 1)
+            attend.setBuffer(vCache[l], offset: 0, index: 2)
+            attend.setBuffer(attention, offset: 0, index: 3)
+            attend.setBuffer(state, offset: 0, index: 4)
+            let params: [UInt32] = [UInt32(config.heads), UInt32(config.kvHeads), UInt32(R),
+                                    config.slidingLayers[l] ? 1 : 0,
+                                    UInt32(min(config.slidingWindow, Int(UInt32.max))),
+                                    UInt32(cacheCapacity[l])]
+            for i in params.indices { attend.setValue(params[i], index: 5 + i) }
+            attend.dispatchThreadgroups(MTLSize(width: config.heads, height: R, depth: 1),
+                                        threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+            attend.endEncoding()
             try project(cb, layer.o, x: attention, y: delta, rows: R)
-            addNorm(cb, weight: layer.postAttentionNorm, rows: R)
+            try addNorm(cb, weight: layer.postAttentionNorm, rows: R)
             try project(cb, layer.gateUp, x: normed, y: gateUp, rows: R)
-            dispatch(cb, siluPSO, [gateUp, act], [UInt32(F)], grid: MTLSize(width: F, height: R, depth: 1))
+            try dispatch(cb, siluPSO, [gateUp, act], [UInt32(F)], grid: MTLSize(width: F, height: R, depth: 1))
             try project(cb, layer.down, x: act, y: delta, rows: R)
             if l + 1 < weights.layers.count {
-                addNorm(cb, weight: weights.layers[l + 1].inputNorm, rows: R)
+                try addNorm(cb, weight: weights.layers[l + 1].inputNorm, rows: R)
             }
         }
         // Rows 1..<R predict the drafts; the head applies the final norm.
-        dispatch(cb, addHeadRowsPSO, [residual, delta, headRows], [UInt32((R - 1) * D), UInt32(D)],
+        try dispatch(cb, addHeadRowsPSO, [residual, delta, headRows], [UInt32((R - 1) * D), UInt32(D)],
                  grid: MTLSize(width: (R - 1) * D, height: 1, depth: 1))
         if let hot = hotVocabulary {
             try head.encodeHotGreedyRows(commandBuffer: cb, hidden: headRows, rowCount: R - 1,
@@ -357,7 +350,7 @@ public final class DFlashDrafter {
                                       rmsEps: config.rmsEps, softcap: Float(model.config.finalLogitSoftcap),
                                       sampling: sampling.map { .init(rule: $0, keyBase: 1, keyOffset: state) })
         }
-        dispatch(cb, finishPSO, [picks, hotVocabulary?.ids ?? picks, block],
+        try dispatch(cb, finishPSO, [picks, hotVocabulary?.ids ?? picks, block],
                  [UInt32(R - 1), hotVocabulary == nil ? 0 : 1], grid: MTLSize(width: R - 1, height: 1, depth: 1))
     }
 
@@ -366,8 +359,8 @@ public final class DFlashDrafter {
     /// advances the context past the anchor and the accepted drafts and
     /// anchors the next block at the target's next token. The verify's
     /// context rows must already be in the cache (`encodeContextUpdate`).
-    func encodeAccept(_ cb: any MTLCommandBuffer, verified: any MTLBuffer, rows: Int) {
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
+    func encodeAccept(_ cb: any MTLCommandBuffer, verified: any MTLBuffer, rows: Int) throws {
+        let enc = try encoder(cb)
         enc.setComputePipelineState(acceptPSO)
         enc.setBuffer(block, offset: 0, index: 0)
         enc.setBuffer(verified, offset: 0, index: 1)
@@ -381,6 +374,11 @@ public final class DFlashDrafter {
 
     // MARK: - Helpers
 
+    private func encoder(_ cb: any MTLCommandBuffer) throws -> any MTLComputeCommandEncoder {
+        guard let enc = cb.makeTracedComputeEncoder() else { throw MetalError.encoderUnavailable }
+        return enc
+    }
+
     private func project(_ cb: any MTLCommandBuffer, _ m: DFlashMatrix, x: any MTLBuffer, y: any MTLBuffer,
                          rows: Int) throws {
         try int4.encodeRows(commandBuffer: cb,
@@ -392,8 +390,8 @@ public final class DFlashDrafter {
     }
 
     private func dispatch(_ cb: any MTLCommandBuffer, _ pso: any MTLComputePipelineState, _ buffers: [any MTLBuffer],
-                          _ constants: [UInt32], grid: MTLSize) {
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
+                          _ constants: [UInt32], grid: MTLSize) throws {
+        let enc = try encoder(cb)
         enc.setComputePipelineState(pso)
         for (i, b) in buffers.enumerated() { enc.setBuffer(b, offset: 0, index: i) }
         for i in constants.indices { enc.setValue(constants[i], index: buffers.count + i) }
@@ -402,8 +400,8 @@ public final class DFlashDrafter {
     }
 
     private func norm(_ cb: any MTLCommandBuffer, _ pso: any MTLComputePipelineState, x: any MTLBuffer,
-                      weight: Int, out: any MTLBuffer, rows: Int) {
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
+                      weight: Int, out: any MTLBuffer, rows: Int) throws {
+        let enc = try encoder(cb)
         enc.setComputePipelineState(pso)
         enc.setBuffer(x, offset: 0, index: 0)
         enc.setBuffer(weights.buffer, offset: weight, index: 1)
@@ -416,8 +414,8 @@ public final class DFlashDrafter {
     }
 
     /// residual += delta, normed = rmsnorm(residual) * weight.
-    private func addNorm(_ cb: any MTLCommandBuffer, weight: Int, rows: Int) {
-        guard let enc = cb.makeTracedComputeEncoder() else { return }
+    private func addNorm(_ cb: any MTLCommandBuffer, weight: Int, rows: Int) throws {
+        let enc = try encoder(cb)
         enc.setComputePipelineState(addNormPSO)
         enc.setBuffer(residual, offset: 0, index: 0)
         enc.setBuffer(delta, offset: 0, index: 1)

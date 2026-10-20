@@ -88,12 +88,12 @@ import Metal
         let model = try Model.load(directoryURL: modelURL, device: context.device)
         let tokenizer = try await GFTokenizer.load(forModelDirectory: modelURL)
         let maxContext = 4096
-        let production = RuntimeConfiguration.production
+        let defaults = RuntimeConfiguration()
         let runtime = try Args.runtimeConfiguration(
             backend: options.backend,
             prefillChunkTokens: PrefillRuntimeConfig.autoChunkTokens(promptTokens: maxContext),
-            faultPolicy: production.faultPolicy, earlyExpertRead: production.earlyExpertRead,
-            forceLogitsHead: false, environment: ProcessInfo.processInfo.environment)
+            faultPolicy: defaults.faultPolicy, earlyExpertRead: defaults.earlyExpertRead,
+            forceLogitsHead: false)
         let runner = try RealForwardRunner(model: model, context: context, maxContext: maxContext,
                                            runtimeConfiguration: runtime)
         var drafter: DFlashDrafter?

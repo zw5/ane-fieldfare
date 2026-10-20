@@ -23,7 +23,6 @@ public struct VisionFeatures {
 }
 
 public final class VisionRuntime {
-    public let config = VisionConfig()
 
     private let context: MetalContext
     private let store: VisionWeightStore
@@ -34,10 +33,9 @@ public final class VisionRuntime {
     private let usesBF16Projector: Bool
     private let projectorKernel: MPPPrefillInt4QMM
     private let imageResize: VisionResize?
-    /// Mapped weight regions retained across images under `.keepReady`. Mapping
-    /// and first-touching the 1.08 GB the tower reads costs the same every image
-    /// otherwise; holding the mappings pays it once. Pages are clean, file-backed
-    /// and evictable, like the routed expert pool.
+    /// Mapped weight regions retained across images under `.keepReady`, so
+    /// mapping and first-touching the tower's weights is paid once. Pages are
+    /// clean, file-backed and evictable, like the routed expert pool.
     private var cachedRegions: [String: VisionMappedWeightRegion] = [:]
 
     public static func open(
@@ -91,9 +89,13 @@ public final class VisionRuntime {
         self.attention = try VisionAttention(context: context)
         // Pre-Apple10 GPUs convert the pooled features to FP16 for the projector.
         self.usesBF16Projector = context.device.supportsFamily(.apple10)
-        self.imageResize = try? VisionResize(context: context)
+        self.imageResize = try VisionResize(context: context)
         self.projectorKernel = MPPPrefillInt4QMM(
             context: context, variant: usesBF16Projector ? .apple10BF16 : .control)
+        guard projectorKernel.isAvailable else {
+            throw VisionRuntimeError.unsupportedKernel(
+                projectorKernel.unavailableReason ?? "INT4 projector unavailable")
+        }
     }
 
     public func encodeImage(
@@ -120,7 +122,7 @@ public final class VisionRuntime {
         try checkCancellation()
         if residencyPolicy == .onDemand { try drainGPU() }
         try checkCancellation()
-        _ = languageModel.prepareExpertResidencyForVision(residencyPolicy)
+        languageModel.prepareExpertResidencyForVision(residencyPolicy)
         try checkCancellation()
         return try encodePatches(
             try makePreprocessor().preprocess(plan),
@@ -129,7 +131,7 @@ public final class VisionRuntime {
     }
 
     private func makePreprocessor() -> Gemma4ImagePreprocessor {
-        Gemma4ImagePreprocessor(device: context.device, config: config, gpuResize: imageResize)
+        Gemma4ImagePreprocessor(device: context.device, gpuResize: imageResize)
     }
 
     private func encodePatches(
@@ -146,7 +148,7 @@ public final class VisionRuntime {
         // The QKV projections write attention's padded head-major layout
         // directly, and the up projection folds GeGLU into its epilogue, so
         // there is no pad/unpad dispatch, no K/V scratch and no `up` scratch.
-        let scratch = try VisionScratch(device: context.device, rows: rows, config: config)
+        let scratch = try VisionScratch(device: context.device, rows: rows)
         let paddedHeadStore = VisionLinearBF16.PaddedHeadStore(
             rowStride: scratch.paddedRows,
             headDim: VisionAttention.headDimension,
@@ -205,7 +207,7 @@ public final class VisionRuntime {
                 input: scratch.normalizedPatches,
                 weights: fixed.buffer, weightsOffset: try fixed.offset(of: patchWeight),
                 output: scratch.hiddenA,
-                m: scratch.paddedRows, n: config.hiddenSize, k: config.patchDimension)
+                m: scratch.paddedRows, n: VisionConfig.hiddenSize, k: VisionConfig.patchDimension)
             primitives.encodeAddPosition(
                 commandBuffer: commandBuffer,
                 hidden: scratch.hiddenA,
@@ -214,7 +216,7 @@ public final class VisionRuntime {
             try commitPipelined(commandBuffer, retaining: fixed)
         }
 
-        for layer in 0..<config.numLayers {
+        for layer in 0..<VisionConfig.numLayers {
             try checkCancellation()
             let prefix = "vision_tower.encoder.layers.\(layer)."
             let names = store.tensorNames(withPrefix: prefix)
@@ -243,7 +245,7 @@ public final class VisionRuntime {
                     input: scratch.hiddenB,
                     weights: weights.buffer, weightsOffset: try offset(suffix),
                     output: output,
-                    m: scratch.paddedRows, n: config.hiddenSize, k: config.hiddenSize,
+                    m: scratch.paddedRows, n: VisionConfig.hiddenSize, k: VisionConfig.hiddenSize,
                     paddedHeadStore: paddedHeadStore)
             }
             primitives.encodeQKV(
@@ -253,12 +255,12 @@ public final class VisionRuntime {
                 qWeightOffset: try offset("self_attn.q_norm.weight"),
                 kWeightOffset: try offset("self_attn.k_norm.weight"),
                 positions: input.positionsInt32x2,
-                rows: rows, heads: config.numHeads,
+                rows: rows, heads: VisionConfig.numHeads,
                 paddedRowStride: scratch.paddedRows)
             attention.encode(commandBuffer: commandBuffer,
                              q: attention.fusedQ, k: attention.fusedK, v: attention.fusedV,
                              output: scratch.attention,
-                             sequenceLength: rows, numHeads: config.numHeads,
+                             sequenceLength: rows, numHeads: VisionConfig.numHeads,
                              inputRowStride: scratch.paddedRows)
             linear.encode(
                 commandBuffer: commandBuffer,
@@ -266,7 +268,7 @@ public final class VisionRuntime {
                 weights: weights.buffer,
                 weightsOffset: try offset("self_attn.o_proj.linear.weight"),
                 output: scratch.q,
-                m: scratch.paddedRows, n: config.hiddenSize, k: config.hiddenSize)
+                m: scratch.paddedRows, n: VisionConfig.hiddenSize, k: VisionConfig.hiddenSize)
             primitives.encodePostnormResidual(
                 commandBuffer: commandBuffer,
                 residual: scratch.hiddenA, branch: scratch.q,
@@ -284,16 +286,16 @@ public final class VisionRuntime {
                 weights: weights.buffer,
                 weightsOffset: try offset("mlp.gate_proj.linear.weight"),
                 output: scratch.gate,
-                m: scratch.paddedRows, n: config.intermediateSize,
-                k: config.hiddenSize)
+                m: scratch.paddedRows, n: VisionConfig.intermediateSize,
+                k: VisionConfig.hiddenSize)
             linear.encode(
                 commandBuffer: commandBuffer,
                 input: scratch.q,
                 weights: weights.buffer,
                 weightsOffset: try offset("mlp.up_proj.linear.weight"),
                 output: scratch.gate,
-                m: scratch.paddedRows, n: config.intermediateSize,
-                k: config.hiddenSize,
+                m: scratch.paddedRows, n: VisionConfig.intermediateSize,
+                k: VisionConfig.hiddenSize,
                 fusesGeGLU: true)
             linear.encode(
                 commandBuffer: commandBuffer,
@@ -301,7 +303,7 @@ public final class VisionRuntime {
                 weights: weights.buffer,
                 weightsOffset: try offset("mlp.down_proj.linear.weight"),
                 output: scratch.q,
-                m: scratch.paddedRows, n: config.hiddenSize, k: config.intermediateSize)
+                m: scratch.paddedRows, n: VisionConfig.hiddenSize, k: VisionConfig.intermediateSize)
             primitives.encodePostnormResidual(
                 commandBuffer: commandBuffer,
                 residual: scratch.hiddenB, branch: scratch.q,
@@ -311,8 +313,8 @@ public final class VisionRuntime {
             try commitPipelined(commandBuffer, retaining: weights)
         }
 
-        let outputRows = (patchGridWidth / config.poolingKernel)
-            * (patchGridHeight / config.poolingKernel)
+        let outputRows = (patchGridWidth / VisionConfig.poolingKernel)
+            * (patchGridHeight / VisionConfig.poolingKernel)
         try checkCancellation()
         let projector = try mapRegion([
             "vision_tower.std_bias",
@@ -322,13 +324,9 @@ public final class VisionRuntime {
             "embed_vision.embedding_projection.biases",
         ])
         guard let features = context.device.makeBuffer(
-            length: outputRows * config.textHiddenSize * MemoryLayout<Float16>.stride,
+            length: outputRows * VisionConfig.textHiddenSize * MemoryLayout<Float16>.stride,
             options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
-        guard projectorKernel.isAvailable else {
-            throw VisionRuntimeError.unsupportedKernel(
-                projectorKernel.unavailableReason ?? "INT4 projector unavailable")
+            throw MetalError.allocationFailed("vision features")
         }
         let commandBuffer = try makeCommandBuffer()
         primitives.encodePool(
@@ -343,7 +341,7 @@ public final class VisionRuntime {
             primitives.encodeBFloatToHalf(
                 commandBuffer: commandBuffer,
                 input: scratch.attention, output: scratch.hiddenB,
-                count: outputRows * config.hiddenSize)
+                count: outputRows * VisionConfig.hiddenSize)
         }
         let projectorPath = projectorKernel.encode(
             commandBuffer: commandBuffer,
@@ -358,7 +356,7 @@ public final class VisionRuntime {
                 of: "embed_vision.embedding_projection.biases"),
             x: usesBF16Projector ? scratch.attention : scratch.hiddenB,
             y: features,
-            m: outputRows, n: config.textHiddenSize, k: config.hiddenSize)
+            m: outputRows, n: VisionConfig.textHiddenSize, k: VisionConfig.hiddenSize)
         guard projectorPath != .fallback else {
             throw VisionRuntimeError.unsupportedKernel("INT4 projector fell back")
         }
@@ -366,7 +364,7 @@ public final class VisionRuntime {
         while !inFlight.isEmpty { try drainOldest() }
 
         return VisionFeatures(buffer: features, tokenCount: outputRows,
-                              hiddenSize: config.textHiddenSize)
+                              hiddenSize: VisionConfig.textHiddenSize)
     }
 
     private func makeCommandBuffer() throws -> any MTLCommandBuffer {

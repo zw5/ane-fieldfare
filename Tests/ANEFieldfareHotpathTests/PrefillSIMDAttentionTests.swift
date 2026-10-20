@@ -36,10 +36,10 @@ final class PrefillSIMDAttentionTests: XCTestCase {
                     bidirectionalBlockStart: UInt32(imageBlock ? start : 0),
                     bidirectionalBlockEnd: UInt32(imageBlock ? valid : 0))
                 let cb = try XCTUnwrap(context.queue.makeCommandBuffer())
-                for (output, path) in [(out, RuntimePrefillAttentionPath.causalSIMD), (reference, .causalTiled)] {
-                    try kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: output, params: params,
-                        kvRingCapacity: UInt32(capacity), layerKind: .slidingWindow, path: path)
-                }
+                try kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: out, params: params,
+                    kvRingCapacity: UInt32(capacity), layerKind: .slidingWindow)
+                try kernel.encodeCausalTiled(commandBuffer: cb, q: qb, k: kb, v: vb, out: reference, params: params,
+                    kvRingCapacity: UInt32(capacity), layerKind: .slidingWindow)
                 cb.commit(); cb.waitUntilCompleted(); XCTAssertNil(cb.error)
                 unsafe XCTAssertEqual(Data(bytes: out.contents(), count: out.length),
                                Data(bytes: reference.contents(), count: reference.length),

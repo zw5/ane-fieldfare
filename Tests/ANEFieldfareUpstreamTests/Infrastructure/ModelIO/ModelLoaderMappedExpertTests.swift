@@ -61,15 +61,10 @@ import Metal
         defer { try? FileManager.default.removeItem(at: dir) }
         _ = try model.routedExpertViews(layer: 1, experts: [4])[0]
 
-        let retained = model.prepareExpertResidencyForVision(.keepReady)
-        #expect(retained.releasedLayerCount == 0)
-        #expect(retained.remainingOpenLayerCount == 1)
+        model.prepareExpertResidencyForVision(.keepReady)
+        #expect(model.routedLayers.openLayerCount == 1)
 
-        let released = model.prepareExpertResidencyForVision(
-            .onDemand, gpuDrainNanoseconds: 123)
-        #expect(released.gpuDrainNanoseconds == 123)
-        #expect(released.releasedLayerCount == 1)
-        #expect(released.remainingOpenLayerCount == 0)
+        model.prepareExpertResidencyForVision(.onDemand)
         #expect(model.routedLayers.openLayerCount == 0)
 
         let view = try model.routedExpertViews(layer: 1, experts: [4])[0]

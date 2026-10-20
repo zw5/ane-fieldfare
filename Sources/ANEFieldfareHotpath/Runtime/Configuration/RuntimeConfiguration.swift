@@ -5,21 +5,14 @@ public enum RuntimeHeadPath: String, Codable, Sendable {
 
 public enum RuntimeBackend: String, Codable, Sendable {
     case metal
-    /// Routed top-8 prefill on ANE; attention, shared FFN, logits and decode
-    /// remain on the measured Metal companion rail.
+    /// Routed top-8 prefill on the ANE; attention, shared FFN, logits and
+    /// decode stay on Metal.
     case hybridANE = "hybrid-ane"
 }
 
 public enum RuntimePrefillPolicy: String, Codable, Sendable {
     case off
     case chunked
-}
-
-public enum RuntimePrefillAttentionPath: String, Codable, Sendable {
-    case causalTiled = "causal-tiled"
-    case causalSIMD = "causal-simd"
-    case fullTensorOps2DPreferred = "full-tensorops-2d-preferred"
-    case fullTensorOps2DValidityV2 = "full-tensorops-2d-validity-v2"
 }
 
 /// What scores the next layer's experts for the decode early read, or `off`.
@@ -30,6 +23,15 @@ public enum RuntimeEarlyExpertRead: String, Codable, Sendable, CaseIterable {
     case off
     case router
     case fitted
+}
+
+/// A runtime environment variable set to a value it does not take.
+public struct RuntimeEnvironmentError: Error, CustomStringConvertible {
+    public let variable: String
+    public let value: String
+    public let expected: String
+
+    public var description: String { "\(variable)=\(value) must be \(expected)" }
 }
 
 public struct RuntimeConfiguration: Sendable, Equatable {
@@ -52,7 +54,6 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public let backend: RuntimeBackend
     public let prefillPolicy: RuntimePrefillPolicy
     public let prefillChunkTokens: Int
-    public let prefillAttentionPath: RuntimePrefillAttentionPath
     public let headPath: RuntimeHeadPath
     /// Number of routed experts actually evaluated. Values below the
     /// checkpoint's top-8 are an explicit lossy inference mode.
@@ -67,10 +68,9 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public let earlyExpertRead: RuntimeEarlyExpertRead
 
     public init(backend: RuntimeBackend = .metal,
-                prefillEnabled: Bool = true,
+                prefillPolicy: RuntimePrefillPolicy = .chunked,
                 prefillChunkTokens: Int = RuntimeConfiguration.defaultPrefillChunkTokens,
-                prefillAttentionPath: RuntimePrefillAttentionPath = .causalSIMD,
-                forceLogitsHead: Bool = false,
+                headPath: RuntimeHeadPath = .fusedRows,
                 activeRoutedExperts: Int = 8,
                 prefillExpertUnionCap: Int? = nil,
                 faultPolicy: RuntimeFaultPolicy = .failClosed,
@@ -82,18 +82,13 @@ public struct RuntimeConfiguration: Sendable, Equatable {
         precondition(prefillExpertUnionCap.map { (1...128).contains($0) } ?? true,
                      "prefill expert union cap must be in 1...128")
         self.backend = backend
-        self.prefillPolicy = prefillEnabled ? .chunked : .off
+        self.prefillPolicy = prefillPolicy
         self.prefillChunkTokens = prefillChunkTokens
-        self.prefillAttentionPath = prefillAttentionPath
-        self.headPath = forceLogitsHead ? .logits : .fusedRows
+        self.headPath = headPath
         self.activeRoutedExperts = activeRoutedExperts
         self.prefillExpertUnionCap = prefillExpertUnionCap
         self.faultPolicy = faultPolicy
         self.earlyExpertRead = earlyExpertRead
-    }
-
-    public static var production: RuntimeConfiguration {
-        RuntimeConfiguration()
     }
 
     public var prefillConfig: PrefillRuntimeConfig {

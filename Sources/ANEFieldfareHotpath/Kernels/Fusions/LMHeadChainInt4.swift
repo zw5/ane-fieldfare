@@ -8,7 +8,7 @@ final class LMHeadChainInt4 {
     static let maxGreedyRows = 16
 
     private static let rowSummaryStride = 2
-    private static let realDecodeD: UInt32 = 2816
+    static let realDecodeD: UInt32 = 2816
     private static let realDecodeVocab: UInt32 = 262144
     private static let realDecodeHeadConstants: [MetalFunctionConstant] = [
         MetalFunctionConstant(index: 10, value: .uint32(realDecodeD)),
