@@ -6,16 +6,16 @@ straight from the OS file cache.
 
 | Same M5, 16 GB, same prompts | ANE Fieldfare | [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) | llama.cpp |
 | --- | ---: | ---: | ---: |
-| Generation | **37–53 tok/s** | 21–25 tok/s | 5–9 tok/s |
+| Generation, greedy | **65–87 tok/s** | 24–25 tok/s | 5–9 tok/s |
+| Generation, sampled (temperature 0.2) | **37–53 tok/s** | 21–25 tok/s | |
 | First token, 3,015-token prompt | **10 s** | 48 s | ~110 s (est.) |
 
-Turbo Fieldfare's own benchmark (its three prompts, temperature 0.2), run on
-both engines on 2026-10-20; first token includes model load. llama.cpp runs
-Google's Q4_0 GGUF, which is over Metal's 12.7 GB limit on a 16 GB Mac, so its
-best layer split pages (`llama-bench`; its first token is estimated from
-its 24–32 tok/s prefill). Greedy, the drafter reaches 73–99
-tok/s, and prefill of the long prompt alone takes 8.8 s. How each number was
-reached: [PERFORMANCE.md](PERFORMANCE.md).
+Measured on 2026-10-20 against Turbo Fieldfare's latest commit: greedy on this
+repo's benchmark prompts, sampled on Turbo's own benchmark; first token
+includes model load. Up to 99 tok/s is this repo's benchmark on code
+([Performance](#performance)). llama.cpp runs Google's Q4_0 GGUF, which is
+over Metal's 12.7 GB limit on a 16 GB Mac, so even its best layer split pages
+(`llama-bench`; first token estimated from its 24–32 tok/s prefill).
 
 ## Architecture
 
