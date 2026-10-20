@@ -183,17 +183,17 @@ final class ANERoutedPrefillBackend {
             for index in 0..<2 {
                 let input = try unsafe wrap(ANEExpertCarrierInput(handle, UInt32(index)), minimum: batchExperts * 2816 * (lanes + 2112) * 2)
                 let output = try unsafe wrap(ANEExpertCarrierOutput(handle, UInt32(index)), minimum: batchExperts * 2816 * lanes * 4)
-                guard let event = context.device.makeSharedEvent() else { throw ModelError.residentBufferWrapFailed }
+                guard let event = context.device.makeSharedEvent() else { throw MetalError.allocationFailed("ANE bank event") }
                 guard let arguments = context.device.makeBuffer(length: argumentEncoder.encodedLength, options: .storageModeShared),
                       let metadata = context.device.makeBuffer(length: 4 * 8, options: .storageModeShared),
                       let validation = context.device.makeBuffer(length: 4, options: .storageModeShared) else {
-                    throw ModelError.residentBufferWrapFailed
+                    throw MetalError.allocationFailed("ANE bank buffers")
                 }
                 built.append(Bank(input: input, output: output, event: event, arguments: arguments, metadata: metadata, validation: validation))
             }
         } catch { unsafe ANEExpertCarrierDestroy(handle); throw error }
         guard let carrierQueue = context.device.makeCommandQueue() else {
-            unsafe ANEExpertCarrierDestroy(handle); throw ModelError.residentBufferWrapFailed
+            unsafe ANEExpertCarrierDestroy(handle); throw MetalError.noQueue
         }
         carrierQueue.label = "ane-fieldfare.routed-prefill.carrier"
         self.carrierQueue = carrierQueue
@@ -251,9 +251,8 @@ final class ANERoutedPrefillBackend {
             unsafe metadata[slot * 2] = UInt32(job?.start ?? 0); unsafe metadata[slot * 2 + 1] = UInt32(job?.count ?? 0)
             argumentEncoder.setBuffer(job?.view.buffer, offset: Int(job?.view.offset ?? 0), index: slot)
         }
-        guard let cb = carrierQueue.makeCommandBuffer(), let enc = cb.makeTracedComputeEncoder() else {
-            throw ModelError.residentBufferWrapFailed
-        }
+        guard let cb = carrierQueue.makeCommandBuffer() else { throw MetalError.commandBufferUnavailable }
+        guard let enc = cb.makeTracedComputeEncoder() else { throw MetalError.encoderUnavailable }
         enc.setComputePipelineState(weightsPipeline)
         enc.setBuffer(bank.arguments, offset: 0, index: 0); enc.setBuffer(bank.input, offset: 0, index: 1)
         enc.setValues(offsetsArray, index: 2)
@@ -304,9 +303,9 @@ final class ANERoutedPrefillBackend {
             let message = unsafe error.map { unsafe String(cString: $0) } ?? "output signal failed"
             unsafe free(UnsafeMutableRawPointer(mutating: error)); throw ANEExecutionError.rejected(message)
         }
-        guard let cb = carrierQueue.makeCommandBuffer() else { throw ModelError.residentBufferWrapFailed }
+        guard let cb = carrierQueue.makeCommandBuffer() else { throw MetalError.commandBufferUnavailable }
         cb.encodeWaitForEvent(bank.event, value: bank.generation)
-        guard let enc = cb.makeTracedComputeEncoder() else { throw ModelError.residentBufferWrapFailed }
+        guard let enc = cb.makeTracedComputeEncoder() else { throw MetalError.encoderUnavailable }
         enc.setComputePipelineState(outputsPipeline)
         enc.setBuffer(bank.output, offset: 0, index: 0); enc.setBuffer(partials, offset: 0, index: 1)
         enc.setBuffer(pairs, offset: 0, index: 2); enc.setBuffer(bank.metadata, offset: 0, index: 3)
@@ -415,10 +414,7 @@ final class ANERoutedPrefillBackend {
                     landed.insert(read)
                 }
                 readNanos += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started
-                guard let view = try model.routedExpertViews(
-                    layer: layer, experts: [Int(group.expert)]).first else {
-                    throw ModelError.residentBufferWrapFailed
-                }
+                let view = try model.routedExpertViews(layer: layer, experts: [Int(group.expert)])[0]
                 for offset in stride(from: 0, to: Int(group.pairCount), by: lanes) {
                     staging.append(Job(view: view, start: Int(group.pairStart) + offset,
                                        count: min(lanes, Int(group.pairCount) - offset)))

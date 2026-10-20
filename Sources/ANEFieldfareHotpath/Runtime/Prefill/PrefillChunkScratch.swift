@@ -57,7 +57,7 @@ struct PrefillChunkScratchBuffers {
                 length: max(elements, 1) * MemoryLayout<Float16>.stride,
                 options: .storageModePrivate)
             else {
-                throw ModelError.residentBufferWrapFailed
+                throw MetalError.allocationFailed("prefill scratch")
             }
             buffer.label = label
             return buffer
@@ -66,7 +66,7 @@ struct PrefillChunkScratchBuffers {
         func sharedBuffer(_ bytes: Int, label: String) throws -> any MTLBuffer {
             guard let buffer = device.makeBuffer(length: max(bytes, 1),
                                                 options: .storageModeShared) else {
-                throw ModelError.residentBufferWrapFailed
+                throw MetalError.allocationFailed("prefill scratch")
             }
             buffer.label = label
             return buffer

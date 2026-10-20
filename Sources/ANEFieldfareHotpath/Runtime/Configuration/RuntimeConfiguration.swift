@@ -5,8 +5,8 @@ public enum RuntimeHeadPath: String, Codable, Sendable {
 
 public enum RuntimeBackend: String, Codable, Sendable {
     case metal
-    /// Routed top-8 prefill on ANE; attention, shared FFN, logits and decode
-    /// remain on the measured Metal companion rail.
+    /// Routed top-8 prefill on the ANE; attention, shared FFN, logits and
+    /// decode stay on Metal.
     case hybridANE = "hybrid-ane"
 }
 
