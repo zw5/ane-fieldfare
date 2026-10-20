@@ -60,7 +60,7 @@ mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
   `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash` (or beside the model), where
   the CLI and the server find it. Without it the model still runs, at half the
   speed. The first run quantizes it to this runtime's 4-bit format into
-  `fieldfare-dflash-int4.bin` (242 MB) in the same directory.
+  `fieldfare-dflash-q4_0.bin` (242 MB) in the same directory.
 
 ## Quick start
 

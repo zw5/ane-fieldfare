@@ -19,8 +19,8 @@ The drafter must be at `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash`.
 
 `ANEFieldfareDFlashCapture` also drives the runtime implementation
 (`Sources/ANEFieldfareHotpath/Runtime/DFlash`). Experts stream through the OS
-page cache; there is no expert cache to size. The drafter's INT4 weights are
-installed on first use as `fieldfare-dflash-int4.bin` next to its checkpoint.
+page cache; there is no expert cache to size. The drafter's Q4_0 weights are
+installed on first use as `fieldfare-dflash-q4_0.bin` next to its checkpoint.
 
 ```bash
 $B verify-check $CK <dir>/code.gen.json [rows]                # teacher-forced verify == greedy decode (rows default 16)

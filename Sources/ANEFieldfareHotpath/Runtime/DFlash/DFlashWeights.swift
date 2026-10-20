@@ -91,7 +91,7 @@ struct DFlashMatrix {
 /// (source fingerprint, config, tensor table) padded to `dataAlignment`, then
 /// the tensors, each 256-byte aligned within the data region.
 struct DFlashWeights {
-    static let fileName = "fieldfare-dflash-int4.bin"
+    static let fileName = "fieldfare-dflash-q4_0.bin"
     /// Version 2 is Q4_0; a version 1 (affine) file is rebuilt.
     static let magic: [UInt8] = Array("GFDFI4".utf8) + [0, 2]
     static let dataAlignment = 16384
