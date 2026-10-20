@@ -115,7 +115,6 @@ let package = Package(
             name: "ANEFieldfareHotpathCLI",
             dependencies: ["ANEFieldfareHotpathCLICore"],
             path: "Sources/ANEFieldfareHotpathCLI",
-            resources: [.copy("Fixtures")],
             swiftSettings: strictSwiftSettings
         ),
         // OpenAI-compatible HTTP API over the same generation loop as the CLI.

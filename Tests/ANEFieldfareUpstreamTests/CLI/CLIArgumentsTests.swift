@@ -1,100 +1,65 @@
+import Foundation
 import Testing
 import ANEFieldfareHotpath
 @testable import ANEFieldfareHotpathCLICore
 
 @Suite struct CLIArgumentsTests {
 
-    /// `auto` only resolves a size where a chunked prefill will run at it.
-    /// Under `--prefill off` the config is `.off` and the size is inert, and an
-    /// image turn there is coerced to the runtime's own chunked default, so the
-    /// resolved number would be announced on stderr and then used by nothing.
+    /// `auto` only resolves a size where a chunked prefill will run at it:
+    /// under `--prefill off` the size is inert, so a resolved number would be
+    /// announced on stderr and then used by nothing. A repeated
+    /// `--prefill-chunk-tokens` is last-one-wins in both orderings; without
+    /// the clear on the integer branch, `auto` survived a later explicit size.
     @Test(arguments: [
-        (prefill: "on", auto: true, resolves: true),
-        (prefill: "off", auto: true, resolves: false),
-        (prefill: "on", auto: false, resolves: false),
-        (prefill: "off", auto: false, resolves: false),
+        (["--prefill", "on", "--prefill-chunk-tokens", "auto"], true),
+        (["--prefill", "off", "--prefill-chunk-tokens", "auto"], false),
+        (["--prefill", "on", "--prefill-chunk-tokens", "64"], false),
+        (["--prefill", "on", "--prefill-chunk-tokens", "auto", "--prefill-chunk-tokens", "64"], false),
+        (["--prefill", "on", "--prefill-chunk-tokens", "64", "--prefill-chunk-tokens", "auto"], true),
     ])
-    func autoResolvesOnlyWhenChunkedPrefillWillRun(
-        testCase: (prefill: String, auto: Bool, resolves: Bool)
-    ) throws {
-        let arguments = try Args.parse([
-            "--model", "m.gturbo", "--prompt", "hi",
-            "--prefill", testCase.prefill,
-            "--prefill-chunk-tokens", testCase.auto ? "auto" : "64",
-        ])
-        #expect(arguments.prefillChunkTokensAuto == testCase.auto)
-        #expect(arguments.resolvesPrefillChunkAuto == testCase.resolves)
+    func autoResolvesOnlyWhenChunkedPrefillWillRun(flags: [String], resolves: Bool) throws {
+        let arguments = try Args.parse(["--model", "m.gturbo", "--prompt", "hi"] + flags)
+        #expect(arguments.resolvesPrefillChunkAuto == resolves)
+        if flags.last == "64" { #expect(arguments.prefillChunkTokens == 64) }
     }
 
-    /// A repeated `--prefill-chunk-tokens` is last-one-wins in both orderings.
-    /// Without the clear on the integer branch, `auto` survives a later
-    /// explicit size and the run resolves its own size over the one asked for.
-    @Test func lastPrefillChunkTokensFlagWinsInBothOrderings() throws {
-        let explicitLast = try Args.parse([
-            "--model", "m.gturbo", "--prompt", "hi",
-            "--prefill-chunk-tokens", "auto",
-            "--prefill-chunk-tokens", "64",
-        ])
-        #expect(explicitLast.prefillChunkTokens == 64)
-        #expect(explicitLast.prefillChunkTokensAuto == false)
-        #expect(explicitLast.resolvesPrefillChunkAuto == false)
-
-        let autoLast = try Args.parse([
-            "--model", "m.gturbo", "--prompt", "hi",
-            "--prefill-chunk-tokens", "64",
-            "--prefill-chunk-tokens", "auto",
-        ])
-        #expect(autoLast.prefillChunkTokensAuto)
-        #expect(autoLast.resolvesPrefillChunkAuto)
-    }
-
-    @Test func generationOptionsParseAndStopsRepeat() throws {
-        let arguments = try Args.parse([
-            "--model", "m.gturbo", "--prompt", "hi",
-            "--max-new", "32", "--max-context", "512",
-            "--temperature", "0", "--top-k", "40", "--top-p", "0.95",
-            "--repetition-penalty", "1.1", "--seed", "42",
-            "--stop", "A", "--stop", "B", "--quiet",
-        ])
-        #expect(arguments.maxNew == 32)
-        #expect(arguments.maxContext == 512)
-        #expect(arguments.temperature == 0)
-        #expect(arguments.topK == 40)
-        #expect(arguments.topP == 0.95)
-        #expect(arguments.repetitionPenalty == 1.1)
-        #expect(arguments.seed == 42)
-        #expect(arguments.stops == ["A", "B"])
-        #expect(arguments.quiet)
-    }
-
-    @Test func topKZeroRequiresTopPToBeDisabled() throws {
+    /// Sampler limits the kernels cannot honour are refused at parse time.
+    @Test func samplerLimitsAreEnforced() throws {
         let disabled = try Args.parse([
-            "--model", "m.gturbo", "--prompt", "hi",
-            "--top-k", "0", "--top-p", "1",
+            "--model", "m.gturbo", "--prompt", "hi", "--top-k", "0", "--top-p", "1",
         ])
         #expect(disabled.topK == nil)
-        #expect(disabled.topP == 1)
-
         #expect(throws: ArgsError.self) {
-            _ = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "hi", "--top-k", "0",
-            ])
+            _ = try Args.parse(["--model", "m.gturbo", "--prompt", "hi", "--top-k", "0"])
+        }
+        #expect(throws: ArgsError.invalidValue(flag: "--top-k", value: "257")) {
+            _ = try Args.parse(["--model", "m.gturbo", "--prompt", "hi", "--top-k", "257"])
         }
     }
 
-    @Test func topKAboveKernelLimitRejected() {
-        #expect(throws: ArgsError.invalidValue(flag: "--top-k", value: "257")) {
-            _ = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "hi", "--top-k", "257",
-            ])
+    @Test func drafterIsFoundBesideTheModelByDefault() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("drafter-location-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = root.appendingPathComponent("gturbo/gemma4.gturbo").path
+        let drafter = root.appendingPathComponent("dflash/\(DrafterLocation.directoryName)")
+        let missing = try Args.parse(["--model", model, "--chat-prompt", "hi"])
+        #expect(missing.drafter == nil && missing.drafterOrigin == Args.DrafterOrigin.missing)
+
+        try FileManager.default.createDirectory(at: drafter, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: drafter.appendingPathComponent("config.json"))
+        let found = try Args.parse(["--model", model, "--chat-prompt", "hi"])
+        #expect(found.drafter == drafter.standardizedFileURL.path && found.drafterOrigin == Args.DrafterOrigin.found)
+        let off = try Args.parse(["--model", model, "--chat-prompt", "hi", "--drafter", "off"])
+        #expect(off.drafter == nil && off.drafterOrigin == Args.DrafterOrigin.off)
+        // Requests speculation cannot serve decode plainly instead of failing.
+        for extra in [["--repetition-penalty", "1.1"], ["--image", "x.png"], ["--prefill", "off"]] {
+            let plain = try Args.parse(["--model", model, "--chat-prompt", "hi"] + extra)
+            #expect(plain.drafter == nil && plain.drafterOrigin == Args.DrafterOrigin.off)
         }
     }
 
     @Test func drafterIsTextOnlyAndTakesNoRepetitionPenalty() throws {
-        let parsed = try Args.parse([
-            "--model", "m.gturbo", "--chat-prompt", "hi", "--temperature", "0", "--drafter", "d",
-        ])
-        #expect(parsed.drafter == "d")
         // Sampled speculative decoding draws with the target's noise.
         let sampled = try Args.parse(["--model", "m.gturbo", "--chat-prompt", "hi", "--drafter", "d"])
         #expect(sampled.drafter == "d" && sampled.temperature > 0)
@@ -103,166 +68,39 @@ import ANEFieldfareHotpath
                                 "--repetition-penalty", "1.1"])
         }
         #expect(throws: ArgsError.mutuallyExclusive("--drafter", "--image")) {
-            _ = try Args.parse([
-                "--model", "m.gturbo", "--chat-prompt", "hi", "--temperature", "0",
-                "--drafter", "d", "--image", "x.png",
-            ])
+            _ = try Args.parse(["--model", "m.gturbo", "--chat-prompt", "hi", "--drafter", "d",
+                                "--image", "x.png"])
         }
         #expect(throws: ArgsError.mutuallyExclusive("--drafter", "--prefill off")) {
-            _ = try Args.parse([
-                "--model", "m.gturbo", "--chat-prompt", "hi", "--temperature", "0",
-                "--drafter", "d", "--prefill", "off",
-            ])
+            _ = try Args.parse(["--model", "m.gturbo", "--chat-prompt", "hi", "--drafter", "d",
+                                "--prefill", "off"])
         }
-    }
-
-    @Test func runtimeOptionsReachTypedConfiguration() throws {
-        let arguments = try Args.parse([
-            "--model", "m.gturbo", "--prompt", "hi",
-            "--prefill", "off",
-            "--prefill-chunk-tokens", "64",
-        ])
-
-        #expect(arguments.prefillPolicy == .off)
-        #expect(arguments.prefillChunkTokens == 64)
-
-        let runtime = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: true)
-        #expect(runtime.prefillPolicy == .off)
-        #expect(runtime.prefillChunkTokens == 64)
-        #expect(runtime.headPath == .logits)
-    }
-
-    @Test func everySupportedRuntimeOptionParses() throws {
-        for value in RuntimeConfiguration.allowedPrefillChunkTokens {
-            let arguments = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "hi",
-                "--prefill-chunk-tokens", "\(value)",
-            ])
-            #expect(arguments.prefillChunkTokens == value)
-        }
-        #expect(try Args.parse([
-            "--model", "m.gturbo", "--prompt", "hi", "--prefill", "on",
-        ]).prefillPolicy == .chunked)
-        #expect(try Args.parse([
-            "--model", "m.gturbo", "--prompt", "hi", "--prefill", "off",
-        ]).prefillPolicy == .off)
     }
 
     @Test func unsupportedRuntimeOptionValuesAreRejected() {
-        let invalidValues = [
-            ("--prefill", "yes"),
-            ("--prefill-chunk-tokens", "8192"),
-        ]
-        for (flag, value) in invalidValues {
+        for (flag, value) in [("--prefill", "yes"), ("--prefill-chunk-tokens", "8192")] {
             #expect(throws: ArgsError.invalidValue(flag: flag, value: value)) {
-                _ = try Args.parse([
-                    "--model", "m.gturbo", "--prompt", "hi", flag, value,
-                ])
+                _ = try Args.parse(["--model", "m.gturbo", "--prompt", "hi", flag, value])
             }
         }
-
-    }
-
-    @Test func programmaticArgumentsCannotReachRuntimePreconditions() {
+        // Programmatic arguments cannot reach the runtime's preconditions either.
         var arguments = Args(model: "m.gturbo", prompt: "hi")
         arguments.prefillChunkTokens = 8192
-        #expect(throws: ArgsError.invalidValue(
-            flag: "--prefill-chunk-tokens", value: "8192")) {
+        #expect(throws: ArgsError.invalidValue(flag: "--prefill-chunk-tokens", value: "8192")) {
             _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         }
     }
 
-    @Test func unsupportedSelectorsAreRejected() {
-        for flag in ["--runtime-profile", "--experiment-id", "-h"] {
-            #expect(throws: ArgsError.unknownFlag(flag)) {
-                _ = try Args.parse(["--model", "m.gturbo", "--prompt", "hi", flag])
-            }
+    @Test(arguments: [
+        (["--prompt", "X", "--messages-file", "Y.json"], ArgsError.mutuallyExclusive("--prompt", "--messages-file")),
+        (["--chat-prompt", "X", "--messages-file", "Y.json"],
+         ArgsError.mutuallyExclusive("--chat-prompt", "--messages-file")),
+        (["--prompt", "X", "--chat-prompt", "Y"], ArgsError.mutuallyExclusive("--prompt", "--chat-prompt")),
+        (["--prompt", "X", "--image", "x.png"], ArgsError.mutuallyExclusive("--prompt", "--image")),
+    ])
+    func promptModesAreMutuallyExclusive(flags: [String], error: ArgsError) {
+        #expect(throws: error) {
+            _ = try Args.parse(["--model", "m.gturbo"] + flags)
         }
     }
-
-    @Test func modelAndPromptAreRequired() {
-        #expect(throws: ArgsError.requiredMissing("--model")) {
-            _ = try Args.parse(["--prompt", "hi"])
-        }
-        #expect(throws: ArgsError.modeMissing) {
-            _ = try Args.parse(["--model", "m.gturbo"])
-        }
-    }
-
-    @Test func promptAndMessagesFileAreMutuallyExclusive() {
-        #expect(throws: ArgsError.mutuallyExclusive("--prompt", "--messages-file")) {
-            _ = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "hi",
-                "--messages-file", "chat.json",
-            ])
-        }
-    }
-    @Test func imageChatOptionsPreserveOrderAndResidency() throws {
-        let a = try Args.parse([
-            "--model", "m.gturbo",
-            "--image", "first.png",
-            "--chat-prompt", "compare",
-            "--image", "second.jpg",
-            "--vision-pack", "vision.gturbo",
-            "--vision-residency", "keep-ready",
-        ])
-        #expect(a.chatPrompt == "compare")
-        #expect(a.images == ["first.png", "second.jpg"])
-        #expect(a.visionPack == "vision.gturbo")
-        #expect(a.visionResidency == .keepReady)
-    }
-
-    @Test func imagesRejectRawAndMessagesModesButNotACount() {
-        #expect(throws: ArgsError.self) {
-            _ = try Args.parse([
-                "--model", "m.gturbo", "--prompt", "raw", "--image", "x.png",
-            ])
-        }
-        #expect(throws: ArgsError.self) {
-            _ = try Args.parse([
-                "--model", "m.gturbo", "--messages-file", "m.json",
-                "--image", "x.png",
-            ])
-        }
-        // No fixed image count: what bounds a request is the context, checked
-        // against the rendered prompt once token costs are known. The server
-        // moved to a context-derived budget and the CLI follows.
-        let many = try? Args.parse([
-            "--model", "m.gturbo", "--chat-prompt", "x",
-            "--image", "1", "--image", "2", "--image", "3",
-            "--image", "4", "--image", "5", "--image", "6",
-        ])
-        #expect(many?.images.count == 6)
-    }
-
-    @Test func mutual_exclusion_chatPromptVsMessagesFile() {
-        do {
-            _ = try Args.parse([
-                "--model", "m.gturbo",
-                "--chat-prompt", "X",
-                "--messages-file", "Y.json",
-            ])
-            Issue.record("expected ArgsError.mutuallyExclusive")
-        } catch let e as ArgsError {
-            #expect(e == .mutuallyExclusive("--chat-prompt", "--messages-file"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test func mutual_exclusion_promptVsChatPrompt() {
-        do {
-            _ = try Args.parse([
-                "--model", "m.gturbo",
-                "--prompt", "X",
-                "--chat-prompt", "Y",
-            ])
-            Issue.record("expected ArgsError.mutuallyExclusive")
-        } catch let e as ArgsError {
-            #expect(e == .mutuallyExclusive("--prompt", "--chat-prompt"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
 }

@@ -57,39 +57,17 @@ struct PackedExpertsLayout: Sendable {
 enum PackedExpertsLayoutReader {
     static let defaultMaxBytes: UInt64 = 16 * 1024 * 1024
 
-    static func load(directoryURL: URL,
-                            maxBytes: UInt64 = defaultMaxBytes) throws -> PackedExpertsLayout {
-        try load(directoryURL: directoryURL, manifest: nil, maxBytes: maxBytes)
-    }
-
-    package static func load(directoryURL: URL,
-                             manifest: Manifest,
-                             maxBytes: UInt64 = defaultMaxBytes) throws -> PackedExpertsLayout {
-        try load(directoryURL: directoryURL, manifest: Optional(manifest), maxBytes: maxBytes)
-    }
-
-    private static func load(directoryURL: URL,
-                             manifest: Manifest?,
-                             maxBytes: UInt64) throws -> PackedExpertsLayout {
-        let directory = try GTurboModelDirectory(rootURL: directoryURL)
-        let data = try directory.readMetadata(
-            "packed_experts/layout.json", maxBytes: maxBytes)
-        return try decode(data: data, manifest: manifest)
-    }
-
     package static func decode(data: Data,
-                               manifest: Manifest?) throws -> PackedExpertsLayout {
+                               manifest: Manifest) throws -> PackedExpertsLayout {
         let wire: GTurboPackedExpertsLayoutV1
         do {
             wire = try GTurboPackedExpertsLayoutCodec.decode(data)
-            if let manifest {
-                try GTurboV1StructuralValidator.crossValidate(
-                    manifestNumLayers: manifest.numLayers,
-                    manifestExpertsPerLayer: manifest.expertsPerLayer,
-                    manifestExpertStride: manifest.expertStride,
-                    manifestFileSizes: manifest.files.mapValues(\.size),
-                    layout: wire)
-            }
+            try GTurboV1StructuralValidator.crossValidate(
+                manifestNumLayers: manifest.numLayers,
+                manifestExpertsPerLayer: manifest.expertsPerLayer,
+                manifestExpertStride: manifest.expertStride,
+                manifestFileSizes: manifest.files.mapValues(\.size),
+                layout: wire)
         } catch {
             throw ModelError.indexCorrupt(detail: "layout.json: \(error)")
         }
@@ -114,5 +92,4 @@ enum PackedExpertsLayoutReader {
                                    expertsPerLayer: wire.expertsPerLayer,
                                    layers: layers)
     }
-
 }

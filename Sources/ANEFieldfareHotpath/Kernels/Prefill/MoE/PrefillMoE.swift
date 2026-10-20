@@ -9,32 +9,25 @@ final class PrefillMoE {
     }
 
     func encodeReduceTokenMajor(commandBuffer: any MTLCommandBuffer,
-                                       routePartials: any MTLBuffer,
-                                       routePartialsOffset: Int = 0,
-                                       routeWeights: any MTLBuffer,
-                                       routeWeightsOffset: Int = 0,
-                                       h2: any MTLBuffer,
-                                       h2Offset: Int = 0,
-                                       queryCount: UInt32,
-                                       topK: UInt32,
-                                       d: UInt32) {
+                                routePartials: any MTLBuffer,
+                                routeWeights: any MTLBuffer,
+                                h2: any MTLBuffer,
+                                queryCount: UInt32,
+                                topK: UInt32,
+                                d: UInt32) {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(topK > 0, "topK must be positive")
         precondition(d > 0, "D must be positive")
         guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(reducePSO)
-        enc.setBuffer(routePartials, offset: routePartialsOffset, index: 0)
-        enc.setBuffer(routeWeights, offset: routeWeightsOffset, index: 1)
-        enc.setBuffer(h2, offset: h2Offset, index: 2)
-        let tVar = queryCount
-        let topKVar = topK
-        let dVar = d
-        enc.setValue(tVar, index: 3)
-        enc.setValue(topKVar, index: 4)
-        enc.setValue(dVar, index: 5)
+        enc.setBuffer(routePartials, offset: 0, index: 0)
+        enc.setBuffer(routeWeights, offset: 0, index: 1)
+        enc.setBuffer(h2, offset: 0, index: 2)
+        enc.setValue(queryCount, index: 3)
+        enc.setValue(topK, index: 4)
+        enc.setValue(d, index: 5)
         enc.dispatchThreads(MTLSize(width: Int(d), height: Int(queryCount), depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         enc.endEncoding()
     }
-
 }

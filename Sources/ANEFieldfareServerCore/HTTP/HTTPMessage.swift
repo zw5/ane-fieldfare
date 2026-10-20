@@ -10,22 +10,11 @@ public struct HTTPHeaders: Sendable, Equatable {
     public struct Field: Sendable, Equatable {
         public let name: String
         public let value: String
-
-        public init(name: String, value: String) {
-            self.name = name
-            self.value = value
-        }
     }
 
-    public private(set) var fields: [Field]
+    public private(set) var fields: [Field] = []
 
-    public init(_ fields: [Field] = []) {
-        self.fields = fields
-    }
-
-    public init(_ pairs: [(String, String)]) {
-        self.fields = pairs.map { Field(name: $0.0, value: $0.1) }
-    }
+    public init() {}
 
     public mutating func add(_ name: String, _ value: String) {
         fields.append(Field(name: name, value: value))

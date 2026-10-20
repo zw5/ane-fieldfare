@@ -107,14 +107,11 @@ import ANEFieldfareValidationSupport
             return
         }
 
+        // Whole-stride equality against references built from the sentinel
+        // inputs also proves the padding was left alone.
         #expect(Fp16Buffer.readHalf(hiddenBlock, count: rows * hiddenStride) == hiddenRef)
         #expect(Fp16Buffer.readHalf(h2Block, count: rows * h2Stride) == h2)
         #expect(Fp16Buffer.readHalf(h1Block, count: rows * h1Stride) == h1)
-        Self.assertPaddingUnchanged(hiddenBlock,
-                                    original: hidden,
-                                    rows: rows,
-                                    rowStride: hiddenStride,
-                                    usedPerRow: Self.d)
     }
 
     private static func makeBlock(rows: Int,
@@ -137,20 +134,6 @@ import ANEFieldfareValidationSupport
                                  rowStride: Int) {
         for i in 0..<source.count {
             destination[row * rowStride + i] = source[i]
-        }
-    }
-
-    private static func assertPaddingUnchanged(_ buffer: any MTLBuffer,
-                                               original: [Float16],
-                                               rows: Int,
-                                               rowStride: Int,
-                                               usedPerRow: Int) {
-        let ptr = unsafe buffer.contents().bindMemory(to: Float16.self, capacity: rows * rowStride)
-        for row in 0..<rows {
-            for i in usedPerRow..<rowStride {
-                unsafe #expect(ptr[row * rowStride + i] == original[row * rowStride + i],
-                        "padding changed at row=\(row) i=\(i)")
-            }
         }
     }
 }

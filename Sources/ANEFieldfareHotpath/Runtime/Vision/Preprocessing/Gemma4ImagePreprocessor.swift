@@ -27,56 +27,22 @@ public final class Gemma4ImagePreprocessor {
         self.gpuResize = gpuResize
     }
 
-    public func preprocess(fileURL: URL) throws -> VisionPixelBuffer {
-        try preprocess(VisionImageSource(fileURL: fileURL))
-    }
-
-    public func preprocess(_ image: VisionImageSource) throws -> VisionPixelBuffer {
-        try preprocess(plan(image))
-    }
-
     public func plan(fileURL: URL) throws -> VisionImagePlan {
-        try plan(VisionImageSource(fileURL: fileURL))
-    }
-
-    public func plan(_ image: VisionImageSource) throws -> VisionImagePlan {
-        let started = ContinuousClock.now
-        let opened = try image.open(
+        let opened = try VisionImageSource(fileURL: fileURL).open(
             maximumEncodedBytes: metadataReader.limits.maximumEncodedBytes)
         let metadata = try metadataReader.read(opened: opened)
         let geometry = try Gemma4ImageGeometry(
             sourceWidth: metadata.orientedWidth,
             sourceHeight: metadata.orientedHeight,
             config: config)
-        return VisionImagePlan(
-            metadata: metadata, geometry: geometry, opened: opened, started: started)
+        return VisionImagePlan(metadata: metadata, geometry: geometry, opened: opened)
     }
 
-    /// The size ImageIO is asked to decode at.
-    ///
-    /// **Known gap, deliberately left open.** For a source larger than the
-    /// target, ImageIO's own scaler does the reduction and `TorchBicubicResize`
-    /// — the stage that exists to match the reference implementation — runs on
-    /// pre-scaled pixels. A 4032x3024 photo bound for 912x672 is reduced
-    /// 4032->912 by ImageIO and only 684->672 by bicubic, so downscales are not
-    /// bit-comparable with the pinned Transformers/PIL reference. Every corpus
-    /// fixture is an upscale, so this is unmeasured as well as unfixed.
-    ///
-    /// Handing the whole reduction to bicubic restores parity and was tried:
-    /// it costs 4.5 s for a 1600x1200 source, 18.6 s at 12 MP and 61 s with
-    /// 240 MB of footprint at 48 MP, because the resampler is CPU and runs at
-    /// about 1.5 us per source pixel. That is far worse than the gap it closes.
-    /// Closing it properly needs a fast resampler (vImage or GPU) first.
-    static func decodeMaxPixelSize(
-        metadata: VisionImageMetadata,
-        geometry: Gemma4ImageGeometry
-    ) -> Int {
-        // The whole reduction belongs to our filter, which is the pinned
-        // reference's. Decoding at the target instead handed it to ImageIO's
-        // undocumented scaler: on a UI screenshot that changed the model's
-        // transcription, dropping whole lines of text. It was reverted once for
-        // costing seconds — a debug-build measurement. Release, on the GPU, it
-        // is a few milliseconds.
+    /// The size ImageIO is asked to decode at: the full oriented source. The
+    /// whole reduction belongs to our bicubic filter, which matches the pinned
+    /// reference; letting ImageIO's scaler do it changed the model's reading
+    /// of a UI screenshot, dropping whole lines of text.
+    static func decodeMaxPixelSize(metadata: VisionImageMetadata) -> Int {
         max(metadata.orientedWidth, metadata.orientedHeight)
     }
 
@@ -88,7 +54,7 @@ public final class Gemma4ImagePreprocessor {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize:
-                Self.decodeMaxPixelSize(metadata: metadata, geometry: geometry),
+                Self.decodeMaxPixelSize(metadata: metadata),
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceShouldAllowFloat: false,
         ]
@@ -100,12 +66,9 @@ public final class Gemma4ImagePreprocessor {
         let sourceRowBytes = try checkedMultiply(decoded.width, 4)
         let sourceBytes = try checkedMultiply(sourceRowBytes, decoded.height)
         // Decoded straight into GPU-visible memory when the GPU filter will
-        // read it, which removes one copy but not the fundamental cost: ImageIO
-        // materialises a full-resolution CGImage and `draw` needs both it and
-        // this surface live at once. For a 48 MP source that is two ~192 MB
-        // surfaces, about 400 MB, on a machine already holding the model — the
-        // reason the decoded-byte ceiling is what it is, and why both are
-        // counted in `allocatedBytes` below rather than only ours.
+        // read it. ImageIO's full-resolution CGImage and this surface are live
+        // at once during `draw` (~400 MB for a 48 MP source), which is what the
+        // decoded-byte ceiling bounds.
         let sourceBuffer = gpuResize == nil
             ? nil
             : device.makeBuffer(length: sourceBytes, options: .storageModeShared)
@@ -135,19 +98,9 @@ public final class Gemma4ImagePreprocessor {
         let rgbaBytes = try checkedMultiply(rowBytes, geometry.processedHeight)
         let rgba = UnsafeMutableRawPointer.allocate(byteCount: rgbaBytes, alignment: 64)
         defer { unsafe rgba.deallocate() }
-        // Same filter either way — the GPU path applies the weights this one
-        // builds, and the parity tests assert byte equality — so this chooses
-        // only where the arithmetic runs.
-        // Both surfaces plus whatever the resize holds. Reporting only our own
-        // allocation understated the peak by about half, and a test uses this
-        // number as a footprint guard.
-        let decodedSurfaceBytes = sourceBytes
-        var resizeScratchBytes = 0
+        // Same filter either way: the GPU path applies the weights the CPU
+        // path builds, so this chooses only where the arithmetic runs.
         if let gpuResize, let sourceBuffer {
-            resizeScratchBytes = gpuResize.scratchBytes(
-                sourceWidth: decoded.width, sourceHeight: decoded.height,
-                destinationWidth: geometry.processedWidth,
-                destinationHeight: geometry.processedHeight)
             try unsafe gpuResize.resize(
                 sourceBuffer: sourceBuffer,
                 sourceWidth: decoded.width,
@@ -158,7 +111,7 @@ public final class Gemma4ImagePreprocessor {
                 destinationHeight: geometry.processedHeight,
                 destinationRowBytes: rowBytes)
         } else {
-            resizeScratchBytes = unsafe TorchBicubicResize.resize(
+            unsafe TorchBicubicResize.resize(
                 source: sourceRGBA.assumingMemoryBound(to: UInt8.self),
                 sourceWidth: decoded.width,
                 sourceHeight: decoded.height,
@@ -186,16 +139,7 @@ public final class Gemma4ImagePreprocessor {
             patches: patches,
             positions: positions)
         return VisionPixelBuffer(
-            patchesBF16: patches,
-            positionsInt32x2: positions,
-            metadata: metadata,
-            geometry: geometry,
-            wallNanoseconds: nanoseconds(plan.started.duration(to: .now)),
-            // Both full-resolution surfaces: ImageIO's decoded CGImage and
-            // ours, which `draw` holds simultaneously.
-            allocatedBytes: decodedSurfaceBytes + sourceBytes + rgbaBytes
-                + resizeScratchBytes
-                + patchBytes + positionBytes)
+            patchesBF16: patches, positionsInt32x2: positions, geometry: geometry)
     }
 
     private func patchify(
@@ -236,12 +180,5 @@ public final class Gemma4ImagePreprocessor {
             throw VisionImageError.invalidMetadata("buffer size overflow")
         }
         return value
-    }
-
-    private func nanoseconds(_ duration: Duration) -> UInt64 {
-        let components = duration.components
-        let seconds = UInt64(max(0, components.seconds))
-        let fractional = UInt64(max(0, components.attoseconds / 1_000_000_000))
-        return seconds * 1_000_000_000 + fractional
     }
 }

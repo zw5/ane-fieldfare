@@ -4,13 +4,11 @@ using namespace metal;
 // Separable antialiased bicubic resize, in the same fixed-point arithmetic as
 // `TorchBicubicResize`.
 //
-// The weights are built on the CPU — they depend only on the axis ratio, so
-// there are `dst` of them per axis, not per pixel — and applied here. Every
-// step mirrors the CPU implementation exactly: Int16 weights, an Int32
-// accumulator seeded with the rounding term, an arithmetic shift by the axis
-// precision, and a clamp to 0...255. That is what makes the GPU output
-// byte-identical rather than merely close, which in turn is what lets the CPU
-// path stay the oracle in tests.
+// The weights are built on the CPU (they depend only on the axis ratio) and
+// applied here. Every step mirrors the CPU implementation exactly: Int16
+// weights, an Int32 accumulator seeded with the rounding term, an arithmetic
+// shift by the axis precision, and a clamp to 0...255, so the output is
+// byte-identical rather than merely close.
 //
 // Two passes, horizontal then vertical, because a separable filter costs
 // `src*dst_w + dst_w*dst_h` taps rather than the product.

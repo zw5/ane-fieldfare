@@ -2,20 +2,12 @@ import Foundation
 import Accelerate
 public import ANEFieldfareHotpath
 
-/// FP32 reference for the fused MoE FFN: top-k routed experts + 1 shared
-/// expert, each with gate / up / down projections, GeGLU activation, and a
-/// weighted combine into the residual stream.
-///
-/// Composed from `DequantInt4GemvRef` (vDSP_dotpr after bulk affine dequant)
-/// + a vForce-based `gelu_pytorch_tanh`. The kernel inlines the dequant +
-/// gate*up*down chain in one threadgroup per output element; this reference
-/// materializes the F-dim intermediate per expert and uses Accelerate
-/// primitives for the inner products. Different code shape, different
-/// summation order — bugs that depend on the in-flight dequant pattern won't
-/// replicate here.
+/// FP32 reference for the MoE FFN: gate / up / down INT4-affine projections
+/// with GeGLU, composed from `DequantInt4GemvRef`. It materializes the F-dim
+/// intermediate per expert, so its summation order differs from the kernel's.
 public enum MoeRef {
-    public static let geluCoeff: Float = 0.7978845608028654  // sqrt(2/π)
-    public static let geluCubic: Float = 0.044715
+    static let geluCoeff: Float = 0.7978845608028654  // sqrt(2/π)
+    static let geluCubic: Float = 0.044715
 
     /// Per-element `gelu_pytorch_tanh(x) = 0.5 * x * (1 + tanh(c * (x + k * x^3)))`.
     public static func geluTanh(_ x: [Float]) -> [Float] {
@@ -51,9 +43,7 @@ public enum MoeRef {
         return DequantInt4GemvRef.apply(weightRows: downRows, x: act, n: f)
     }
 
-    /// Routed-only sibling of `applyStreamed`. Gemma 4's parallel-MoE block
-    /// computes dense MLP and routed branches separately, then sums; this is
-    /// the routed-only half.
+    /// Routed half of Gemma 4's parallel-MoE block:
     /// `y = residual + Σ wₑ · routed_e(x)`.
     public static func applyStreamedRouted(
         x: [Float],
@@ -86,5 +76,4 @@ public enum MoeRef {
         }
         return y
     }
-
 }

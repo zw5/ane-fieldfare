@@ -7,9 +7,10 @@ final class PrefillSIMDAttentionTests: XCTestCase {
         let context = try MetalContext()
         let kernel = try PrefillAttention(context: context)
         for d in [256, 512] {
+            // A wrapped 16-slot ring under a 9-key window, and a wrapped
+            // 2048-slot ring with a bidirectional image block.
             for (start, count, window, capacity, imageBlock) in [
-                (0,7,0,0,false), (40,7,9,16,false), (4092,7,1024,2048,false),
-                (3,7,9,16,true), (4092,7,1024,2048,true)
+                (40,7,9,16,false), (4092,7,1024,2048,true)
             ] {
                 let heads = 4, kvHeads = 2, valid = start + count
                 let slots = capacity == 0 ? valid : capacity
@@ -29,21 +30,16 @@ final class PrefillSIMDAttentionTests: XCTestCase {
                 let qb = try buffer(q), kb = try buffer(k), vb = try buffer(v)
                 let out = try buffer(Array(repeating: .nan, count: q.count))
                 let reference = try buffer(Array(repeating: .nan, count: q.count))
+                let params = PrefillAttentionParams(startPosition: UInt32(start), queryCount: UInt32(count), headDim: UInt32(d),
+                    numQHeads: UInt32(heads), numKVHeads: UInt32(kvHeads), kvValidCount: UInt32(valid), slidingWindow: UInt32(window),
+                    kvTokenStrideElements: UInt32(kvHeads*d), qTokenStrideElements: UInt32(heads*d), oTokenStrideElements: UInt32(heads*d), scale: 1,
+                    bidirectionalBlockStart: UInt32(imageBlock ? start : 0),
+                    bidirectionalBlockEnd: UInt32(imageBlock ? valid : 0))
                 let cb = try XCTUnwrap(context.queue.makeCommandBuffer())
-                try kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: out,
-                    params: PrefillAttentionParams(startPosition: UInt32(start), queryCount: UInt32(count), headDim: UInt32(d),
-                        numQHeads: UInt32(heads), numKVHeads: UInt32(kvHeads), kvValidCount: UInt32(valid), slidingWindow: UInt32(window),
-                        kvTokenStrideElements: UInt32(kvHeads*d), qTokenStrideElements: UInt32(heads*d), oTokenStrideElements: UInt32(heads*d), scale: 1,
-                        bidirectionalBlockStart: UInt32(imageBlock ? start : 0),
-                        bidirectionalBlockEnd: UInt32(imageBlock ? valid : 0)),
-                    kvRingCapacity: UInt32(capacity), layerKind: .slidingWindow, path: .causalSIMD)
-                try kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: reference,
-                    params: PrefillAttentionParams(startPosition: UInt32(start), queryCount: UInt32(count), headDim: UInt32(d),
-                        numQHeads: UInt32(heads), numKVHeads: UInt32(kvHeads), kvValidCount: UInt32(valid), slidingWindow: UInt32(window),
-                        kvTokenStrideElements: UInt32(kvHeads*d), qTokenStrideElements: UInt32(heads*d), oTokenStrideElements: UInt32(heads*d), scale: 1,
-                        bidirectionalBlockStart: UInt32(imageBlock ? start : 0),
-                        bidirectionalBlockEnd: UInt32(imageBlock ? valid : 0)),
-                    kvRingCapacity: UInt32(capacity), layerKind: .slidingWindow, path: .causalTiled)
+                for (output, path) in [(out, RuntimePrefillAttentionPath.causalSIMD), (reference, .causalTiled)] {
+                    try kernel.encodeCausal(commandBuffer: cb, q: qb, k: kb, v: vb, out: output, params: params,
+                        kvRingCapacity: UInt32(capacity), layerKind: .slidingWindow, path: path)
+                }
                 cb.commit(); cb.waitUntilCompleted(); XCTAssertNil(cb.error)
                 unsafe XCTAssertEqual(Data(bytes: out.contents(), count: out.length),
                                Data(bytes: reference.contents(), count: reference.length),

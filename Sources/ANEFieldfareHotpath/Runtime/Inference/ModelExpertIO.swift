@@ -80,11 +80,4 @@ extension Model {
     public func prefetchRoutedExperts(layer: Int, experts: [Int]) throws {
         try expertLayer(layer).prefetch(experts)
     }
-
-    /// Reads whatever of `experts` is absent and returns their buffers.
-    public func fetchRoutedExperts(layer: Int, experts: [Int]) async throws -> [TensorView] {
-        try await readRoutedExperts(layer: layer,
-                                    experts: nonResidentRoutedExperts(layer: layer, experts: experts))
-        return try routedExpertViews(layer: layer, experts: experts)
-    }
 }

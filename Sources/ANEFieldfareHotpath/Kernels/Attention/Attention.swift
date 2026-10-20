@@ -14,8 +14,8 @@ struct AttentionSplitGeometry: Sendable, Equatable {
 /// Swift wrapper for sliding-window and full-causal decode attention.
 ///
 /// The kernels assume a single decoded query token (`M_q = 1`) and a
-/// contiguous KV cache of length `seqLen`. The MPP-tensor-core prefill path
-/// (`M_q > 1`) is separate.
+/// contiguous KV cache of length `seqLen`. Prefill (`M_q > 1`) is
+/// `PrefillAttention`.
 ///
 /// Buffer contracts (FP16 throughout):
 ///   - `q`   : `[numQHeads, headDim]`
@@ -28,7 +28,6 @@ final class Attention {
     private let psoPartial: any MTLComputePipelineState
     private let psoGQAPartial: any MTLComputePipelineState
     private let psoCombine: any MTLComputePipelineState
-    private let psoPartialSWA: any MTLComputePipelineState
     private let psoPartialFull: any MTLComputePipelineState
     private let psoGQAPartialSWA: any MTLComputePipelineState
     private let psoGQAPartialSWAChunks16: any MTLComputePipelineState
@@ -49,7 +48,6 @@ final class Attention {
     static let maxQHeads = 16
     static let maxHeadDim = 512
     static let maxChunks = 64
-    /// Full attention uses 16 base chunks by default.
     private static let defaultFullChunks = 16
     private static let defaultGQASWAChunks = 8
 
@@ -65,11 +63,6 @@ final class Attention {
         self.psoPartial = try context.pipeline("attention_decode_partial")
         self.psoGQAPartial = try context.pipeline("attention_decode_gqa_swa_partial")
         self.psoCombine = try context.pipeline("attention_decode_combine")
-        self.psoPartialSWA = try Self.specializedPipeline(context,
-                                                          "attention_decode_partial",
-                                                          headDim: 256,
-                                                          numQHeads: 16,
-                                                          numKVHeads: 8)
         self.psoPartialFull = try Self.specializedPipeline(context,
                                                            "attention_decode_partial",
                                                            headDim: 512,
@@ -128,7 +121,7 @@ final class Attention {
 
     /// Number of K/V chunks for a range of `effLen` positions — the split
     /// factor used by the production split path.
-    static func chunkCount(effLen: Int, preferGQASWA: Bool = false) -> Int {
+    static func chunkCount(effLen: Int, preferGQASWA: Bool) -> Int {
         let eff = max(1, effLen)
         let defaultChunks = preferGQASWA ? defaultGQASWAChunks : defaultFullChunks
         return max(1, min(defaultChunks, min(maxChunks, eff)))
@@ -159,9 +152,6 @@ final class Attention {
 
     /// Sliding-window attention. `window` caps the K/V positions to the most
     /// recent `window` entries (`[max(0, seqLen-window), seqLen)`).
-    /// `scale` defaults to `rsqrt(head_dim)` for generic callers;
-    /// Gemma 4 callers pass 1.0 because the model's configured attention scale
-    /// is 1.0.
     func encodeSWA(commandBuffer: any MTLCommandBuffer,
                           q: any MTLBuffer, qOffset: Int = 0,
                           k: any MTLBuffer, kOffset: Int = 0,
@@ -172,27 +162,25 @@ final class Attention {
                           numKVHeads: UInt32,
                           seqLen: UInt32,
                           window: UInt32,
-                          scale: Float? = nil,
-                          ringCapacity: UInt32 = 0) {
+                          scale: Float,
+                          ringCapacity: UInt32) {
         precondition(numQHeads % numKVHeads == 0,
                      "numQHeads must be a multiple of numKVHeads for GQA")
         precondition(headDim <= 512,
                      "head_dim must be <= 512 (kernel scratch is sized for the full-attn case)")
-        let sc = scale ?? Self.defaultScale(headDim: headDim)
         let kvStart = seqLen > window ? seqLen - window : 0
 
         encodeSplit(commandBuffer: commandBuffer,
                     q: q, qOffset: qOffset, k: k, kOffset: kOffset,
                     v: v, vOffset: vOffset, out: out, outOffset: outOffset,
                     headDim: headDim, numQHeads: numQHeads, numKVHeads: numKVHeads,
-                    seqLen: seqLen, kvStart: kvStart, scale: sc,
+                    seqLen: seqLen, kvStart: kvStart, scale: scale,
                     preferGQASWA: true,
                     ringCapacity: ringCapacity)
     }
 
     /// Full attention. Gemma 4 reuses the raw K projection as raw V input, but
     /// separate normalization and RoPE make the cache streams distinct here.
-    /// `scale` mirrors `encodeSWA`.
     func encodeFull(commandBuffer: any MTLCommandBuffer,
                            q: any MTLBuffer, qOffset: Int = 0,
                            k: any MTLBuffer, kOffset: Int = 0,
@@ -202,21 +190,20 @@ final class Attention {
                            numQHeads: UInt32,
                            numKVHeads: UInt32,
                            seqLen: UInt32,
-                           scale: Float? = nil) {
+                           scale: Float) {
         precondition(numQHeads % numKVHeads == 0,
                      "numQHeads must be a multiple of numKVHeads for GQA")
         precondition(headDim <= 512,
                      "head_dim must be <= 512 (kernel scratch is sized for the full-attn case)")
         precondition(seqLen > 0, "full attention requires at least one KV position")
-        let sc = scale ?? Self.defaultScale(headDim: headDim)
-
 
         encodeSplit(commandBuffer: commandBuffer,
                     q: q, qOffset: qOffset, k: k, kOffset: kOffset,
                     v: v, vOffset: vOffset, out: out, outOffset: outOffset,
                     headDim: headDim, numQHeads: numQHeads, numKVHeads: numKVHeads,
-                    seqLen: seqLen, kvStart: 0, scale: sc,
-                    preferGQASWA: false)
+                    seqLen: seqLen, kvStart: 0, scale: scale,
+                    preferGQASWA: false,
+                    ringCapacity: 0)
     }
 
 
@@ -233,7 +220,7 @@ final class Attention {
                              headDim: UInt32, numQHeads: UInt32, numKVHeads: UInt32,
                              seqLen: UInt32, kvStart: UInt32, scale: Float,
                              preferGQASWA: Bool,
-                             ringCapacity: UInt32 = 0) {
+                             ringCapacity: UInt32) {
         precondition(Int(numQHeads) <= Self.maxQHeads,
                      "numQHeads \(numQHeads) exceeds split-KV scratch (max \(Self.maxQHeads))")
         precondition(Int(headDim) <= Self.maxHeadDim,
@@ -264,16 +251,14 @@ final class Attention {
         p1.setBuffer(mPartial, offset: 0, index: 3)
         p1.setBuffer(dPartial, offset: 0, index: 4)
         p1.setBuffer(oPartial, offset: 0, index: 5)
-        let hd = headDim, nq = numQHeads, nkv = numKVHeads, sl = seqLen, ks = kvStart
-        let cl = UInt32(chunkLen), nc = UInt32(nChunks), sc = scale
-        p1.setValue(hd, index: 6)
-        p1.setValue(nq, index: 7)
-        p1.setValue(nkv, index: 8)
-        p1.setValue(sl, index: 9)
-        p1.setValue(ks, index: 10)
-        p1.setValue(cl, index: 11)
-        p1.setValue(nc, index: 12)
-        p1.setValue(sc, index: 13)
+        p1.setValue(headDim, index: 6)
+        p1.setValue(numQHeads, index: 7)
+        p1.setValue(numKVHeads, index: 8)
+        p1.setValue(seqLen, index: 9)
+        p1.setValue(kvStart, index: 10)
+        p1.setValue(UInt32(chunkLen), index: 11)
+        p1.setValue(UInt32(nChunks), index: 12)
+        p1.setValue(scale, index: 13)
         let partialGroups = geometry.partialThreadgroups
         p1.dispatchThreadgroups(MTLSize(width: partialGroups, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tgWidth, height: 1, depth: 1))
@@ -289,21 +274,13 @@ final class Attention {
         p2.setBuffer(dPartial, offset: 0, index: 1)
         p2.setBuffer(oPartial, offset: 0, index: 2)
         p2.setBuffer(out, offset: outOffset, index: 3)
-        let hd2 = headDim, nc2 = UInt32(nChunks)
-        p2.setValue(hd2, index: 4)
-        p2.setValue(nc2, index: 5)
+        p2.setValue(headDim, index: 4)
+        p2.setValue(UInt32(nChunks), index: 5)
         let combineTGWidth = min(Self.threadsPerGroup,
                                  Int(combinePSO.maxTotalThreadsPerThreadgroup))
         p2.dispatchThreadgroups(MTLSize(width: Int(numQHeads), height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: combineTGWidth, height: 1, depth: 1))
         p2.endEncoding()
-    }
-
-    /// `1 / sqrt(head_dim)` — the classic transformer scaling. Used as the
-    /// default for non-Gemma callers (and for the existing tests that pre-date
-    /// the runtime scale arg).
-    static func defaultScale(headDim: UInt32) -> Float {
-        Float(1.0) / Float(headDim).squareRoot()
     }
 
     private static func specializedPipeline(_ context: MetalContext,
@@ -333,7 +310,7 @@ final class Attention {
                                  numKVHeads: UInt32,
                                  numChunks: Int,
                                  useGQAPartial: Bool,
-                                 ringCapacity: UInt32 = 0) -> any MTLComputePipelineState {
+                                 ringCapacity: UInt32) -> any MTLComputePipelineState {
         if ringCapacity > 0 {
             let name = useGQAPartial ? "attention_decode_gqa_swa_partial" : "attention_decode_partial"
             let specializedChunks = numChunks == 16 ? Optional(UInt32(numChunks)) : nil
@@ -354,9 +331,6 @@ final class Attention {
                 return psoGQAPartialSWAChunks16
             }
             return psoGQAPartialSWA
-        }
-        if !useGQAPartial && headDim == 256 && numQHeads == 16 && numKVHeads == 8 {
-            return psoPartialSWA
         }
         if !useGQAPartial && headDim == 512 && numQHeads == 16 && numKVHeads == 2 {
             if numChunks == 16 {

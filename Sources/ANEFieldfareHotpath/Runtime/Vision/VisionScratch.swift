@@ -3,7 +3,7 @@ package import Metal
 package final class VisionScratch {
     package let paddedRows: Int
     /// Live rows, so the clear can skip everything a dispatch will overwrite.
-    package let rows: Int
+    private let rows: Int
     private let hiddenSize: Int
     package let normalizedPatches: any MTLBuffer
     package let hiddenA: any MTLBuffer
@@ -15,7 +15,7 @@ package final class VisionScratch {
     package let gate: any MTLBuffer
 
     package init(device: any MTLDevice, rows: Int, config: VisionConfig) throws {
-        paddedRows = ((rows + 63) / 64) * 64
+        paddedRows = VisionAttention.paddedRowCount(rows)
         self.rows = rows
         self.hiddenSize = config.hiddenSize
         func buffer(_ elements: Int) throws -> any MTLBuffer {
@@ -34,18 +34,9 @@ package final class VisionScratch {
         gate = try buffer(paddedRows * config.intermediateSize + 64)
     }
 
-    private var buffers: [any MTLBuffer] {
-        [normalizedPatches, hiddenA, hiddenB, q, attention, gate]
-    }
-
-    /// Zeroes only what a later read can actually see.
-    ///
-    /// Clearing every buffer meant about 47 MiB of blit fills per image at the
-    /// 2,520-patch maximum, nearly all of it dead: `normalizedPatches`, `q` and
-    /// `gate` are fully overwritten by the dispatch that follows, which zeroes
-    /// its own pad region. What genuinely has to start clean is the padding
-    /// rows of the two buffers whose tails are read back — `hiddenB` and
-    /// `attention` — which is under 300 KB.
+    /// Zeroes the padding rows of `hiddenB` and `attention`, the only buffers
+    /// whose tails are read back; every other buffer is fully overwritten,
+    /// pad included, by the dispatch that fills it.
     package func encodeClear(commandBuffer: any MTLCommandBuffer) throws {
         guard let blit = commandBuffer.makeTracedBlitEncoder() else {
             throw MetalError.noDevice
@@ -56,9 +47,5 @@ package final class VisionScratch {
             blit.fill(buffer: buffer, range: liveBytes..<buffer.length, value: 0)
         }
         blit.endEncoding()
-    }
-
-    package var allocatedBytes: Int {
-        buffers.reduce(0) { $0 + $1.length }
     }
 }

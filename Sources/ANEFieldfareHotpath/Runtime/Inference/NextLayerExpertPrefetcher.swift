@@ -17,8 +17,6 @@ public struct EarlyExpertReadStats: Sendable, Equatable {
     /// were wasted bandwidth.
     public var used: UInt64 = 0
 
-    public init() {}
-
     /// The share of early reads that were used.
     public var precision: Double? {
         reads > 0 ? Double(used) / Double(reads) : nil
@@ -37,10 +35,6 @@ public struct EarlyExpertReadStats: Sendable, Equatable {
 ///
 /// `ANE_FIELDFARE_EARLY_EXPERT_READS` (1–8) sets the reads per layer.
 final class NextLayerExpertPrefetcher {
-    static let readsEnvironmentKey = "ANE_FIELDFARE_EARLY_EXPERT_READS"
-    static let defaultReadsPerLayer = 2
-    static let maxReadsPerLayer = 8
-
     private var issued: (layer: Int, experts: Set<Int>)?
     private(set) var stats = EarlyExpertReadStats()
     /// The fitted guess, or nil to score with the next layer's own router.
@@ -48,10 +42,9 @@ final class NextLayerExpertPrefetcher {
     /// Early reads to issue for the next layer.
     let readsPerLayer: Int
 
-    init(model: Model, guess: RuntimeEarlyExpertRead, device: any MTLDevice,
-         environment: [String: String] = ProcessInfo.processInfo.environment) throws {
-        readsPerLayer = environment[Self.readsEnvironmentKey].flatMap(Int.init)
-            .flatMap { (1...Self.maxReadsPerLayer).contains($0) ? $0 : nil } ?? Self.defaultReadsPerLayer
+    init(model: Model, guess: RuntimeEarlyExpertRead, device: any MTLDevice) throws {
+        readsPerLayer = ProcessInfo.processInfo.environment["ANE_FIELDFARE_EARLY_EXPERT_READS"]
+            .flatMap(Int.init).flatMap { (1...8).contains($0) ? $0 : nil } ?? 2
         let config = model.config
         guessWeights = guess == .fitted
             ? try NextLayerGuessWeights.bundled(
@@ -64,13 +57,12 @@ final class NextLayerExpertPrefetcher {
     var guess: RuntimeEarlyExpertRead { guessWeights == nil ? .router : .fitted }
 
     /// Up to `limit` highest-scoring experts for which `isAbsent` holds, among
-    /// the `topK` highest-scoring overall, best first; ties go to the lower ID.
-    static func choose(scores: [Float],
-                       limit: Int, topK: Int = 8, isAbsent: (Int) -> Bool) -> [Int] {
+    /// the 8 highest-scoring overall, best first; ties go to the lower ID.
+    static func choose(scores: [Float], limit: Int, isAbsent: (Int) -> Bool) -> [Int] {
         let ranked = scores.indices.sorted {
             scores[$0] != scores[$1] ? scores[$0] > scores[$1] : $0 < $1
         }
-        return Array(ranked.prefix(topK).filter(isAbsent).prefix(limit))
+        return Array(ranked.prefix(8).filter(isAbsent).prefix(limit))
     }
 
     func beginForward() {

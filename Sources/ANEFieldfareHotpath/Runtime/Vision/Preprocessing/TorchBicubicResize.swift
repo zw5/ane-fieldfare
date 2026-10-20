@@ -5,9 +5,7 @@ package enum TorchBicubicResize {
     /// of arrays: `starts[i]` is where output `i` begins reading, and its taps
     /// are `weights[i * tapStride ..< (i + 1) * tapStride]`, zero-padded.
     ///
-    /// Exposed so the Metal path applies the same numbers rather than its own —
-    /// the weights depend only on the axis ratio, so building them stays on the
-    /// CPU where the arithmetic is already proven.
+    /// The Metal path applies these same weights, so the two cannot drift.
     package struct WeightTable {
         package let starts: [Int32]
         package let weights: [Int16]
@@ -50,7 +48,7 @@ package enum TorchBicubicResize {
         destinationWidth: Int,
         destinationHeight: Int,
         destinationRowBytes: Int
-    ) -> Int {
+    ) {
         if sourceWidth == destinationWidth && sourceHeight == destinationHeight {
             for row in 0..<sourceHeight {
                 unsafe memcpy(
@@ -58,7 +56,7 @@ package enum TorchBicubicResize {
                     source.advanced(by: row * sourceRowBytes),
                     sourceWidth * 4)
             }
-            return 0
+            return
         }
 
         if sourceWidth == destinationWidth {
@@ -71,7 +69,7 @@ package enum TorchBicubicResize {
                 destinationHeight: destinationHeight,
                 destinationRowBytes: destinationRowBytes,
                 axis: vertical)
-            return 0
+            return
         }
         let horizontal = axis(input: sourceWidth, output: destinationWidth)
         if sourceHeight == destinationHeight {
@@ -83,7 +81,7 @@ package enum TorchBicubicResize {
                 destinationWidth: destinationWidth,
                 destinationRowBytes: destinationRowBytes,
                 axis: horizontal)
-            return 0
+            return
         }
 
         let temporaryRowBytes = destinationWidth * 4
@@ -107,7 +105,6 @@ package enum TorchBicubicResize {
             destinationHeight: destinationHeight,
             destinationRowBytes: destinationRowBytes,
             axis: vertical)
-        return temporaryBytes
     }
 
     private static func axis(input: Int, output: Int) -> Axis {

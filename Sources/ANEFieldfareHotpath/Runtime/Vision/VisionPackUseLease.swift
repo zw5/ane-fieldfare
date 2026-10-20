@@ -6,16 +6,9 @@ import ANEFieldfareImportedFormat
 /// value lives. Noncopyable: exactly one owner holds the lock, and dropping
 /// that owner releases it.
 public struct VisionPackUseLease: ~Copyable, Sendable {
-    /// How long `acquireShared` waits for a mutation to finish before giving
-    /// up. A blocking `flock` would wait forever, so a stuck installer would
-    /// hang model load with nothing to report.
-    public static let acquisitionTimeout: Duration = .seconds(5)
-
-    public let lockFileURL: URL
     private let descriptor: Int32
 
-    private init(lockFileURL: URL, descriptor: Int32) {
-        self.lockFileURL = lockFileURL
+    private init(descriptor: Int32) {
         self.descriptor = descriptor
     }
 
@@ -24,9 +17,11 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
         close(descriptor)
     }
 
+    /// `timeout` bounds the wait for a writer's exclusive lock, so a stuck
+    /// installer surfaces as an error instead of hanging model load.
     public static func acquireShared(
         companionURL: URL,
-        timeout: Duration = acquisitionTimeout
+        timeout: Duration = .seconds(5)
     ) throws -> VisionPackUseLease {
         let lockURL = lockURL(for: companionURL)
         let created = unsafe open(
@@ -69,7 +64,7 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
                 "could not open vision companion at \(companionURL.path): "
                     + "errno \(companionErrno)")
         }
-        return VisionPackUseLease(lockFileURL: lockURL, descriptor: companion)
+        return VisionPackUseLease(descriptor: companion)
     }
 
     private static func lease(
@@ -98,13 +93,11 @@ public struct VisionPackUseLease: ~Copyable, Sendable {
             close(descriptor)
             throw error
         }
-        return VisionPackUseLease(lockFileURL: lockURL, descriptor: descriptor)
+        return VisionPackUseLease(descriptor: descriptor)
     }
 
-    /// The derivation is shared with any writer-side mutation lock through
-    /// `GTurboVisionLockPathsV1`, next to the format it protects; deriving it
-    /// independently per module does not fail on mismatch — it silently leaves
-    /// the two sides locking different files.
+    /// Shared with the writer side through `GTurboVisionLockPathsV1`, so both
+    /// lock the same file.
     public static func lockURL(for companionURL: URL) -> URL {
         GTurboVisionLockPathsV1.useLockURL(forCompanion: companionURL)
     }

@@ -1,6 +1,4 @@
-/// Deterministic 64-bit PRNG. Same algorithm as the inline copies in the
-/// pre-refactor tests — but conforms to `RandomNumberGenerator` so it
-/// composes with stdlib random APIs.
+/// Deterministic SplitMix64 PRNG.
 public struct SplitMix64: RandomNumberGenerator {
     private var state: UInt64
 

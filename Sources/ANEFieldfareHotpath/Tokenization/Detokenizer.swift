@@ -31,11 +31,7 @@ import Tokenizers
 /// marker switches it. Plain `decode` passes no barriers,
 /// keeping full library parity.
 ///
-/// Cost is O(1) per token and independent of how much has already been
-/// generated. The previous implementation re-decoded the entire accumulated
-/// token list on every push, which made a generation O(n²) — roughly 3.6·10⁹
-/// dictionary lookups over the app's 64K-token budget — and compared the result
-/// against the full emitted prefix to recover a delta.
+/// Cost is O(1) per token, independent of how much has been generated.
 struct GFDetokenizer {
     let tokenizer: any Tokenizer
     let skipSpecialTokens: Bool

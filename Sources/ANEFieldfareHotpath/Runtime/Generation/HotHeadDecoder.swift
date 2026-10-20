@@ -11,19 +11,15 @@ public import Metal
 /// handed out; the wrong one is replaced by the true token and the steps
 /// after it are rewound. Each check also adds its tokens to the table.
 ///
-/// The full head reads its 262k rows once per block of 4 instead of once per
-/// token (3.3 ms on an M5), and a guess reads only the hot vocabulary's rows
-/// (~0.75 ms). A wrong guess costs the steps after it in its block; the tokens
+/// The full head reads its 262k rows once per block instead of once per
+/// token. A wrong guess costs the steps after it in its block; the tokens
 /// handed out are the full head's either way.
 public final class HotHeadDecoder: LogitProducer, ChunkedPrefillRunner, ContextWindowReporting,
-    FusedGreedyProducer {
+    FusedGreedyProducer, PrefixReusingProducer {
     public let runner: RealForwardRunner
     public private(set) var lastGreedyToken: UInt32 = 0
     public var usesFusedGreedyHead: Bool { true }
     public var maxContext: Int { runner.maxContext }
-    /// Steps run, and steps whose guess the check rejected.
-    public private(set) var guessedSteps = 0
-    public private(set) var wrongGuesses = 0
 
     /// Checked tokens not yet handed out: (position, token, its successor).
     private var checked: [(position: Int, token: Int32, next: UInt32)] = []
@@ -38,6 +34,13 @@ public final class HotHeadDecoder: LogitProducer, ChunkedPrefillRunner, ContextW
     public func reset() {
         runner.reset()
         checked.removeAll()
+    }
+
+    public func canReuse(prefix position: Int) -> Bool { runner.canRewind(to: position) }
+
+    public func rewindForReuse(to position: Int) throws {
+        checked.removeAll()
+        try runner.rewindForReuse(to: position)
     }
 
     func prefillChunked(tokens: ArraySlice<Int32>, startPosition: Int, outputMode: PrefillOutputMode,
@@ -76,12 +79,10 @@ public final class HotHeadDecoder: LogitProducer, ChunkedPrefillRunner, ContextW
         }
         let truth = runner.checkedTokens
         runner.hotVocabulary?.insert(truth)
-        guessedSteps += steps
         // Step i ran on a correct input while every earlier guess was right.
         var good = 0
         while good < steps, guesses[good] == truth[good] { good += 1 }
         let kept = min(good + 1, steps)
-        if good < steps { wrongGuesses += 1 }
         if kept < steps { try runner.rewind(to: position + kept) }
         lastGreedyToken = truth[0]
         checked = (1..<kept).map { i in

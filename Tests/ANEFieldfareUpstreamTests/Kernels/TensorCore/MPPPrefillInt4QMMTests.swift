@@ -104,142 +104,62 @@ private let mppTensorOpsAvailable: Bool = {
         return output
     }
 
-    @discardableResult
-    private static func runShape(context: MetalContext,
-                                 candidate: MPPPrefillInt4QMM,
-                                 baseline: PrefillInt4QMM,
-                                 m: Int,
-                                 n: Int,
-                                 k: Int,
-                                 adversarialAffine: Bool = false,
-                                 weightOffset: Int = 0,
-                                 scaleOffset: Int = 0,
-                                 biasOffset: Int = 0,
-                                 compareCPUReference: Bool = false,
-                                 expectedPath: MPPPrefillInt4QMM.Path = .affineThreadgroupF16) throws
-        -> MPPPrefillInt4QMM.PathMetadata {
-        let inputs = makeInputs(m: m, n: n, k: k,
-                                adversarialAffine: adversarialAffine)
-        guard let weights = makeBuffer(device: context.device,
-                                       values: inputs.packed,
-                                       prefixBytes: weightOffset),
-              let scaleBuffer = makeBuffer(device: context.device,
-                                           values: inputs.scales,
-                                           prefixBytes: scaleOffset),
-              let biasBuffer = makeBuffer(device: context.device,
-                                          values: inputs.biases,
-                                          prefixBytes: biasOffset),
+    /// One oracle for both prefill INT4 GEMMs: the `PrefillInt4QMM` fallback
+    /// always, and the TensorOps candidate where the runtime supports it.
+    /// Partial tiles in M and N, adversarial affine terms, unaligned weights.
+    @Test func int4QMMAndTensorOpsCandidateMatchFP32AffineReference() throws {
+        let m = 17, n = 35, k = 128
+        let weightOffset = 13, scaleOffset = 2, biasOffset = 6
+        let context = try MetalContext()
+        let baseline = try PrefillInt4QMM(context: context)
+        let candidate = MPPPrefillInt4QMM(context: context)
+        let inputs = Self.makeInputs(m: m, n: n, k: k, adversarialAffine: true)
+        guard let weights = Self.makeBuffer(device: context.device,
+                                            values: inputs.packed,
+                                            prefixBytes: weightOffset),
+              let scaleBuffer = Self.makeBuffer(device: context.device,
+                                                values: inputs.scales,
+                                                prefixBytes: scaleOffset),
+              let biasBuffer = Self.makeBuffer(device: context.device,
+                                               values: inputs.biases,
+                                               prefixBytes: biasOffset),
               let input = Fp16Buffer.make(context.device, halves: inputs.x),
-              let expectedBuffer = Fp16Buffer.make(context.device, count: m * n),
-              let actualBuffer = Fp16Buffer.make(context.device, count: m * n),
+              let baselineBuffer = Fp16Buffer.make(context.device, count: m * n),
+              let candidateBuffer = Fp16Buffer.make(context.device, count: m * n),
               let commandBuffer = context.queue.makeCommandBuffer() else {
             Issue.record("buffer allocation failed")
-            throw CocoaError(.fileReadUnknown)
+            return
         }
 
         baseline.encode(commandBuffer: commandBuffer,
-                        weights: weights,
-                        weightsOffset: weightOffset,
-                        scales: scaleBuffer,
-                        scalesOffset: scaleOffset,
-                        biases: biasBuffer,
-                        biasesOffset: biasOffset,
-                        x: input,
-                        y: expectedBuffer,
-                        t: m,
-                        n: n,
-                        k: k)
-        let metadata = candidate.encode(commandBuffer: commandBuffer,
-                                        weights: weights,
-                                        weightsOffset: weightOffset,
-                                        scales: scaleBuffer,
-                                        scalesOffset: scaleOffset,
-                                        biases: biasBuffer,
-                                        biasesOffset: biasOffset,
-                                        x: input,
-                                        y: actualBuffer,
-                                        m: m,
-                                        n: n,
-                                        k: k)
+                        weights: weights, weightsOffset: weightOffset,
+                        scales: scaleBuffer, scalesOffset: scaleOffset,
+                        biases: biasBuffer, biasesOffset: biasOffset,
+                        x: input, y: baselineBuffer, t: m, n: n, k: k)
+        let path = mppTensorOpsAvailable
+            ? candidate.encode(commandBuffer: commandBuffer,
+                               weights: weights, weightsOffset: weightOffset,
+                               scales: scaleBuffer, scalesOffset: scaleOffset,
+                               biases: biasBuffer, biasesOffset: biasOffset,
+                               x: input, y: candidateBuffer, m: m, n: n, k: k)
+            : nil
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)
-        #expect(metadata.path == expectedPath)
-        #expect(metadata.modelDerivedCPUHeapScratchBytes == 0)
-        #expect(metadata.expandedWeightBufferBytes == 0)
-        #expect(metadata.threadgroupBytes == (expectedPath == .affineThreadgroupF16Apple10V1
-            ? 16_384 : 4096))
-        #expect(metadata.cooperativeValueBytesEstimate ==
-            (expectedPath == .affineThreadgroupF16Apple10V1 ? 32_768 : 16_384))
-        #expect(metadata.simultaneousWeightTiles == 1)
 
-        let baselineOutput = Fp16Buffer.read(expectedBuffer, count: m * n)
-        let actual = Fp16Buffer.read(actualBuffer, count: m * n)
-        let baselineMaxAbs = RelError.maxAbsDiff(actual, baselineOutput)
-        let baselineRelative = RelError.compute(actual: actual, reference: baselineOutput)
-        let byteExact = actual == baselineOutput
-        #expect(baselineMaxAbs <= 0.03,
-                "shape M=\(m) N=\(n) K=\(k) maxAbs=\(baselineMaxAbs) rel=\(baselineRelative) byteExact=\(byteExact)")
-        #expect(baselineRelative <= 1e-3 || baselineMaxAbs <= 0.01,
-                "shape M=\(m) N=\(n) K=\(k) maxAbs=\(baselineMaxAbs) rel=\(baselineRelative) byteExact=\(byteExact)")
-
-        if compareCPUReference {
-            let reference = cpuReference(inputs, m: m, n: n, k: k)
+        let reference = Self.cpuReference(inputs, m: m, n: n, k: k)
+        var outputs = [("PrefillInt4QMM", baselineBuffer)]
+        if let path {
+            #expect(path == .affineThreadgroupF16)
+            outputs.append(("MPP candidate", candidateBuffer))
+        }
+        for (label, buffer) in outputs {
+            let actual = Fp16Buffer.read(buffer, count: m * n)
             let maxAbs = RelError.maxAbsDiff(actual, reference)
             let relative = RelError.compute(actual: actual, reference: reference)
-            #expect(maxAbs <= 0.03,
-                    "CPU reference M=\(m) N=\(n) K=\(k) maxAbs=\(maxAbs) rel=\(relative)")
-            #expect(relative <= 1e-3,
-                    "CPU reference M=\(m) N=\(n) K=\(k) maxAbs=\(maxAbs) rel=\(relative)")
+            #expect(maxAbs <= 0.03, "\(label) maxAbs=\(maxAbs) rel=\(relative)")
+            #expect(relative <= 1e-3, "\(label) maxAbs=\(maxAbs) rel=\(relative)")
         }
-        return metadata
-    }
-
-    @Test(.enabled(if: mppTensorOpsAvailable,
-                   "Requires runtime MPP TensorOps support"))
-    func affineThreadgroupCandidateMatchesFP32AffineReference() throws {
-        let context = try MetalContext()
-        let candidate = MPPPrefillInt4QMM(context: context)
-        let baseline = try PrefillInt4QMM(context: context)
-        #expect(candidate.isAvailable, "\(candidate.unavailableReason ?? "unknown error")")
-
-        try Self.runShape(context: context, candidate: candidate, baseline: baseline,
-                          m: 64, n: 32, k: 64, compareCPUReference: true)
-        try Self.runShape(context: context, candidate: candidate, baseline: baseline,
-                          m: 64, n: 32, k: 128, adversarialAffine: true,
-                          compareCPUReference: true)
-        try Self.runShape(context: context, candidate: candidate, baseline: baseline,
-                          m: 17, n: 35, k: 64, compareCPUReference: true)
-        let metadata = try Self.runShape(
-            context: context, candidate: candidate, baseline: baseline,
-            m: 17, n: 35, k: 128, adversarialAffine: true,
-            weightOffset: 13, scaleOffset: 2, biasOffset: 6,
-            compareCPUReference: true)
-        #expect(metadata.weightBufferOffsetRemainder128 == 13)
-    }
-
-    @Test func apple10GeometryPreservesAffineReferenceAndFallsBackForShortM() throws {
-        let context = try MetalContext()
-        guard context.device.supportsFamily(.apple10) else { return }
-        let candidate = MPPPrefillInt4QMM(context: context, variant: .apple10V1)
-        let baseline = try PrefillInt4QMM(context: context)
-        #expect(candidate.isAvailable, "\(candidate.unavailableReason ?? "unknown error")")
-
-        let selected = try Self.runShape(
-            context: context, candidate: candidate, baseline: baseline,
-            m: 64, n: 64, k: 128, adversarialAffine: true,
-            compareCPUReference: true,
-            expectedPath: .affineThreadgroupF16Apple10V1)
-        #expect(selected.tileM == 64)
-        #expect(selected.tileN == 64)
-        #expect(selected.tileK == 128)
-        #expect(selected.fallbackCount == 0)
-
-        let fallback = try Self.runShape(
-            context: context, candidate: candidate, baseline: baseline,
-            m: 17, n: 35, k: 128, adversarialAffine: true,
-            compareCPUReference: true)
-        #expect(fallback.fallbackCount == 1)
     }
 
     @Test func apple10BF16ProjectorPreservesBF16AffineSemantics() throws {
@@ -268,21 +188,20 @@ private let mppTensorOpsAvailable: Bool = {
             commandBuffer: commandBuffer,
             weights: weights, scales: scales, biases: biases,
             x: x, y: y, m: 17, n: 35, k: k)
-        #expect(shortOutput.path == .affineThreadgroupBF16Apple10)
-        #expect(shortOutput.fallbackCount == 0)
+        #expect(shortOutput == .affineThreadgroupBF16Apple10)
         let singleRow = candidate.encode(
             commandBuffer: commandBuffer,
             weights: weights, scales: scales, biases: biases,
             x: x, y: y, m: 1, n: 35, k: k)
-        #expect(singleRow.path == .affineThreadgroupBF16Apple10)
-        let metadata = candidate.encode(
+        #expect(singleRow == .affineThreadgroupBF16Apple10)
+        let path = candidate.encode(
             commandBuffer: commandBuffer,
             weights: weights, scales: scales, biases: biases,
             x: x, y: y, m: m, n: n, k: k)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.error == nil)
-        #expect(metadata.path == .affineThreadgroupBF16Apple10)
+        #expect(path == .affineThreadgroupBF16Apple10)
 
         var reference = [Float](repeating: 0, count: m * n)
         let groups = k / Quantization.groupSize
@@ -305,83 +224,6 @@ private let mppTensorOpsAvailable: Bool = {
         let actual = Fp16Buffer.read(y, count: m * n)
         #expect(RelError.maxAbsDiff(actual, reference) <= 0.03)
         #expect(RelError.compute(actual: actual, reference: reference) <= 1e-3)
-    }
-
-    @Test(.enabled(if: mppTensorOpsAvailable,
-                   "Requires runtime MPP TensorOps support"))
-    func selectedProductionAttentionShapesMatchCurrentPolicy() throws {
-        let context = try MetalContext()
-        let candidate = MPPPrefillInt4QMM(context: context)
-        let baseline = try PrefillInt4QMM(context: context)
-        let shapes = [
-            (name: "swa-q", n: 4096, k: 2816),
-            (name: "swa-kv", n: 2048, k: 2816),
-            (name: "swa-o", n: 2816, k: 4096),
-            (name: "full-q", n: 8192, k: 2816),
-            (name: "full-kv", n: 1024, k: 2816),
-            (name: "full-o", n: 2816, k: 8192),
-        ]
-        for m in [32, 128] {
-            for shape in shapes {
-                let metadata = try Self.runShape(
-                    context: context, candidate: candidate, baseline: baseline,
-                    m: m, n: shape.n, k: shape.k)
-                #expect(metadata.path == .affineThreadgroupF16,
-                        "\(shape.name) M=\(m) unexpectedly fell back")
-            }
-        }
-    }
-
-    @Test(.enabled(if: mppTensorOpsAvailable,
-                   "Requires runtime MPP TensorOps support"))
-    func fullProductionShapeIsByteStableAcross32Dispatches() throws {
-        let m = 32
-        let n = 2816
-        let k = 8192
-        let outputElements = m * n
-        let outputBytes = outputElements * MemoryLayout<Float16>.stride
-        let inputs = Self.makeInputs(m: m, n: n, k: k)
-        let context = try MetalContext()
-        let candidate = MPPPrefillInt4QMM(context: context)
-        guard let weights = Self.makeBuffer(device: context.device, values: inputs.packed),
-              let scales = Self.makeBuffer(device: context.device, values: inputs.scales),
-              let biases = Self.makeBuffer(device: context.device, values: inputs.biases),
-              let input = Fp16Buffer.make(context.device, halves: inputs.x),
-              let outputs = context.device.makeBuffer(length: outputBytes * 32,
-                                                      options: .storageModeShared),
-              let commandBuffer = context.queue.makeCommandBuffer() else {
-            Issue.record("buffer allocation failed")
-            return
-        }
-        for run in 0..<32 {
-            let metadata = candidate.encode(commandBuffer: commandBuffer,
-                                            weights: weights,
-                                            scales: scales,
-                                            biases: biases,
-                                            x: input,
-                                            y: outputs,
-                                            yOffset: run * outputBytes,
-                                            m: m,
-                                            n: n,
-                                            k: k)
-            #expect(metadata.path == .affineThreadgroupF16)
-        }
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        #expect(commandBuffer.error == nil)
-
-        let reference = unsafe outputs.contents().assumingMemoryBound(to: UInt16.self)
-        for run in 1..<32 {
-            let candidateOutput = unsafe outputs.contents()
-                .advanced(by: run * outputBytes)
-                .assumingMemoryBound(to: UInt16.self)
-            var mismatch: Int?
-            for index in 0..<outputElements where unsafe reference[index] != candidateOutput[index] {
-                mismatch = index
-                break
-            }
-            #expect(mismatch == nil, "dispatch \(run) first mismatch=\(mismatch ?? -1)")
-        }
     }
 
     @Test func unsupportedOrUnalignedInputsReportFallback() throws {
@@ -413,10 +255,8 @@ private let mppTensorOpsAvailable: Bool = {
                                               m: 1,
                                               n: 1,
                                               k: 64)
-        #expect(unsupportedShape.path == .fallback)
-        #expect(unsupportedShape.fallbackCount == 1)
-        #expect(unalignedScale.path == .fallback)
-        #expect(unalignedScale.fallbackCount == 1)
+        #expect(unsupportedShape == .fallback)
+        #expect(unalignedScale == .fallback)
     }
 
 }

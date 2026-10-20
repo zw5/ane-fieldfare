@@ -10,9 +10,7 @@ import ANEFieldfareHotpathCLICore
 /// hot-vocabulary head and sampled requests sample on the GPU, both through
 /// the drafter when one is loaded, exactly as the CLI does; a request with a
 /// repetition penalty goes through `LogitsHeadProducer`, the logits head a
-/// CLI run with a penalty takes. Every request starts from a reset KV
-/// cache: `runRawCompletion` resets the producer before its prefill, and no
-/// prefix is reused across requests.
+/// CLI run with a penalty takes.
 public final class ModelEngine: CompletionEngine {
     public struct Options: Sendable {
         public var modelURL: URL
@@ -22,10 +20,8 @@ public final class ModelEngine: CompletionEngine {
         public var faultPolicy: RuntimeFaultPolicy
         public var earlyExpertRead: RuntimeEarlyExpertRead
 
-        public init(modelURL: URL, drafterURL: URL? = nil, maxContext: Int,
-                    backend: RuntimeBackend = .metal,
-                    faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration.production.faultPolicy,
-                    earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration.production.earlyExpertRead) {
+        public init(modelURL: URL, drafterURL: URL?, maxContext: Int, backend: RuntimeBackend,
+                    faultPolicy: RuntimeFaultPolicy, earlyExpertRead: RuntimeEarlyExpertRead) {
             self.modelURL = modelURL
             self.drafterURL = drafterURL
             self.maxContext = maxContext
@@ -39,16 +35,19 @@ public final class ModelEngine: CompletionEngine {
     public let maxContext: Int
     /// The largest prefill chunk a request may use; the KV ring is sized for it.
     public let maxPrefillChunkTokens: Int
-    public let runtime: RuntimeConfiguration
     private let context: MetalContext
     private let runner: RealForwardRunner
     private let scratch: RawCompletionScratch
     private let drafter: DFlashDrafter?
+    /// The tokens in the runner's KV cache after the last request that
+    /// completed, and the decode path that wrote them; nil after a failed or
+    /// cancelled request, whose cache state is unknown. Requests run one at a
+    /// time, so this is never read and written concurrently.
+    private var cached: (tokens: [Int32], path: String)?
 
     public var hasDrafter: Bool { drafter != nil }
 
-    public init(options: Options, tokenizer: GFTokenizer,
-                environment: [String: String] = ProcessInfo.processInfo.environment) async throws {
+    public init(options: Options, tokenizer: GFTokenizer) async throws {
         // Every request's chunk is chosen from its prompt length as the CLI's
         // `--prefill-chunk-tokens auto` chooses it; the runner's KV ring has to
         // hold the largest one the context allows.
@@ -64,7 +63,8 @@ public final class ModelEngine: CompletionEngine {
                         faultPolicy: options.faultPolicy,
                         earlyExpertRead: options.earlyExpertRead,
                         drafter: options.drafterURL?.path)
-        let runtime = try args.resolvedRuntimeConfiguration(forceLogitsHead: false, environment: environment)
+        let runtime = try args.resolvedRuntimeConfiguration(
+            forceLogitsHead: false, environment: ProcessInfo.processInfo.environment)
         let context = try MetalContext()
         let model = try Model.load(directoryURL: options.modelURL, device: context.device)
         let runner = try RealForwardRunner(model: model, context: context, maxContext: options.maxContext,
@@ -79,7 +79,6 @@ public final class ModelEngine: CompletionEngine {
         self.tokenizer = tokenizer
         self.maxContext = options.maxContext
         self.maxPrefillChunkTokens = maxChunk
-        self.runtime = runtime
         self.context = context
         self.runner = runner
     }
@@ -108,6 +107,16 @@ public final class ModelEngine: CompletionEngine {
         case is LogitsHeadProducer: path = "sampled"
         default: path = config.isPureGreedy ? "plain" : "sampled"
         }
+        // A chat re-sends its whole history: keep the prefix still cached and
+        // prefill only what follows. Only on the path that wrote the cache —
+        // a speculative request also needs the drafter's context rows, which
+        // other paths do not write.
+        var reuse = 0
+        if let cached, cached.path == path {
+            // The prompt's last token is always prefilled, for its seed.
+            reuse = min(zip(cached.tokens, promptIDs).prefix { $0.0 == $0.1 }.count, promptIDs.count - 1)
+        }
+        cached = nil
         let result = try await runRawCompletion(
             producer: producer,
             tokenizer: tokenizer,
@@ -116,7 +125,11 @@ public final class ModelEngine: CompletionEngine {
             context: context,
             scratch: scratch,
             prefillConfig: prefill,
+            reusingPrefix: reuse,
             onProgress: onProgress)
+        if result.kvBackedTokenIDs.count == result.kvPosition {
+            cached = (result.kvBackedTokenIDs, path)
+        }
         return EngineCompletion(result: result, decodePath: path)
     }
 }

@@ -1,52 +1,29 @@
 # ANE Fieldfare
 
-ANE Fieldfare runs Google's **Gemma 4 26B-A4B**, a 26-billion-parameter
-mixture-of-experts model, on a **16 GB Mac at 49 tokens/s, and up to 99
-tokens/s with speculative decoding**. It can also run part of the model on the
-Apple Neural Engine, driving Apple's private ANE runtime directly instead of
-going through Core ML.
+This project uses DFlash alongside the Apple Neural Engine to run Google's **Gemma 4 26B-A4B**, a 26-billion-parameter
+mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
 
-The model's weights are about 13 GB, on a machine whose memory is also used by
-macOS and every other app. Each token, every one of the 30 layers picks 8 of
-its 128 experts, so a token touches 240 experts, and which ones changes from
-token to token. This runtime never loads the whole model. It reads experts
-straight out of their files, lets the OS decide which stay in memory, and
-spends most of its engineering on never waiting for the disk, the CPU or the
-GPU when it doesn't have to.
 
-| M5, 16 GB | |
+| Throughput on M5, 16 GB | |
 | --- | ---: |
-| Generation, plain | 49–51 tok/s |
-| Generation, `--drafter` | 73–99 tok/s |
-| Prefill, 3,015-token prompt, GPU + ANE | 8.8 s (started at 22.2 s) |
-| Prefill, 3,015-token prompt, GPU only | 15.3 s (started at 24.0 s) |
+| Generation | 73–99 tok/s |
+| Prefill, 3,015-token prompt, GPU + ANE | 8.8 s (down from 22.2 s) |
+| Prefill, 3,015-token prompt, GPU only | 15.3 s (down from 24.0 s) |
 
-Measured with the A/B harness in `Scripts/bench/` (except prefill, which is
-single runs). Every step is in [PERFORMANCE.md](PERFORMANCE.md).
-
-## What's in here
+## Repo contents
 
 - **The OS file cache is the expert cache.** Every expert is a zero-copy Metal
-  buffer over its slice of a memory-mapped file. There is no app-side cache to
-  size, fill or evict. Replacing the old 48-experts-per-layer cache with this
-  made decode faster (26.6 → 30.6 tok/s) and freed 4.9 GB.
-- **The Neural Engine on a real LLM.** A small Objective-C layer drives Apple's
+  buffer over a mmaped file.
+- **Prefill on the Neural Engine.** An Objective-C layer runs Apple's
   private ANE runtime directly, compiling one program that computes 4 experts
   at a time. During prefill the two run as a pipeline: the ANE can't unpack
   4-bit weights, so the GPU unpacks the next 4 experts into one buffer set
   while the ANE computes from the other. On long prompts that is 1.7× faster
   than the GPU alone.
-- **The ANE is allowed to fail.** If an ANE call fails mid-request, the GPU
-  redoes that layer and every later one. Tests check that the output is then
-  bit-identical to a GPU-only run.
-- **The CPU is off the critical path in decode.** The GPU reads each layer's
-  router result and picks its own experts, so the CPU no longer waits on every
-  layer before it can launch the next. That alone took a decode step from 29.3
-  to 23.9 ms.
-- **Faster than one token at a time can go.** Plain decoding has to read
-  roughly 2 GB of weights per token, which caps it on this machine's memory
+- **DFlash speculative decoding.** Plain decoding has to read roughly 2 GB
+  of weights per token, so its speed is bound by the machine's memory
   bandwidth. Speculative decoding with a DFlash drafter checks several tokens
-  per read, which takes code generation to 99 tok/s. On a model whose experts
+  per read, which takes code generation from around 50 to 99 tok/s. On a model whose experts
   stream from disk, checking drafts costs more than writing them (8 draft
   tokens touch ~29 experts per layer instead of 8), so a scheduler decides
   every step, from measured timings, how much to draft and how much to check.
@@ -56,32 +33,32 @@ single runs). Every step is in [PERFORMANCE.md](PERFORMANCE.md).
   straight from GPU memory, accepts drafts and advances its own position on
   the GPU, and queues its next draft right behind the check, so the CPU waits
   once per step and the GPU is busy 93–95% of the time.
-- **Shortcuts that don't change the answer.** The output head has 262,144
-  rows. Plain decoding scores only 56k common tokens for three steps, then
+- **A smaller head most of the time.** The head has 262,144 rows. Greedy
+  decoding scores only the 56k most common tokens for three steps, then
   checks all four steps against the full head at once and repairs any miss:
   the full head is read a quarter as often, and the output is bit-identical.
 
 > **Status: experimental research software.** The ANE path uses private,
 > undocumented Apple frameworks. Any macOS update can break it, and it cannot be
-> used in App Store apps. The ANE computes in FP16, so `hybrid-ane` output is
-> close to, but not bit-identical to, GPU-only output.
+> used in App Store apps. The ANE computes in FP16, so output with the default
+> `hybrid-ane` backend is close to, but not bit-identical to, `--backend metal`
+> (GPU-only) output.
 
 ## Requirements
 
 - An Apple Silicon Mac with 16 GB of memory or more. Development and the
   measurements below used an M5 with 16 GB.
 - macOS 26 or later. Measured on macOS 27 build `26A5406e`.
-- Xcode with Swift 6.2 or later. The tests need full Xcode, not just the
-  Command Line Tools; `Scripts/test.sh` finds it.
+- Xcode with Swift 6.2 or later.
 - The model in `.gturbo` format (about 13 GB). This repository reads that
   format but cannot create it. Use the installer from
   [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) and put the
   result at `checkpoints/gturbo/gemma4.gturbo` (git ignores `checkpoints/`).
-- Optional, for `--drafter`: the DFlash draft model
-  `z-lab/gemma-4-26B-A4B-it-DFlash`, e.g. at `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash`.
-  The first run quantizes it to this runtime's 4-bit format into
-  `fieldfare-dflash-int4.bin` (242 MB) in the same directory, in about 2 s, and
-  later runs read that file directly.
+- `z-lab/gemma-4-26B-A4B-it-DFlash` (dflash drafter) at
+  `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash` (or beside the model), where
+  the CLI and the server find it. Without it the model still runs, at half the
+  speed. The first run quantizes it to this runtime's 4-bit format into
+  `fieldfare-dflash-int4.bin` (242 MB) in the same directory.
 
 ## Quick start
 
@@ -94,21 +71,20 @@ Scripts/build.sh     # builds the CLI and the server into .build/
   --temperature 0 --max-new 64
 ```
 
-Add `--backend hybrid-ane` to use the Neural Engine for the prompt, or
-`--drafter checkpoints/dflash/gemma-4-26B-A4B-it-DFlash` for speculative
-decoding (greedy or sampled; requires a text prompt and no repetition
-penalty). `--help` lists every
-option, including `--image` for image input.
+Speculative decoding is enabled whenever the drafter is installed, greedy or
+sampled; image prompts and a repetition penalty decode without the drafter. The
+prompt runs on the Neural Engine (`hybrid-ane`) unless you pass `--backend metal`.
+`--help` lists every option, including `--image` for image input.
 
 ### Options that choose where work runs
 
 | Option | What it does |
 | --- | --- |
-| `--backend metal` | Everything on the GPU. Default. |
-| `--backend hybrid-ane` | During prompt processing, the 8 chosen experts of every layer run on the ANE. Requires the default `--expert-top-k 8` and no `--prefill-expert-cap`. |
+| `--backend hybrid-ane` | During prompt processing, the 8 chosen experts of every layer run on the ANE. Default. Needs the default `--expert-top-k 8`, no `--prefill-expert-cap` and prefill on; without them the CLI uses `metal`. If the ANE cannot be set up, startup fails rather than falling back. |
+| `--backend metal` | Everything on the GPU. |
 | `--fault-policy fail-closed` | If the ANE fails mid-request, stop with an error. Default. |
 | `--fault-policy failover-metal` | If the ANE fails mid-request, stop using it and finish the request on the GPU, starting again from the layer that failed. |
-| `--drafter <dir>` | Speculative decoding with a DFlash draft model. See [How it works](#speculative-decoding). |
+| `--drafter <dir\|off>` | The DFlash draft model for speculative decoding, if not in the default place; `off` decodes one token at a time. See [How it works](#speculative-decoding). |
 | `--early-expert-read off\|router\|fitted` | Whether generation asks the SSD for next layer's likely experts ahead of time. Default `fitted`. |
 | `--prefill-chunk-tokens <n\|auto>` | How many prompt tokens are processed per pass. Default `auto`: the smallest size that covers the prompt. |
 
@@ -120,9 +96,9 @@ option, including `--image` for image input.
 | `ANE_FIELDFARE_GPU_TRACE=<path>` | Record every GPU encoder's execution and the host's waits on one clock, and write a Chrome trace to `<path>` (open it at ui.perfetto.dev). `Scripts/profile/summarize.py <path>` prints GPU time per kernel and GPU idle time by what the host was doing. Costs no measurable speed. |
 | `ANE_FIELDFARE_KERNEL_PROFILE=1` | Print a per-kernel breakdown of GPU time in decode. Each kernel runs in its own command buffer, which inflates small kernels; prefer `ANE_FIELDFARE_GPU_TRACE`. |
 | `ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS=n` | Use the ANE for layers `0..<n` only. |
-| `ANE_FIELDFARE_HOT_HEAD=0` | Turn off the [hot-vocabulary shortcut](#hot-vocabulary-shortcut). |
+| `ANE_FIELDFARE_HOT_HEAD=0` | `ANEFieldfareBench` only: turn off the [hot-vocabulary shortcut](#hot-vocabulary-shortcut). |
 | `ANE_FIELDFARE_DRAFT_HOT_HEAD=0` | Let the drafter score the full vocabulary instead of a 16k-token list. |
-| `ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` | Plan every verify layer's experts on the CPU instead of routing them on the GPU. Same output, slower. |
+| `ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` | Plan every verify layer's experts on the CPU instead of routing them on the GPU. Slower; meant for checking the GPU routing. |
 | `ANE_FIELDFARE_VERIFY_BIND_TOP=n` | Guessed experts per verify row bound for GPU routing. Default 48. |
 | `ANE_FIELDFARE_TEST_CHECKPOINT=<path>` | Model location for tests, if not the default. |
 | `ANE_FIELDFARE_API_KEY=<key>` | Server only: require `Authorization: Bearer <key>`, like `--api-key`, without putting the key on the command line. |
@@ -139,8 +115,7 @@ it returns the CLI's text.
 Scripts/build.sh     # also builds the server
 
 .build/swift-hotpath/release/ANEFieldfareServer \
-  --model checkpoints/gturbo/gemma4.gturbo \
-  --drafter checkpoints/dflash/gemma-4-26B-A4B-it-DFlash   # optional
+  --model checkpoints/gturbo/gemma4.gturbo
 # [server] listening on http://127.0.0.1:8080/v1 (model id gemma-4-26b-a4b-it)
 
 curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{
@@ -157,7 +132,7 @@ expect OpenRouter's base URL can use `http://127.0.0.1:8080/api/v1`.
 | Server option | What it does |
 | --- | --- |
 | `--model <dir>` | The `.gturbo` model. Required. |
-| `--drafter <dir>` | DFlash drafter: greedy and sampled requests decode speculatively (not with a repetition penalty). |
+| `--drafter <dir\|off>` | DFlash drafter, if not in the default place: greedy and sampled requests decode speculatively (not with a repetition penalty). `off` turns it off. |
 | `--host <address>`, `--port <n>` | Where to listen. Default `127.0.0.1:8080`; `--host 0.0.0.0` for other machines. |
 | `--max-context <n>` | Prompt plus completion limit in tokens. Default 32768. |
 | `--model-id <id>` | The id `/v1/models` advertises. Default `gemma-4-26b-a4b-it`. Requests may name any model. |
@@ -194,9 +169,9 @@ the drafter.
 **Concurrency.** One generation runs at a time; others wait in order, up to
 `--max-queue`, and further requests get `503` with `Retry-After`. A client that
 disconnects cancels its generation (between tokens, or between prefill chunks)
-or leaves the line. Every request starts from an empty KV cache: no prompt
-prefix is reused between requests, so each turn of a chat prefills the whole
-conversation again.
+or leaves the line. The server keeps the last request's KV cache: when the
+next request starts with the same tokens and decodes the same way (a chat
+re-sending its history), only the new part of the prompt is prefilled.
 
 **Errors** use OpenAI's shape, `{"error": {"message", "type", "param",
 "code"}}`: 400 for invalid requests, 401 for a missing or wrong key, 404, 405,
@@ -282,7 +257,7 @@ job, routed experts during prefill, and the code treats it as optional.
 
 ### Speculative decoding
 
-`--drafter` (`Runtime/DFlash/`) uses a small DFlash draft model to propose a
+Speculative decoding (`Runtime/DFlash/`) uses a small DFlash draft model to propose a
 block of up to 16 next tokens. The main model then **verifies** the block in
 one pass: it computes its own choice at each position and keeps the drafted
 tokens up to the first one it disagrees with, plus its own token there.
@@ -300,8 +275,9 @@ The pipeline is built so the GPU never waits for the CPU:
   next layer's experts for every row. Those guesses (every resident expert, for
   layer 0) are bound while the GPU runs the layer, and a planning kernel picks
   out the ones the rows actually chose. The CPU only patches the rare route
-  that wasn't guessed or whose expert is still on disk. Output is bitwise the
-  same as planning every layer on the CPU.
+  that wasn't guessed or whose expert is still on disk. It plans the same
+  routes as the CPU would; the tests check this end to end, by comparing
+  speculative output with plain decoding.
 - **The drafter's inputs never pass through the CPU.** The main model copies
   the six hidden-state layers the drafter reads into a ring buffer on the GPU,
   as part of each layer's work.
@@ -345,7 +321,7 @@ was built by `Scripts/hotvocab/build.py`.
 M5, 16 GB, macOS 27. Greedy decoding, 192 generated tokens, from the benchmark
 quick suite:
 
-| Prompt | Plain | `--drafter` |
+| Prompt | `--drafter off` | Default (drafter) |
 | --- | ---: | ---: |
 | code | 51.2 tok/s | 98.7 tok/s |
 | math word problem | 49.1 tok/s | 78.3 tok/s |

@@ -7,8 +7,6 @@ import Metal
 /// inside `buffer`.
 final class ResidentBuffer {
     let buffer: any MTLBuffer
-    let residentSize: UInt64
-    let mappedLength: Int
 
     /// `mmap` the page-aligned window covering `[fileOffset, fileOffset + residentSize)`
     /// inside the file at `fileURL`. The wrapped `MTLBuffer` starts at the
@@ -73,7 +71,5 @@ final class ResidentBuffer {
         }
 
         self.buffer = buf
-        self.residentSize = residentSize
-        self.mappedLength = mappedLen
     }
 }

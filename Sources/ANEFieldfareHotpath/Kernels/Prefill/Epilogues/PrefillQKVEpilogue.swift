@@ -11,26 +11,23 @@ final class PrefillQKVEpilogue {
     }
 
     func encode(commandBuffer: any MTLCommandBuffer,
-                       q: any MTLBuffer,
-                       qOffset: Int = 0,
-                       k: any MTLBuffer,
-                       kOffset: Int = 0,
-                       v: any MTLBuffer,
-                       vOffset: Int = 0,
-                       qWeight: any MTLBuffer,
-                       qWeightOffset: Int = 0,
-                       kWeight: any MTLBuffer,
-                       kWeightOffset: Int = 0,
-                       startPosition: UInt32,
-                       queryCount: UInt32,
-                       headDim: UInt32,
-                       numQHeads: UInt32,
-                       numKVHeads: UInt32,
-                       qTokenStrideElements: UInt32,
-                       kvTokenStrideElements: UInt32,
-                       theta: Float,
-                       rotatedPairs: UInt32,
-                       eps: Float) {
+                q: any MTLBuffer,
+                k: any MTLBuffer,
+                v: any MTLBuffer,
+                qWeight: any MTLBuffer,
+                qWeightOffset: Int = 0,
+                kWeight: any MTLBuffer,
+                kWeightOffset: Int = 0,
+                startPosition: UInt32,
+                queryCount: UInt32,
+                headDim: UInt32,
+                numQHeads: UInt32,
+                numKVHeads: UInt32,
+                qTokenStrideElements: UInt32,
+                kvTokenStrideElements: UInt32,
+                theta: Float,
+                rotatedPairs: UInt32,
+                eps: Float) {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(headDim > 0 && headDim % 2 == 0, "headDim must be positive and even")
         precondition(numQHeads > 0, "numQHeads must be positive")
@@ -44,11 +41,9 @@ final class PrefillQKVEpilogue {
 
         perHeadNorm.encodeBF16W(commandBuffer: commandBuffer,
                                 x: q,
-                                xOffset: qOffset,
                                 weight: qWeight,
                                 weightOffset: qWeightOffset,
                                 out: q,
-                                outOffset: qOffset,
                                 queryCount: queryCount,
                                 headDim: headDim,
                                 numHeads: numQHeads,
@@ -56,11 +51,9 @@ final class PrefillQKVEpilogue {
                                 eps: eps)
         perHeadNorm.encodeBF16W(commandBuffer: commandBuffer,
                                 x: k,
-                                xOffset: kOffset,
                                 weight: kWeight,
                                 weightOffset: kWeightOffset,
                                 out: k,
-                                outOffset: kOffset,
                                 queryCount: queryCount,
                                 headDim: headDim,
                                 numHeads: numKVHeads,
@@ -68,9 +61,7 @@ final class PrefillQKVEpilogue {
                                 eps: eps)
         perHeadNorm.encodeNoScale(commandBuffer: commandBuffer,
                                   x: v,
-                                  xOffset: vOffset,
                                   out: v,
-                                  outOffset: vOffset,
                                   queryCount: queryCount,
                                   headDim: headDim,
                                   numHeads: numKVHeads,
@@ -80,7 +71,6 @@ final class PrefillQKVEpilogue {
         if rotatedPairs * 2 == headDim {
             rope.encodeDefaultNeox(commandBuffer: commandBuffer,
                                    data: q,
-                                   dataOffset: qOffset,
                                    startPosition: startPosition,
                                    queryCount: queryCount,
                                    headDim: headDim,
@@ -89,7 +79,6 @@ final class PrefillQKVEpilogue {
                                    theta: theta)
             rope.encodeDefaultNeox(commandBuffer: commandBuffer,
                                    data: k,
-                                   dataOffset: kOffset,
                                    startPosition: startPosition,
                                    queryCount: queryCount,
                                    headDim: headDim,
@@ -99,7 +88,6 @@ final class PrefillQKVEpilogue {
         } else {
             rope.encodeProportionalNeox(commandBuffer: commandBuffer,
                                         data: q,
-                                        dataOffset: qOffset,
                                         startPosition: startPosition,
                                         queryCount: queryCount,
                                         headDim: headDim,
@@ -109,7 +97,6 @@ final class PrefillQKVEpilogue {
                                         theta: theta)
             rope.encodeProportionalNeox(commandBuffer: commandBuffer,
                                         data: k,
-                                        dataOffset: kOffset,
                                         startPosition: startPosition,
                                         queryCount: queryCount,
                                         headDim: headDim,

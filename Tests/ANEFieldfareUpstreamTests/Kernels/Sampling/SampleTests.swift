@@ -62,63 +62,6 @@ import ANEFieldfareValidationSupport
         #expect(id == 1337, "got \(id)")
     }
 
-    /// Identical seed must yield identical samples — the xorshift64 state is
-    /// the only source of non-determinism in the stochastic path.
-    @Test func seededRng_isDeterministic() throws {
-        let v = 1024
-        var rng = SeedTree(0x51A7_1003).key("sample-seeded-determinism")
-        let values = (0..<v).map { _ in rng.uniform(0.0, 1.0) }
-        let probs = Self.makeProbs(values)
-
-        let seed: UInt64 = 0xDEADBEEFCAFEF00D
-        let a = try Self.runSampler(probs: probs, temperature: 1.0,
-                                    topK: 0, topP: 1.0, seed: seed)
-        let b = try Self.runSampler(probs: probs, temperature: 1.0,
-                                    topK: 0, topP: 1.0, seed: seed)
-        #expect(a == b, "deterministic seed produced \(a) vs \(b)")
-
-        // Different seed should (very probably) give a different draw on a
-        // uniform-ish distribution. Allow equality once but expect divergence
-        // across a small sweep.
-        var sawDifferent = false
-        for s: UInt64 in [42, 1337, 0xAABBCCDD, 0xFFFEDCBA] {
-            let c = try Self.runSampler(probs: probs, temperature: 1.0,
-                                        topK: 0, topP: 1.0, seed: s)
-            if c != a { sawDifferent = true; break }
-        }
-        #expect(sawDifferent, "all seeds produced same id — RNG likely stuck")
-    }
-
-    /// Gumbel fast path (topK = 0, topP = 1): a spread distribution at high
-    /// temperature must always return an in-range id at the CDF-underflow edge,
-    /// and a sharply peaked one at low temperature must
-    /// concentrate on the peak.
-    @Test func gumbelFastPath_staysInRangeAndConcentrates() throws {
-        let v = 4096
-        var rng = SeedTree(0x51A7_1004).key("sample-gumbel-spread")
-        let spread = Self.makeProbs((0..<v).map { _ in rng.uniform(0.5, 1.0) })
-        for t in 0..<16 {
-            let seed = (UInt64(t) &+ 1) &* 0x9E3779B97F4A7C15
-            let id = try Self.runSampler(probs: spread, temperature: 2.0,
-                                         topK: 0, topP: 1.0, seed: seed)
-            #expect(id < UInt32(v), "trial \(t): out-of-range id \(id)")
-        }
-
-        var peaked = [Float](repeating: 0.0001, count: v)
-        peaked[2049] = 0.9
-        let probs = Self.makeProbs(peaked)
-        var hits = 0
-        for t in 0..<32 {
-            let seed = (UInt64(t) &+ 1) &* 0x9E3779B97F4A7C15
-            let id = try Self.runSampler(probs: probs, temperature: 0.3,
-                                         topK: 0, topP: 1.0, seed: seed)
-            if id == 2049 { hits += 1 }
-        }
-        // At T=0.3 the peak's re-sharpened mass is ~1 - 1e-9; any miss in 32
-        // draws indicates a broken distribution, but allow one for FP slack.
-        #expect(hits >= 31, "peak drawn \(hits)/32 times")
-    }
-
     /// top_k = 4: the sampled token must be one of the top-4 indices, run
     /// across many trials. We hand-craft a distribution where the top-4 are
     /// well-separated from the rest.

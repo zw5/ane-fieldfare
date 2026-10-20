@@ -4,31 +4,6 @@ import Testing
 import ANEFieldfareValidationSupport
 
 @Suite struct PrefillGroupedRoutedMoETests {
-    static func measuredPressureRoutes() throws -> PrefillMoEGroupedRoutes {
-        var expertAssignments: [UInt32] = []
-        expertAssignments.reserveCapacity(256)
-        for expert in 0..<16 {
-            let count = expert < 5 ? 15 : 14
-            expertAssignments.append(contentsOf: repeatElement(UInt32(expert), count: count))
-        }
-        expertAssignments.append(contentsOf: repeatElement(UInt32(16), count: 27))
-        #expect(expertAssignments.count == 256)
-
-        var pairs: [PrefillTokenExpertPair] = []
-        pairs.reserveCapacity(256)
-        for i in 0..<256 {
-            pairs.append(Self.pair(token: UInt32(i / 8),
-                                   expert: expertAssignments[i],
-                                   rank: UInt32(i % 8)))
-        }
-        return try PrefillMoEGrouping.groupTokenExpertPairs(
-            pairs,
-            queryCount: 32,
-            topK: 8,
-            numExperts: 128,
-            tileExpertCount: 16)
-    }
-
     static func pair(token: UInt32, expert: UInt32, rank: UInt32) -> PrefillTokenExpertPair {
         PrefillTokenExpertPair(token: token,
                                expert: expert,
@@ -52,29 +27,6 @@ import ANEFieldfareValidationSupport
                        shape: (0, UInt32(index), 0, 0),
                        dtype: 0)
         }
-    }
-
-    static func tileFetchRoutes() throws -> PrefillMoEGroupedRoutes {
-        let pairs = [
-            Self.pair(token: 0, expert: 3, rank: 0),
-            Self.pair(token: 0, expert: 1, rank: 1),
-            Self.pair(token: 1, expert: 5, rank: 0),
-            Self.pair(token: 1, expert: 3, rank: 1),
-            Self.pair(token: 2, expert: 1, rank: 0),
-            Self.pair(token: 2, expert: 5, rank: 1),
-        ]
-        return try PrefillMoEGrouping.groupTokenExpertPairs(
-            pairs,
-            queryCount: 3,
-            topK: 2,
-            numExperts: 8,
-            tileExpertCount: 3)
-    }
-
-    static func byte(_ view: TensorView, at relativeOffset: Int) -> UInt8 {
-        unsafe view.buffer.contents()
-            .advanced(by: Int(view.offset) + relativeOffset)
-            .load(as: UInt8.self)
     }
 
     static func streamedViewsWithNonzeroOffsets(device: any MTLDevice,
@@ -117,54 +69,21 @@ import ANEFieldfareValidationSupport
         var stride = 0
         for expert in 0..<numExperts {
             var bytes: [UInt8] = []
-            let gateWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .packed)
-            let gateSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .scales)
-            let gateBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .biases)
-
-            let upWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .packed)
-            let upSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .scales)
-            let upBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .biases)
-
-            let downWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .packed)
-            let downSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .scales)
-            let downBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .biases)
-
-            let currentOffsets = MoEExpertOffsets(gateWOff: gateWOff,
-                                                  gateSOff: gateSOff,
-                                                  gateBOff: gateBOff,
-                                                  upWOff: upWOff,
-                                                  upSOff: upSOff,
-                                                  upBOff: upBOff,
-                                                  downWOff: downWOff,
-                                                  downSOff: downSOff,
-                                                  downBOff: downBOff)
+            // Packed weights, scales, then biases for gate, up and down.
+            var o: [UInt32] = []
+            for (role, shape) in [(rows: f, cols: d), (rows: f, cols: d), (rows: d, cols: f)].enumerated() {
+                let rows = Self.syntheticRows(rows: shape.rows, cols: shape.cols, expert: expert, role: role)
+                    .map { Quantization.quantizeInt4Affine($0) }
+                o.append(UInt32(bytes.count))
+                for row in rows { bytes.append(contentsOf: row.packed) }
+                o.append(UInt32(bytes.count))
+                for row in rows { Self.appendU16(row.scales, to: &bytes) }
+                o.append(UInt32(bytes.count))
+                for row in rows { Self.appendU16(row.biases, to: &bytes) }
+            }
+            let currentOffsets = MoEExpertOffsets(gateWOff: o[0], gateSOff: o[1], gateBOff: o[2],
+                                                  upWOff: o[3], upSOff: o[4], upBOff: o[5],
+                                                  downWOff: o[6], downSOff: o[7], downBOff: o[8])
             if offsets == nil {
                 offsets = currentOffsets
                 stride = bytes.count
@@ -176,32 +95,6 @@ import ANEFieldfareValidationSupport
             allBytes.append(contentsOf: bytes)
         }
         return SyntheticExpertPool(bytes: allBytes, offsets: offsets!, stride: stride)
-    }
-
-    enum ProjectionComponent {
-        case packed
-        case scales
-        case biases
-    }
-
-    static func appendProjection(rows: [[Float]],
-                                         to bytes: inout [UInt8],
-                                         component: ProjectionComponent) {
-        let quantized = rows.map { Quantization.quantizeInt4Affine($0) }
-        switch component {
-        case .packed:
-            for row in quantized {
-                bytes.append(contentsOf: row.packed)
-            }
-        case .scales:
-            for row in quantized {
-                Self.appendU16(row.scales, to: &bytes)
-            }
-        case .biases:
-            for row in quantized {
-                Self.appendU16(row.biases, to: &bytes)
-            }
-        }
     }
 
     static func syntheticRows(rows: Int, cols: Int, expert: Int, role: Int) -> [[Float]] {
@@ -227,49 +120,31 @@ import ANEFieldfareValidationSupport
     }
 
     static func cpuSyntheticRoutePartials(routes: PrefillMoEGroupedRoutes,
+                                                  queryCount: Int,
                                                   hidden: [Float16],
                                                   hiddenStride: Int,
                                                   pool: SyntheticExpertPool,
                                                   topK: Int,
                                                   d: Int,
                                                   f: Int) -> [Float16] {
-        var out = [Float16](repeating: -99, count: routes.queryCount * topK * d)
+        var out = [Float16](repeating: -99, count: queryCount * topK * d)
+        let o = pool.offsets
         for pair in routes.sortedPairs {
             let expertBase = Int(pair.expert) * pool.stride
+            func dot(_ w: UInt32, _ s: UInt32, _ b: UInt32, row: Int, n: Int, x: [Float]) -> Float {
+                Self.cpuInt4Dot(bytes: pool.bytes, base: expertBase,
+                                wOff: Int(w), sOff: Int(s), bOff: Int(b), row: row, n: n, x: x)
+            }
             let xBase = Int(pair.token) * hiddenStride
             let x = (0..<d).map { Float(hidden[xBase + $0]) }
-            var act = [Float16](repeating: 0, count: f)
-            for row in 0..<f {
-                let gate = Self.cpuInt4Dot(bytes: pool.bytes,
-                                           base: expertBase,
-                                           wOff: Int(pool.offsets.gateWOff),
-                                           sOff: Int(pool.offsets.gateSOff),
-                                           bOff: Int(pool.offsets.gateBOff),
-                                           row: row,
-                                           n: d,
-                                           x: x)
-                let up = Self.cpuInt4Dot(bytes: pool.bytes,
-                                         base: expertBase,
-                                         wOff: Int(pool.offsets.upWOff),
-                                         sOff: Int(pool.offsets.upSOff),
-                                         bOff: Int(pool.offsets.upBOff),
-                                         row: row,
-                                         n: d,
-                                         x: x)
-                act[row] = Float16(MoeRef.geluTanh([gate])[0] * up)
+            let act = (0..<f).map { row -> Float in
+                let gate = dot(o.gateWOff, o.gateSOff, o.gateBOff, row: row, n: d, x: x)
+                let up = dot(o.upWOff, o.upSOff, o.upBOff, row: row, n: d, x: x)
+                return Float(Float16(MoeRef.geluTanh([gate])[0] * up))
             }
-            let actFloat = act.map { Float($0) }
             let outBase = (Int(pair.token) * topK + Int(pair.rank)) * d
             for row in 0..<d {
-                let value = Self.cpuInt4Dot(bytes: pool.bytes,
-                                            base: expertBase,
-                                            wOff: Int(pool.offsets.downWOff),
-                                            sOff: Int(pool.offsets.downSOff),
-                                            bOff: Int(pool.offsets.downBOff),
-                                            row: row,
-                                            n: f,
-                                            x: actFloat)
-                out[outBase + row] = Float16(value)
+                out[outBase + row] = Float16(dot(o.downWOff, o.downSOff, o.downBOff, row: row, n: f, x: act))
             }
         }
         return out

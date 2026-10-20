@@ -8,72 +8,11 @@ import ANEFieldfareValidationSupport
     private static let d = ArchConfig.gemma4_26B_A4B.hiddenSize
     private static let eps: Float = 1e-6
 
-    @Test func fusedLayerTail_matchesCpuReferenceTolerance_realShape() throws {
-        var rng = SplitMix64(seed: 0xC0DE_7A11)
-        let h2 = (0..<Self.d).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
-        let h1 = (0..<Self.d).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
-        let hidden = (0..<Self.d).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
-        let wPostFFN2 = (0..<Self.d).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
-        let wPostFFN = (0..<Self.d).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
-        let layerScalar = rng.uniform(0.75, 1.25)
-
-        let ctx = try MetalContext()
-        let fused = try FusedLayerTail(context: ctx)
-        guard
-            let h2Buf = unsafe ctx.device.makeBuffer(bytes: h2, length: Self.bytes(h2.count), options: .storageModeShared),
-            let h1Buf = unsafe ctx.device.makeBuffer(bytes: h1, length: Self.bytes(h1.count), options: .storageModeShared),
-            let hiddenBuf = unsafe ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(hidden.count), options: .storageModeShared),
-            let w2 = unsafe ctx.device.makeBuffer(bytes: wPostFFN2,
-                                           length: wPostFFN2.count * MemoryLayout<UInt16>.size,
-                                           options: .storageModeShared),
-            let w = unsafe ctx.device.makeBuffer(bytes: wPostFFN,
-                                          length: wPostFFN.count * MemoryLayout<UInt16>.size,
-                                          options: .storageModeShared)
-        else {
-            Issue.record("Failed to allocate buffers")
-            return
-        }
-
-        guard let commandBuffer = ctx.queue.makeCommandBuffer() else {
-            Issue.record("Failed to create command buffer")
-            return
-        }
-        fused.encode(commandBuffer: commandBuffer,
-                     h2: h2Buf,
-                     h1: h1Buf,
-                     hidden: hiddenBuf,
-                     postFFN2Weight: w2,
-                     postFFNWeight: w,
-                     d: UInt32(Self.d),
-                     eps: Self.eps,
-                     layerScalar: layerScalar)
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        if let error = commandBuffer.error { throw error }
-
-        let ref = Self.cpuReference(h2: h2,
-                               h1: h1,
-                               hidden: hidden,
-                               wPostFFN2: wPostFFN2,
-                               wPostFFN: wPostFFN,
-                               layerScalar: layerScalar)
-        var maxAbs: Float = 0
-        var refNorm: Float = 0
-        for i in 0..<Self.d {
-            let got = unsafe Float(hiddenBuf.contents().load(fromByteOffset: i * MemoryLayout<Float16>.size,
-                                                      as: Float16.self))
-            maxAbs = max(maxAbs, abs(got - ref[i]))
-            refNorm = max(refNorm, abs(ref[i]))
-        }
-        let rel = maxAbs / max(refNorm, 1e-6)
-        #expect(rel < 4e-3, "rel=\(rel) maxAbs=\(maxAbs) refNorm=\(refNorm)")
-    }
-
     /// The norm-fusing tail against the three dispatches it replaces in
-    /// decode: post-FFN-1 norm of h1, the tail, the next layer's input norm.
-    @Test(arguments: [true, false])
-    func fusedLayerTailNorms_isBitwiseTheSeparateDispatches(hasNext: Bool) throws {
-        var rng = SplitMix64(seed: hasNext ? 0x7A11_0001 : 0x7A11_0002)
+    /// decode (post-FFN-1 norm of h1, the tail, the next layer's input norm),
+    /// bitwise; and the separate tail against a CPU reference.
+    @Test func fusedLayerTailNorms_matchSeparateDispatchesAndReference() throws {
+        var rng = SplitMix64(seed: 0x7A11_0001)
         func halves(_ lo: Float, _ hi: Float) -> [Float16] { (0..<Self.d).map { _ in Float16(rng.uniform(lo, hi)) } }
         func bf16(_ lo: Float, _ hi: Float) -> [UInt16] { (0..<Self.d).map { _ in Quantization.bf16Bits(rng.uniform(lo, hi)) } }
         let h2 = halves(-1, 1), h1 = halves(-3, 3), hidden = halves(-2, 2)
@@ -105,12 +44,20 @@ import ANEFieldfareValidationSupport
         rms.encodeBF16W(commandBuffer: cb1, x: sepH1, weight: w[0], out: sepH1, d: d, eps: Self.eps)
         tail.encode(commandBuffer: cb1, h2: sepH2, h1: sepH1, hidden: sepHidden,
                     postFFN2Weight: w[1], postFFNWeight: w[2], d: d, eps: Self.eps, layerScalar: layerScalar)
-        if hasNext {
-            rms.encodeBF16W(commandBuffer: cb1, x: sepHidden, weight: w[3], out: sepNormed, d: d, eps: Self.eps)
-        }
+        rms.encodeBF16W(commandBuffer: cb1, x: sepHidden, weight: w[3], out: sepNormed, d: d, eps: Self.eps)
         cb1.commit()
         cb1.waitUntilCompleted()
         if let error = cb1.error { throw error }
+
+        // The tail's CPU oracle, fed the reference post-FFN-1 norm of h1.
+        let h1Normed = RmsNormRef.apply(x: h1.map(Float.init),
+                                        weight: weights[0].map(Quantization.bf16ToFloat),
+                                        eps: Self.eps).map { Float16($0) }
+        let ref = Self.cpuReference(h2: h2, h1: h1Normed, hidden: hidden,
+                                    wPostFFN2: weights[1], wPostFFN: weights[2], layerScalar: layerScalar)
+        let separate = halves(of: sepHidden).map { Float(Float16(bitPattern: $0)) }
+        let rel = RelError.compute(actual: separate, reference: ref)
+        #expect(rel < 4e-3, "tail vs CPU reference rel=\(rel)")
 
         // Fused.
         let h2Buf = try buffer(h2), h1Buf = try buffer(h1), hiddenBuf = try buffer(hidden)
@@ -118,7 +65,7 @@ import ANEFieldfareValidationSupport
         let cb2 = try #require(ctx.queue.makeCommandBuffer())
         tail.encodeWithNorms(commandBuffer: cb2, h2: h2Buf, h1: h1Buf, hidden: hiddenBuf,
                              postFFN1Weight: view(w[0]), postFFN2Weight: view(w[1]), postFFNWeight: view(w[2]),
-                             next: hasNext ? (view(w[3]), normed) : nil,
+                             next: (view(w[3]), normed),
                              d: d, eps: Self.eps, layerScalar: layerScalar)
         cb2.commit()
         cb2.waitUntilCompleted()
@@ -146,9 +93,4 @@ import ANEFieldfareValidationSupport
         let hScale = Float(Float16(layerScalar))
         return zip(hidden, h12Norm).map { Float(Float16(Float(Float16(Float($0.0) + $0.1)) * hScale)) }
     }
-
-    private static func bytes(_ count: Int) -> Int {
-        count * MemoryLayout<Float16>.size
-    }
-
 }

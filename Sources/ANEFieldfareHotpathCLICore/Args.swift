@@ -30,11 +30,25 @@ public struct Args: Equatable, Sendable {
     public var prefillChunkTokensAuto: Bool
     public var faultPolicy: RuntimeFaultPolicy
     public var earlyExpertRead: RuntimeEarlyExpertRead
-    /// DFlash drafter directory; enables speculative greedy decoding.
+    /// DFlash drafter directory; enables speculative decoding.
     public var drafter: String?
+    public var drafterOrigin: DrafterOrigin
+
+    /// How `drafter` was chosen. Speculation is the default: without
+    /// `--drafter` the drafter is looked for beside the model.
+    public enum DrafterOrigin: Equatable, Sendable {
+        /// Named with `--drafter <dir>`; conflicting options are errors.
+        case named
+        /// Found by `DrafterLocation`; a request it cannot serve decodes plainly.
+        case found
+        /// Looked for and not there.
+        case missing
+        /// `--drafter off`, or a request speculation cannot serve.
+        case off
+    }
 
     public init(model: String,
-                backend: RuntimeBackend = .metal,
+                backend: RuntimeBackend = .hybridANE,
                 promptFile: String? = nil,
                 countTokens: Bool = false,
                 expertTopK: Int = 8,
@@ -59,9 +73,11 @@ public struct Args: Equatable, Sendable {
                 prefillChunkTokensAuto: Bool = true,
                 faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration.production.faultPolicy,
                 earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration.production.earlyExpertRead,
-                drafter: String? = nil) {
+                drafter: String? = nil,
+                drafterOrigin: DrafterOrigin? = nil) {
         self.model = model
         self.drafter = drafter
+        self.drafterOrigin = drafterOrigin ?? (drafter == nil ? .off : .named)
         self.earlyExpertRead = earlyExpertRead
         self.backend = backend
         self.faultPolicy = faultPolicy
@@ -142,7 +158,9 @@ extension Args {
                                 Routed-expert residency during vision (default on-demand).
 
     options:
-      --backend <metal|hybrid-ane> Execution backend (default metal).
+      --backend <metal|hybrid-ane> Execution backend (default hybrid-ane; metal when
+                                 --expert-top-k, --prefill-expert-cap or
+                                 --prefill off rule the ANE out).
       --fault-policy <fail-closed|failover-metal>
                                  On an ANE guest fault, abort (default) or
                                  evict the guest and continue on Metal.
@@ -162,11 +180,13 @@ extension Args {
       --early-expert-read <s>    Decode early read of the next layer's likeliest
                                  experts in idle storage time: off, router or
                                  fitted (default fitted).
-      --drafter <dir>            DFlash drafter checkpoint: speculative decoding,
-                                 greedy or sampled (the same text as without it
-                                 for a given --seed), with each step's verify
-                                 length chosen from measured cost and acceptance.
-                                 Requires a text prompt and no repetition penalty.
+      --drafter <dir|off>        DFlash drafter checkpoint for speculative
+                                 decoding, greedy or sampled, with each step's
+                                 verify length chosen from measured cost and
+                                 acceptance. Default: found beside the model or
+                                 in ../dflash/\(DrafterLocation.directoryName).
+                                 Image prompts and a repetition penalty decode
+                                 without it.
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
       --prefill-chunk-tokens <n|auto>
                                  Prefill chunk size: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedPrefillChunkTokens, alsoAccepting: ["auto"]))
@@ -209,7 +229,7 @@ extension Args {
     }
 
     public static func parse(_ argv: [String]) throws -> Args {
-        var backend = RuntimeBackend.metal
+        var backend: RuntimeBackend?
         var faultPolicy = RuntimeConfiguration.production.faultPolicy
         var promptFile: String?
         var countTokens = false
@@ -397,25 +417,41 @@ extension Args {
                 throw ArgsError.mutuallyExclusive("--prompt-file", flag)
             }
         }
-        if drafter != nil, repetitionPenalty != 1 {
-            throw ArgsError.invalidValue(
-                flag: "--drafter", value: "speculative decoding cannot apply a repetition penalty")
-        }
-        if drafter != nil, !images.isEmpty {
-            throw ArgsError.mutuallyExclusive("--drafter", "--image")
-        }
-        // Without prefill every prompt token goes through the speculative
-        // decoder one at a time, which would draft and verify each of them.
-        if drafter != nil, prefillPolicy == .off {
-            throw ArgsError.mutuallyExclusive("--drafter", "--prefill off")
+        // Without prefill every prompt token would go through the speculative
+        // decoder one at a time, drafting and verifying each of them.
+        let speculationFits = repetitionPenalty == 1 && images.isEmpty && prefillPolicy != .off
+        let drafterOrigin: Args.DrafterOrigin
+        switch drafter {
+        case "off"?:
+            drafter = nil
+            drafterOrigin = .off
+        case .some:
+            if repetitionPenalty != 1 {
+                throw ArgsError.invalidValue(
+                    flag: "--drafter", value: "speculative decoding cannot apply a repetition penalty")
+            }
+            if !images.isEmpty {
+                throw ArgsError.mutuallyExclusive("--drafter", "--image")
+            }
+            if prefillPolicy == .off {
+                throw ArgsError.mutuallyExclusive("--drafter", "--prefill off")
+            }
+            drafterOrigin = .named
+        case nil where !speculationFits:
+            drafterOrigin = .off
+        case nil:
+            drafter = DrafterLocation.find(model: model)?.path
+            drafterOrigin = drafter == nil ? .missing : .found
         }
         if temperature > 0, topK == nil, let topP, topP < 1 {
             throw ArgsError.invalidValue(
                 flag: "--top-p",
                 value: "\(topP) requires --top-k between 1 and 256")
         }
+        // The ANE rail serves prefill with all eight routed experts, uncapped.
+        let aneFits = expertTopK == 8 && prefillExpertCap == nil && prefillPolicy != .off
         let arguments = Args(model: model,
-                             backend: backend,
+                             backend: backend ?? (aneFits ? .hybridANE : .metal),
                              promptFile: promptFile,
                              countTokens: countTokens,
                              expertTopK: expertTopK,
@@ -440,7 +476,8 @@ extension Args {
                              prefillChunkTokensAuto: prefillChunkTokensAuto,
                              faultPolicy: faultPolicy,
                              earlyExpertRead: earlyExpertRead,
-                             drafter: drafter)
+                             drafter: drafter,
+                             drafterOrigin: drafterOrigin)
         _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         return arguments
     }

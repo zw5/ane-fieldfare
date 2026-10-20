@@ -7,7 +7,7 @@ final class PrefillFinalRowHeadInt4 {
     private let normed: any MTLBuffer
     private let maxD: Int
 
-    init(context: MetalContext, maxD: Int = 2816) throws {
+    init(context: MetalContext, maxD: Int) throws {
         precondition(maxD > 0, "maxD must be positive")
         self.rms = try RMSNorm(context: context)
         self.int4 = try DequantInt4GEMV(context: context)
@@ -32,7 +32,6 @@ final class PrefillFinalRowHeadInt4 {
                              biases: any MTLBuffer,
                              biasesOffset: Int = 0,
                              logits: any MTLBuffer,
-                             logitsOffset: Int = 0,
                              d: UInt32,
                              vocab: UInt32,
                              rmsEps: Float) {
@@ -59,7 +58,6 @@ final class PrefillFinalRowHeadInt4 {
                     biasesOffset: biasesOffset,
                     x: normed,
                     y: logits,
-                    yOffset: logitsOffset,
                     m: vocab,
                     n: d)
     }

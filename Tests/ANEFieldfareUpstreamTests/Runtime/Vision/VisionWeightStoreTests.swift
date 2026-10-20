@@ -5,16 +5,6 @@ import Testing
 @testable import ANEFieldfareImportedFormat
 
 @Suite struct VisionWeightStoreTests {
-    @Test func companionLocationPreservesTextModelStem() throws {
-        let text = URL(fileURLWithPath: "/models/custom-name.gturbo")
-        #expect(try VisionPackLocation.companionURL(forTextModel: text).path
-                == "/models/custom-name.vision.gturbo")
-        #expect(throws: VisionPackError.self) {
-            try VisionPackLocation.companionURL(
-                forTextModel: URL(fileURLWithPath: "/models/custom-name"))
-        }
-    }
-
     @Test func opensBoundedCompanion() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -25,10 +15,9 @@ import Testing
         #expect(store.manifest.modelID == "fixture/model")
         #expect(store.manifest.tensors.map(\.name) == ["vision.weight"])
         let mapped = try store.mapRegion(
-            executionPosition: 0,
+            tensorNames: ["vision.weight"],
             device: try #require(MTLCreateSystemDefaultDevice()))
-        #expect(mapped.residentSize == 2)
-        #expect(mapped.mappedLength == 2)
+        #expect(mapped.buffer.length == 2)
     }
 
     @Test func rejectsWrongTextModel() throws {

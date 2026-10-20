@@ -63,9 +63,6 @@ public struct Manifest: Decodable, Equatable, Sendable {
 public enum ManifestReader {
     public static let defaultMaxBytes: UInt64 = 4 * 1024 * 1024
 
-    /// Recognized flag keys. Anything else in `manifest.flags` is an error.
-    public static let knownFlags: Set<String> = GTurboFormatV1.knownFlags
-
     /// Fixed required entries. Packed-layer filenames come from layout.json and
     /// are cross-validated only after that document is decoded.
     public static let requiredFiles: [String] = [

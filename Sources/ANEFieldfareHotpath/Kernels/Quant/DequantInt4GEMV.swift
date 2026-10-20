@@ -61,7 +61,7 @@ final class DequantInt4GEMV {
     /// input traffic at 3–4 rows; past that the extra accumulators cost
     /// occupancy (measured: twice as slow at 8 rows). The ALU kernel only:
     /// 5+ rows normally take the matrix kernel.
-    static func weightRowsPerSIMD(rows: Int) -> Int {
+    private static func weightRowsPerSIMD(rows: Int) -> Int {
         (3...4).contains(rows) ? 2 : 1
     }
 

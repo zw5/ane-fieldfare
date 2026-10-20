@@ -175,16 +175,6 @@ package enum GTurboV1StructuralValidator {
         }
     }
 
-    package static func crossValidate(manifest: GTurboManifestV1,
-                                      layout: GTurboPackedExpertsLayoutV1) throws {
-        try crossValidate(
-            manifestNumLayers: manifest.numLayers,
-            manifestExpertsPerLayer: manifest.expertsPerLayer,
-            manifestExpertStride: manifest.expertStride,
-            manifestFileSizes: manifest.files.mapValues(\.size),
-            layout: layout)
-    }
-
     package static func crossValidate(
         manifestNumLayers: Int,
         manifestExpertsPerLayer: Int,

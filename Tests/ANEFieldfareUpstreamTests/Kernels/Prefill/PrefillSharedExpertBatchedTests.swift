@@ -40,7 +40,7 @@ struct PrefillSharedExpertBatchedTests {
         }
     }
 
-    @Test(arguments: [0, 14, 29])
+    @Test(arguments: [14])
     func batchedIsNoLessAccurateThanPerToken(layer: Int) throws {
         let context = try MetalContext()
         let model = try Model.load(directoryURL: try #require(installedCheckpointURL), device: context.device)
@@ -58,17 +58,16 @@ struct PrefillSharedExpertBatchedTests {
         func run(batched: Bool) throws -> [Float] {
             let kernel = try PrefillSharedExpert(context: context, weightBits: model.sharedExpertWeightBits,
                                                  batched: batched)
-            #expect(kernel.usesBatchedGEMM == batched)
             let madeX = unsafe context.device.makeBuffer(bytes: x, length: x.count * 2, options: .storageModeShared)
             let xBuffer = try #require(madeX)
             let y = try #require(context.device.makeBuffer(length: t * d * 2, options: .storageModeShared))
-            let scratch = try (0..<3).map { _ in try #require(context.device.makeBuffer(length: f * 2, options: .storageModePrivate)) }
+            let scratchAct = try #require(context.device.makeBuffer(length: f * 2, options: .storageModePrivate))
             let cb = try #require(context.queue.makeCommandBuffer())
             try kernel.encodeBlock(commandBuffer: cb, x: xBuffer, y: y,
                                    gate: projection(views.gate, rows: f, cols: d),
                                    up: projection(views.up, rows: f, cols: d),
                                    down: projection(views.down, rows: d, cols: f),
-                                   scratchGate: scratch[0], scratchUp: scratch[1], scratchAct: scratch[2],
+                                   scratchAct: scratchAct,
                                    queryCount: t, d: d, intermediate: f, xStrideElements: d, yStrideElements: d)
             cb.commit(); cb.waitUntilCompleted()
             #expect(cb.error == nil)

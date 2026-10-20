@@ -19,7 +19,6 @@ import Metal
 public final class DFlashDrafter {
     public let config: DFlashDrafterConfig
     public let maxContext: Int
-    public var vocabSize: Int { model.config.vocabSize }
     /// Context rows in the K/V cache, as of the last `settle` or
     /// host-driven update.
     public private(set) var contextLength = 0
@@ -274,7 +273,7 @@ public final class DFlashDrafter {
     /// draft r is drawn with the noise of position state.context + 1 + r,
     /// the noise the target draws that position with, so it matches the
     /// target's token exactly when both pick the same one.
-    func encodeDraft(_ cb: any MTLCommandBuffer, rows R: Int, sampling: TokenSampling? = nil) throws {
+    func encodeDraft(_ cb: any MTLCommandBuffer, rows R: Int, sampling: TokenSampling?) throws {
         guard R >= 2, R <= config.blockSize else {
             throw DFlashError.invalidState("block of \(R) outside 2...\(config.blockSize)")
         }

@@ -73,7 +73,6 @@ public struct MetalFunctionConstant: Hashable, Sendable {
     public enum Value: Hashable, Sendable {
         case bool(Bool)
         case uint32(UInt32)
-        case float(Float)
     }
 
     public let index: Int
@@ -134,7 +133,6 @@ public final class MetalContext: Sendable {
         "dequant_int4",
         "dequant_int8",
         "rmsnorm",
-        "rope",
         "attention",
         "moe",
         "logit",
@@ -157,7 +155,6 @@ public final class MetalContext: Sendable {
         "moe": "Metal/MoE",
         "prefill": "Metal/Prefill",
         "rmsnorm": "Metal/Primitives",
-        "rope": "Metal/Primitives",
         "tensorops": "Metal/TensorCore",
         "utility": "Metal/Primitives",
         "vision": "Metal/Vision",
@@ -238,18 +235,9 @@ public final class MetalContext: Sendable {
         return commandBuffer
     }
 
-    public func pipeline(_ name: String) throws -> any MTLComputePipelineState {
-        try pipeline(name, constants: [])
-    }
-
     public func pipeline(_ name: String,
-                         constants: [MetalFunctionConstant]) throws -> any MTLComputePipelineState {
-        try pipeline(name, constants: constants, maxTotalThreadsPerThreadgroup: nil)
-    }
-
-    public func pipeline(_ name: String,
-                         constants: [MetalFunctionConstant],
-                         maxTotalThreadsPerThreadgroup hint: Int?) throws -> any MTLComputePipelineState {
+                         constants: [MetalFunctionConstant] = [],
+                         maxTotalThreadsPerThreadgroup hint: Int? = nil) throws -> any MTLComputePipelineState {
         if let hint {
             precondition(hint > 0, "maxTotalThreadsPerThreadgroup must be positive")
         }
@@ -275,9 +263,6 @@ public final class MetalContext: Sendable {
             case .uint32(let value):
                 var v = value
                 unsafe values.setConstantValue(&v, type: .uint, index: constant.index)
-            case .float(let value):
-                var v = value
-                unsafe values.setConstantValue(&v, type: .float, index: constant.index)
             }
         }
 
@@ -302,7 +287,6 @@ public final class MetalContext: Sendable {
         switch value {
         case .bool(let v):   return "b:\(v ? 1 : 0)"
         case .uint32(let v): return "u:\(v)"
-        case .float(let v):  return "f:\(v.bitPattern)"
         }
     }
 }

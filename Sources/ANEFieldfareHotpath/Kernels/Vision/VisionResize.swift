@@ -1,17 +1,9 @@
 import Foundation
 public import Metal
 
-/// GPU separable bicubic resize, byte-identical to `TorchBicubicResize`.
-///
-/// The image front-end is the one place where a wrong filter changes what the
-/// model reads: measured on a UI screenshot, letting ImageIO do the reduction
-/// instead of this filter changed the transcription, dropping whole lines of
-/// text. Doing the reduction ourselves on the CPU fixes that but costs 0.1 to
-/// 0.2 s per image, which is most of the encode budget.
-///
-/// So the same arithmetic runs here. The weights come from
-/// `TorchBicubicResize.weightTable`, so the two paths cannot drift, and the
-/// tests assert byte equality rather than a tolerance.
+/// GPU separable bicubic resize, byte-identical to `TorchBicubicResize`: the
+/// weights come from `TorchBicubicResize.weightTable`, so the two paths
+/// cannot drift.
 public final class VisionResize {
     private struct Params {
         var sourceWidth: UInt32
@@ -40,64 +32,9 @@ public final class VisionResize {
         vertical = try context.device.makeComputePipelineState(function: verticalFunction)
     }
 
-    /// Bytes this resize will hold in GPU-visible buffers, so the caller can
-    /// report a peak that includes them.
-    public func scratchBytes(
-        sourceWidth: Int, sourceHeight: Int,
-        destinationWidth: Int, destinationHeight: Int
-    ) -> Int {
-        guard sourceWidth != destinationWidth || sourceHeight != destinationHeight else {
-            return 0
-        }
-        let intermediate = sourceHeight * destinationWidth * 4
-        let output = destinationHeight * destinationWidth * 4
-        return intermediate + output
-    }
-
-    /// Resizes RGBA8 pixels. `destination` must hold
+    /// Resizes RGBA8 pixels the caller has put in GPU-visible memory (so the
+    /// full-resolution decode is not copied again). `destination` must hold
     /// `destinationHeight * destinationRowBytes` bytes.
-    public func resize(
-        source: UnsafeRawPointer,
-        sourceWidth: Int,
-        sourceHeight: Int,
-        sourceRowBytes: Int,
-        destination: UnsafeMutableRawPointer,
-        destinationWidth: Int,
-        destinationHeight: Int,
-        destinationRowBytes: Int
-    ) throws {
-        guard sourceWidth > 0, sourceHeight > 0,
-              destinationWidth > 0, destinationHeight > 0 else { return }
-        if sourceWidth == destinationWidth && sourceHeight == destinationHeight {
-            for row in 0..<sourceHeight {
-                unsafe memcpy(destination.advanced(by: row * destinationRowBytes),
-                       source.advanced(by: row * sourceRowBytes),
-                       sourceWidth * 4)
-            }
-            return
-        }
-
-        let device = context.device
-        guard let sourceBuffer = unsafe device.makeBuffer(
-            bytes: source, length: sourceHeight * sourceRowBytes,
-            options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
-        try unsafe resize(sourceBuffer: sourceBuffer,
-                   sourceWidth: sourceWidth, sourceHeight: sourceHeight,
-                   sourceRowBytes: sourceRowBytes,
-                   destination: destination,
-                   destinationWidth: destinationWidth,
-                   destinationHeight: destinationHeight,
-                   destinationRowBytes: destinationRowBytes)
-    }
-
-    /// The same resize, reading pixels the caller already put in GPU-visible
-    /// memory.
-    ///
-    /// A native-resolution decode is the largest transient in the whole image
-    /// path — 192 MB for a 48 MP source — and copying it into a buffer doubled
-    /// that. Callers that can decode straight into an `MTLBuffer` should.
     public func resize(
         sourceBuffer: any MTLBuffer,
         sourceWidth: Int,
@@ -204,8 +141,7 @@ public final class VisionResize {
         encoder.setBuffer(source, offset: 0, index: 0)
         encoder.setBuffer(destination, offset: 0, index: 1)
         // Buffers, not `setBytes`: that path is capped at 4 KB and a 4x
-        // reduction of a 4,000-pixel axis needs about 32 KB of taps, which
-        // aborted the process rather than failing a call.
+        // reduction of a 4,000-pixel axis needs about 32 KB of taps.
         guard let starts = unsafe context.device.makeBuffer(
             bytes: table.starts,
             length: table.starts.count * MemoryLayout<Int32>.stride,

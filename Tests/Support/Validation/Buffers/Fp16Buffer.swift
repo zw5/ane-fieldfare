@@ -1,7 +1,6 @@
 public import Metal
 
-/// Make-/read- helpers for FP16 MTLBuffers. Replaces the byte-identical
-/// inline copies that lived in 12+ test files.
+/// Make-/read- helpers for FP16 MTLBuffers.
 public enum Fp16Buffer {
     public static func make(_ device: any MTLDevice, values: [Float]) -> any MTLBuffer? {
         let halves = values.map { Float16($0) }

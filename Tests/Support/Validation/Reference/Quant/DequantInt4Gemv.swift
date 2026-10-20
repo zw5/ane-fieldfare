@@ -2,13 +2,9 @@ import Foundation
 import Accelerate
 public import ANEFieldfareHotpath
 
-/// FP32 reference for the INT4-affine groupwise GEMV `y = W * x`.
-///
-/// Bulk-dequantizes each row to FP32 via `Quantization.dequantizeInt4Affine`,
-/// then dots with `vDSP_dotpr`. The kernel interleaves nibble unpack + scale +
-/// bias + FMA inside one inner loop per thread — different staging, different
-/// summation order. Bugs that depend on the in-flight dequant pattern won't
-/// replicate here.
+/// FP32 reference for the INT4-affine groupwise GEMV `y = W * x`: dequantize
+/// each row, then `vDSP_dotpr`, so staging and summation order differ from
+/// the kernel's fused inner loop.
 public enum DequantInt4GemvRef {
     public static func apply(
         weightRows: [Quantization.Int4AffineRow],

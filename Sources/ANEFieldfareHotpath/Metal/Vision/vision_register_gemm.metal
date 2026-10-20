@@ -18,9 +18,8 @@ struct VisionGEMMPaddedStore {
     uint paddedHeadDim;
 };
 
-/// Same expression as the standalone `vision_geglu` kernel. `up` is rounded to
-/// bfloat first because the split path stored it in a bfloat buffer before the
-/// elementwise pass read it back.
+/// tanh-approximated GELU(gate) * up, with `up` rounded to bfloat first, as
+/// an unfused path storing it in a bfloat buffer would.
 inline bfloat vision_geglu_combine(bfloat gate, float up) {
     const float x = float(gate);
     const float tanhInput = clamp(
@@ -29,12 +28,9 @@ inline bfloat vision_geglu_combine(bfloat gate, float up) {
     return bfloat(activated * float(bfloat(up)));
 }
 
-/// `FuseGeGLU` folds the elementwise GeGLU into this GEMM's epilogue. The kernel
-/// then computes the `up` projection and combines it with the `gate` values that
-/// a previous dispatch already wrote to `output`, so no separate `up` buffer and
-/// no separate GeGLU dispatch exist. Rounding `up` to bfloat before the GeGLU
-/// math reproduces the round trip through the retired `up` buffer exactly, which
-/// keeps the fused path bit-identical to the split one.
+/// `FuseGeGLU` folds GeGLU into this GEMM's epilogue: the kernel computes the
+/// `up` projection and combines it with the `gate` values a previous dispatch
+/// already wrote to `output`.
 template <bool FuseGeGLU>
 inline void tff_vision_register_gemm_impl(
     device bfloat* input,

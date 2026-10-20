@@ -1,6 +1,5 @@
 import Foundation
 import Metal
-import Darwin
 
 enum PrefillGroupedRoutedMoEBufferIndex {
     static let hidden = 0
@@ -118,7 +117,7 @@ struct VerifyBoundExpert {
     var pad: UInt32 = 0
 }
 
-public struct PrefillStreamedTileBinding: Equatable {
+public struct PrefillStreamedTileBinding {
     public let expertIDs: [Int]
     public let views: [TensorView]
 
@@ -157,10 +156,6 @@ public struct PrefillStreamedTileBinding: Equatable {
         self.views = views
     }
 
-    public func localSlot(for expert: UInt32) -> Int? {
-        expertIDs.firstIndex(of: Int(expert))
-    }
-
     public static func expertIDs(forTile tileIndex: Int,
                                  routes: PrefillMoEGroupedRoutes) throws -> [Int] {
         guard routes.tiles.indices.contains(tileIndex) else {
@@ -189,34 +184,11 @@ public struct PrefillStreamedTileBinding: Equatable {
                 "pair range \(pairStart)..<\(pairStart + pairCount) exceeds \(pairs.count)")
         }
         for pair in pairs[pairStart..<(pairStart + pairCount)] {
-            guard localSlot(for: pair.expert) != nil else {
+            guard expertIDs.contains(Int(pair.expert)) else {
                 throw PrefillGroupedRoutedMoEError.invalidStreamedTileBinding(
                     "route expert \(pair.expert) is not bound in tile")
             }
         }
-    }
-
-    public static func == (lhs: PrefillStreamedTileBinding,
-                           rhs: PrefillStreamedTileBinding) -> Bool {
-        guard lhs.expertIDs == rhs.expertIDs, lhs.views.count == rhs.views.count else {
-            return false
-        }
-        for index in lhs.views.indices {
-            let l = lhs.views[index]
-            let r = rhs.views[index]
-            guard l.buffer === r.buffer,
-                  l.offset == r.offset,
-                  l.length == r.length,
-                  l.scaleOffset == r.scaleOffset,
-                  l.scaleLength == r.scaleLength,
-                  l.biasOffset == r.biasOffset,
-                  l.biasLength == r.biasLength,
-                  l.shape == r.shape,
-                  l.dtype == r.dtype else {
-                return false
-            }
-        }
-        return true
     }
 }
 
@@ -333,20 +305,15 @@ final class PrefillGroupedRoutedMoE {
 
     @discardableResult
     func encodeStreamedBatched(commandBuffer: any MTLCommandBuffer,
-                                      hidden: any MTLBuffer,
-                                      hiddenOffset: Int = 0,
-                                      sortedPairs: any MTLBuffer,
-                                      sortedPairsOffset: Int = 0,
-                                      routePartials: any MTLBuffer,
-                                      routePartialsOffset: Int = 0,
-                                      gateUpActScratch: any MTLBuffer,
-                                      gateUpActScratchOffset: Int = 0,
-                                      downScratch: any MTLBuffer,
-                                      downScratchOffset: Int = 0,
-                                      argumentBuffer: PrefillStreamedTileArgumentBuffer,
-                                      binding: PrefillStreamedTileBinding,
-                                      params: PrefillGroupedRoutedMoEStreamedParams,
-                                      pairMicrobatchRows: Int = 32) -> Int {
+                               hidden: any MTLBuffer,
+                               sortedPairs: any MTLBuffer,
+                               routePartials: any MTLBuffer,
+                               gateUpActScratch: any MTLBuffer,
+                               downScratch: any MTLBuffer,
+                               argumentBuffer: PrefillStreamedTileArgumentBuffer,
+                               binding: PrefillStreamedTileBinding,
+                               params: PrefillGroupedRoutedMoEStreamedParams,
+                               pairMicrobatchRows: Int) -> Int {
         guard params.pairCount > 0,
               params.liveExpertCount == UInt32(binding.views.count),
               pairMicrobatchRows > 0 else { return 0 }
@@ -359,9 +326,9 @@ final class PrefillGroupedRoutedMoE {
 
             if let enc = commandBuffer.makeTracedComputeEncoder() {
                 enc.setComputePipelineState(batchedPhase1PSO)
-                enc.setBuffer(hidden, offset: hiddenOffset, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
-                enc.setBuffer(sortedPairs, offset: sortedPairsOffset, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
-                enc.setBuffer(gateUpActScratch, offset: gateUpActScratchOffset,
+                enc.setBuffer(hidden, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
+                enc.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
+                enc.setBuffer(gateUpActScratch, offset: 0,
                               index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
                 enc.setBuffer(argumentBuffer.buffer, offset: 0,
                               index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
@@ -378,12 +345,12 @@ final class PrefillGroupedRoutedMoE {
 
             if let enc = commandBuffer.makeTracedComputeEncoder() {
                 enc.setComputePipelineState(batchedDownPSO)
-                enc.setBuffer(sortedPairs, offset: sortedPairsOffset, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
-                enc.setBuffer(routePartials, offset: routePartialsOffset,
+                enc.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
+                enc.setBuffer(routePartials, offset: 0,
                               index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
-                enc.setBuffer(gateUpActScratch, offset: gateUpActScratchOffset,
+                enc.setBuffer(gateUpActScratch, offset: 0,
                               index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
-                enc.setBuffer(downScratch, offset: downScratchOffset,
+                enc.setBuffer(downScratch, offset: 0,
                               index: PrefillGroupedRoutedMoEBufferIndex.downScratch)
                 enc.setBuffer(argumentBuffer.buffer, offset: 0,
                               index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
@@ -403,7 +370,6 @@ final class PrefillGroupedRoutedMoE {
         }
         return microbatchCount
     }
-
 
     /// A verify tile's routed experts: per live expert, gate + up + GELU then
     /// down, each weight row read once for all of the expert's tokens.
@@ -436,8 +402,6 @@ final class PrefillGroupedRoutedMoE {
             acts = buffer
         }
         let constants = [MetalFunctionConstant(index: 90, value: .uint32(UInt32(rows)))]
-        let p = params
-        let segs = segments
         for (name, width) in [("verify_routed_gate_up_act", Int(params.routedIntermediate)),
                               ("verify_routed_down", (Int(params.d) + 1) / 2)] {
             guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
@@ -448,8 +412,8 @@ final class PrefillGroupedRoutedMoE {
             enc.setBuffer(acts, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
             enc.setBuffer(argumentBuffer.buffer, offset: 0,
                           index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
-            enc.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
-            enc.setValues(segs, index: 11)
+            enc.setValue(params, index: PrefillGroupedRoutedMoEBufferIndex.params)
+            enc.setValues(segments, index: 11)
             for view in binding.views { enc.useResource(view.buffer, usage: .read) }
             enc.dispatchThreadgroups(MTLSize(width: (width + 7) / 8, height: live, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -490,7 +454,6 @@ final class PrefillGroupedRoutedMoE {
             boundActs = buffer
             acts = buffer
         }
-        let p = params
         let count = UInt32(routeCount), bounds = UInt32(boundCount)
         // One serial encoder, so the experts are made resident once (each
         // costs ~2.7 µs of host time per encoder).
@@ -504,7 +467,7 @@ final class PrefillGroupedRoutedMoE {
         enc.setBuffer(boundPlan, offset: 0, index: 6)
         enc.setBuffer(acts, offset: 0, index: 7)
         enc.setBuffer(boundPlan, offset: Self.boundPlanRoutedOffset, index: 8)
-        enc.setValue(p, index: 10)
+        enc.setValue(params, index: 10)
         enc.setBuffer(boundPlan, offset: Self.boundPlanArgsOffset, index: 12)
         enc.useResources(resident, usage: .read)
         enc.setComputePipelineState(boundPlanPSO)
@@ -529,5 +492,4 @@ final class PrefillGroupedRoutedMoE {
         }
         enc.endEncoding()
     }
-
 }

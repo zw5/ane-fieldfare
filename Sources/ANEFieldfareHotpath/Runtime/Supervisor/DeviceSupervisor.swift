@@ -55,10 +55,9 @@ final class DeviceSupervisor {
     /// `--backend hybrid-ane` places every layer;
     /// `ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS=n` overrides the count for
     /// either backend.
-    static func aneLayerCount(backend: RuntimeBackend, numLayers: Int,
-                              environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Int {
+    static func aneLayerCount(backend: RuntimeBackend, numLayers: Int) throws -> Int {
         let variable = "ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS"
-        guard let raw = environment[variable] else { return backend == .hybridANE ? numLayers : 0 }
+        guard let raw = ProcessInfo.processInfo.environment[variable] else { return backend == .hybridANE ? numLayers : 0 }
         guard let count = Int(raw), (0...numLayers).contains(count) else {
             throw ANEExecutionError.rejected("\(variable)=\(raw) must be an integer in 0...\(numLayers)")
         }
@@ -79,15 +78,11 @@ final class DeviceSupervisor {
         self.init(aneLayers: layers, faultPolicy: configuration.faultPolicy, guest: guest)
     }
 
-    /// Inject a guest directly. Tests use this to place fault-injecting guests.
+    /// Places `guest` on layers `0..<aneLayers`; tests inject faulting guests.
     init(aneLayers: Int, faultPolicy: RuntimeFaultPolicy, guest: any RoutedPrefillGuest?) {
         self.aneLayers = guest == nil ? 0 : aneLayers
         self.faultPolicy = faultPolicy
         self.guest = guest
-    }
-
-    static func metalOnly() -> DeviceSupervisor {
-        DeviceSupervisor(aneLayers: 0, faultPolicy: .failClosed, guest: nil)
     }
 
     func routedPrefill(layer: Int) -> any RoutedPrefillGuest? {

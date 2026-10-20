@@ -2,26 +2,27 @@
 using namespace metal;
 
 // ============================================================================
-// logit.metal — output-head kernels (#12, #13 in the inventory).
+// logit.metal — output-head kernels.
 //
-//   logit_softcap_softmax  Apply 30 * tanh(z / 30) to raw logits and produce a
-//                          numerically-stable softmax over V=262144.
-//   sample                 Sample a single token id from softmaxed probs.
-//                          Supports greedy (temperature=0), temperature, top-k,
-//                          top-p with a seeded PRNG.
+//   logit_softcap_softmax  softcap * tanh(z / softcap), then a numerically
+//                          stable softmax over V.
+//   sample                 One token id from softmaxed probs: greedy,
+//                          temperature, top-k, top-p, seeded.
+//   sample_topk64_*        Three-stage Top-64 sampler.
+//   lm_head_greedy_int4_*  Fused INT4 lm-head GEMV + argmax.
+//   argmax_rows_f32,
+//   sample_rows_f32        Per-row choice over FP32 logits.
 //
-// Both kernels run in a single threadgroup of 256 threads. V is far too large
-// to fit in threadgroup memory (262144 * 4 B = 1 MB), so reductions are done
-// in two stages: each thread strides over V, then a SIMD-group + cross-SIMD
-// merge collapses partials. Threadgroup memory stores only one float per
-// SIMD-group (up to 8 lanes for 256-thread groups on Apple silicon).
+// The softmax and `sample` run in a single threadgroup of 256 threads. V is
+// too large for threadgroup memory, so each thread strides over V and a
+// SIMD-group + cross-SIMD merge collapses the partials.
 // ============================================================================
 
 constant constexpr uint kLogitMaxSimdGroups = 8;
 constant constexpr float kSampleTopMaxK     = 256.0f;  // cap for top-k mask scan
 
 // ----------------------------------------------------------------------------
-// K8: logit_softcap_softmax
+// logit_softcap_softmax
 //
 // Online safe softmax (Milakov & Gimelshein, arXiv:1805.02867). Each thread
 // walks its stride of V and maintains a running (m, d) pair: m is the max
@@ -125,7 +126,7 @@ void logit_softcap_softmax(
 }
 
 // ----------------------------------------------------------------------------
-// K9: sample
+// sample
 //
 // Reads softmaxed probabilities and writes one token id. Behaviour:
 //
@@ -217,16 +218,10 @@ void sample(
             }
         }
 
-        // SIMD-group argmax: simd_max gives the value; we need the matching
-        // index, which simd_max can't return. Roll it manually: every lane
-        // broadcasts (val, idx) via simd_shuffle and keeps the best pair.
-        // 32-lane fan-in is one log2(32)=5-step tree but the lane-by-lane
-        // scan is equally fast at this size and simpler to read.
+        // SIMD-group argmax, lowest index on ties: lanes whose value isn't
+        // the SIMD max bow out with UINT_MAX so simd_min picks the smallest.
         float m_simd = simd_max(best_v);
-        uint  i_simd = best_i;
-        // Tie-break: lowest index wins. Lanes whose value isn't the SIMD max
-        // bow out with idx = UINT_MAX so simd_min picks the surviving smallest.
-        i_simd = (best_v == m_simd) ? best_i : 0xFFFFFFFFu;
+        uint  i_simd = (best_v == m_simd) ? best_i : 0xFFFFFFFFu;
         i_simd = simd_min(i_simd);
 
         if (simd_lane_id == 0) {
@@ -251,10 +246,7 @@ void sample(
     // ------------------------------------------------------------------
     // Fast stochastic path: no top-k, no top-p. Sampling from p^(1/T)/Z is
     // exactly argmax_i(log(p_i)/T + g_i) with iid Gumbel noise g_i — one
-    // parallel V-pass, same shape as the greedy argmax above. The top-k
-    // extraction loop below costs k full V-passes (k clamps to 256 when
-    // top_k is "disabled"), which measured at ~2.6 s/token at V=262144;
-    // this path replaces it for the common plain-temperature case.
+    // parallel V-pass, where the top-k extraction below costs k V-passes.
     // ------------------------------------------------------------------
     if (top_k == 0u && (top_p <= 0.0f || top_p >= 1.0f)) {
         float inv_t = 1.0f / temperature;
@@ -305,14 +297,10 @@ void sample(
     // 3. Temperature reweights the survivors as p^(1/T).
     // 4. CDF inverse-transform sample with the seeded PRNG.
     //
-    // We use a *single* thread for the top-k / top-p / sample logic. Each
-    // top-k slot costs one full V-pass, so explicit small top_k stays
-    // tolerable; the k=256 worst case is exactly what the fast path above
-    // removes from the default configuration.
+    // A single thread runs the top-p / sample logic over the k survivors.
     // ------------------------------------------------------------------
 
-    // -- Threadgroup buffers for the sampler state. 256 floats + 256 indices
-    // = 3 KB, comfortably inside the 32 KB threadgroup limit on Apple9+.
+    // 256 floats + 256 indices = 2 KB of threadgroup memory.
     threadgroup float topk_val[256];
     threadgroup uint  topk_idx[256];
     threadgroup uint  topk_count;
@@ -607,7 +595,6 @@ void sample_topk64_final(
     }
 }
 
-
 // Fused greedy lm-head path. Eight SIMD groups each evaluate one INT4 row;
 // a second dispatch reduces the per-threadgroup argmax summaries.
 constant constexpr uint kLMHeadRowsPerTG = 8;
@@ -837,9 +824,6 @@ void lm_head_greedy_int4_rows_reduce(
         }
     }
 }
-
-
-
 
 // The fused greedy head for up to 4 normalized rows at once, reading the INT4
 // table once. Each SIMD group takes 2 weight rows, so each 8-element x sum is

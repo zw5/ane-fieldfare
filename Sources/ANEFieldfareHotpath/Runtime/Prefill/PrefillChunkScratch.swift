@@ -8,12 +8,12 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
     let sharedIntermediate: Int
     let routedIntermediate: Int
     let topK: Int
-    let routedPairMicrobatchRows: Int
+    /// Routed pairs one grouped-MoE microbatch processes.
+    let routedPairMicrobatchRows = 32
 
     init(config: ArchConfig,
-                chunkTokens: Int,
-                routedPairMicrobatchRows: Int = 32,
-                chunkTokenLimit: Int = PrefillRuntimeConfig.maxChunkTokens) {
+         chunkTokens: Int,
+         chunkTokenLimit: Int = PrefillRuntimeConfig.maxChunkTokens) {
         self.chunkTokens = max(1, min(chunkTokens, chunkTokenLimit))
         self.hiddenSize = config.hiddenSize
         self.maxQElementsPerToken = config.numHeads * max(config.headDim, config.fullHeadDim)
@@ -22,55 +22,12 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
         self.sharedIntermediate = config.intermediateSize
         self.routedIntermediate = config.moeIntermediateSize
         self.topK = config.topKExperts
-        self.routedPairMicrobatchRows = max(1, min(routedPairMicrobatchRows, 128))
     }
-
 
     var hiddenElements: Int { chunkTokens * hiddenSize }
-    var normedElements: Int { hiddenElements }
     var qElements: Int { chunkTokens * maxQElementsPerToken }
-    var kStageElements: Int { chunkTokens * maxKVElementsPerToken }
-    var vStageElements: Int { kStageElements }
-    var attentionOutputElements: Int { qElements }
-    var denseXElements: Int { hiddenElements }
-    var routedXElements: Int { hiddenElements }
-    var routerXElements: Int { hiddenElements }
-    var h1Elements: Int { hiddenElements }
-    var h2Elements: Int { hiddenElements }
-    var routePartialElements: Int { chunkTokens * topK * hiddenSize }
+    var kvElements: Int { chunkTokens * maxKVElementsPerToken }
     var routeIDElements: Int { chunkTokens * topK }
-    var routeWeightElements: Int { routeIDElements }
-    var sharedExpertScratchElements: Int { sharedIntermediate }
-    var routedGateUpActElements: Int { 3 * routedPairMicrobatchRows * routedIntermediate }
-    var routedDownOutputElements: Int { routedPairMicrobatchRows * hiddenSize }
-
-    var devicePrivateBytes: Int {
-        let fp16Elements = hiddenElements
-            + normedElements
-            + qElements
-            + kStageElements
-            + vStageElements
-            + attentionOutputElements
-            + denseXElements
-            + routedXElements
-            + routerXElements
-            + h1Elements
-            + h2Elements
-            + routePartialElements
-            + 3 * sharedExpertScratchElements
-            + routedGateUpActElements
-            + routedDownOutputElements
-        return fp16Elements * MemoryLayout<Float16>.stride
-    }
-
-    var sharedMetadataBytes: Int {
-        routeIDElements * MemoryLayout<UInt32>.stride
-            + routeWeightElements * MemoryLayout<Float16>.stride
-    }
-
-    var totalPersistentBytes: Int {
-        devicePrivateBytes + sharedMetadataBytes
-    }
 }
 
 struct PrefillChunkScratchBuffers {
@@ -89,8 +46,6 @@ struct PrefillChunkScratchBuffers {
     let routePartials: any MTLBuffer
     let routeIDs: any MTLBuffer
     let routeWeights: any MTLBuffer
-    let sharedGateScratch: any MTLBuffer
-    let sharedUpScratch: any MTLBuffer
     let sharedActScratch: any MTLBuffer
     let routedGateUpActScratch: any MTLBuffer
     let routedDownScratch: any MTLBuffer
@@ -117,33 +72,30 @@ struct PrefillChunkScratchBuffers {
             return buffer
         }
 
+        let hidden = layout.hiddenElements
+        let microbatch = layout.routedPairMicrobatchRows
         return PrefillChunkScratchBuffers(
             layout: layout,
-            hidden: try privateBuffer(layout.hiddenElements, label: "prefill.hidden"),
-            normed: try privateBuffer(layout.normedElements, label: "prefill.normed"),
+            hidden: try privateBuffer(hidden, label: "prefill.hidden"),
+            normed: try privateBuffer(hidden, label: "prefill.normed"),
             q: try privateBuffer(layout.qElements, label: "prefill.q"),
-            kStage: try privateBuffer(layout.kStageElements, label: "prefill.kStage"),
-            vStage: try privateBuffer(layout.vStageElements, label: "prefill.vStage"),
-            attentionOutput: try privateBuffer(layout.attentionOutputElements, label: "prefill.attnOut"),
-            denseX: try privateBuffer(layout.denseXElements, label: "prefill.denseX"),
-            routedX: try privateBuffer(layout.routedXElements, label: "prefill.routedX"),
-            routerX: try privateBuffer(layout.routerXElements, label: "prefill.routerX"),
-            h1: try privateBuffer(layout.h1Elements, label: "prefill.h1"),
-            h2: try privateBuffer(layout.h2Elements, label: "prefill.h2"),
-            routePartials: try privateBuffer(layout.routePartialElements, label: "prefill.routePartials"),
+            kStage: try privateBuffer(layout.kvElements, label: "prefill.kStage"),
+            vStage: try privateBuffer(layout.kvElements, label: "prefill.vStage"),
+            attentionOutput: try privateBuffer(layout.qElements, label: "prefill.attnOut"),
+            denseX: try privateBuffer(hidden, label: "prefill.denseX"),
+            routedX: try privateBuffer(hidden, label: "prefill.routedX"),
+            routerX: try privateBuffer(hidden, label: "prefill.routerX"),
+            h1: try privateBuffer(hidden, label: "prefill.h1"),
+            h2: try privateBuffer(hidden, label: "prefill.h2"),
+            routePartials: try privateBuffer(hidden * layout.topK, label: "prefill.routePartials"),
             routeIDs: try sharedBuffer(layout.routeIDElements * MemoryLayout<UInt32>.stride,
                                        label: "prefill.routeIDs"),
-            routeWeights: try sharedBuffer(layout.routeWeightElements * MemoryLayout<Float16>.stride,
+            routeWeights: try sharedBuffer(layout.routeIDElements * MemoryLayout<Float16>.stride,
                                            label: "prefill.routeWeights"),
-            sharedGateScratch: try privateBuffer(layout.sharedExpertScratchElements,
-                                                 label: "prefill.sharedGateScratch"),
-            sharedUpScratch: try privateBuffer(layout.sharedExpertScratchElements,
-                                               label: "prefill.sharedUpScratch"),
-            sharedActScratch: try privateBuffer(layout.sharedExpertScratchElements,
-                                                label: "prefill.sharedActScratch"),
-            routedGateUpActScratch: try privateBuffer(layout.routedGateUpActElements,
+            sharedActScratch: try privateBuffer(layout.sharedIntermediate, label: "prefill.sharedActScratch"),
+            routedGateUpActScratch: try privateBuffer(3 * microbatch * layout.routedIntermediate,
                                                       label: "prefill.routedGateUpActScratch"),
-            routedDownScratch: try privateBuffer(layout.routedDownOutputElements,
+            routedDownScratch: try privateBuffer(microbatch * layout.hiddenSize,
                                                  label: "prefill.routedDownScratch"))
     }
 }

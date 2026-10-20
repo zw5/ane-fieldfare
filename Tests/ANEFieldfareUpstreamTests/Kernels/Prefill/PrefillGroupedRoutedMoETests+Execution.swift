@@ -29,6 +29,7 @@ extension PrefillGroupedRoutedMoETests {
     }
     let expected = Self.cpuSyntheticRoutePartials(
       routes: routes,
+      queryCount: rows,
       hidden: hidden,
       hiddenStride: d,
       pool: pool,

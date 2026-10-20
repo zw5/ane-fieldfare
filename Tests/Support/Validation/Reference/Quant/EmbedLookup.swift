@@ -1,44 +1,7 @@
 import Foundation
 import ANEFieldfareHotpath
 
-/// FP32 reference for the INT8-affine embedding lookup
-/// `out = dequantize(table[tokenId])`.
-///
-/// `tablePacked` is `[V * D]` unsigned bytes; `tableScales` is
-/// `[V * (D/groupSize)]` BF16 (stored as `UInt16` bit patterns).
-/// `tableBiases` follows the same shape. Returns the FP32 row for the given
-/// token.
 public enum EmbedLookupRef {
-    public static func apply(
-        tablePacked: [UInt8],
-        tableScales: [UInt16],
-        tableBiases: [UInt16],
-        tokenId: Int,
-        d: Int
-    ) -> [Float] {
-        precondition(d % Quantization.groupSize == 0,
-                     "D must be a multiple of \(Quantization.groupSize)")
-        let groupsPerRow = d / Quantization.groupSize
-        let packBase  = tokenId * d
-        let scaleBase = tokenId * groupsPerRow
-
-        precondition(packBase + d <= tablePacked.count, "token out of range")
-        precondition(scaleBase + groupsPerRow <= tableScales.count, "scales out of range")
-        precondition(scaleBase + groupsPerRow <= tableBiases.count, "biases out of range")
-
-        var out = [Float](repeating: 0, count: d)
-        for g in 0..<groupsPerRow {
-            let scale = Quantization.bf16ToFloat(tableScales[scaleBase + g])
-            let bias  = Quantization.bf16ToFloat(tableBiases[scaleBase + g])
-            let groupBase = packBase + g * Quantization.groupSize
-            for k in 0..<Quantization.groupSize {
-                out[g * Quantization.groupSize + k] =
-                    Float(tablePacked[groupBase + k]) * scale + bias
-            }
-        }
-        return out
-    }
-
     /// FP32 reference for `embed_lookup_int4`.
     ///
     /// `tablePacked` carries `V * D/2` bytes (low nibble = even index inside a

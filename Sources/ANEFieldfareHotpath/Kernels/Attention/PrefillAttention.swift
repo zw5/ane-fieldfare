@@ -6,6 +6,7 @@ enum PrefillAttentionLayerKind: Sendable, Equatable {
     case slidingWindow
 }
 
+/// Mirrored field for field by `PrefillAttentionParams` in prefill.metal.
 struct PrefillAttentionParams: Sendable, Equatable {
     var startPosition: UInt32
     var queryCount: UInt32
@@ -20,81 +21,36 @@ struct PrefillAttentionParams: Sendable, Equatable {
     var scale: Float
     var bidirectionalBlockStart: UInt32
     var bidirectionalBlockEnd: UInt32
-
-    init(startPosition: UInt32,
-                queryCount: UInt32,
-                headDim: UInt32,
-                numQHeads: UInt32,
-                numKVHeads: UInt32,
-                kvValidCount: UInt32,
-                slidingWindow: UInt32,
-                kvTokenStrideElements: UInt32,
-                qTokenStrideElements: UInt32,
-                oTokenStrideElements: UInt32,
-                scale: Float,
-                bidirectionalBlockStart: UInt32 = 0,
-                bidirectionalBlockEnd: UInt32 = 0) {
-        self.startPosition = startPosition
-        self.queryCount = queryCount
-        self.headDim = headDim
-        self.numQHeads = numQHeads
-        self.numKVHeads = numKVHeads
-        self.kvValidCount = kvValidCount
-        self.slidingWindow = slidingWindow
-        self.kvTokenStrideElements = kvTokenStrideElements
-        self.qTokenStrideElements = qTokenStrideElements
-        self.oTokenStrideElements = oTokenStrideElements
-        self.scale = scale
-        self.bidirectionalBlockStart = bidirectionalBlockStart
-        self.bidirectionalBlockEnd = bidirectionalBlockEnd
-    }
 }
-
 
 final class PrefillAttention {
     private let context: MetalContext
     private let psoCausalTiled: any MTLComputePipelineState
-    private let psoParamsSmoke: any MTLComputePipelineState
     private let psoFullTensorOps2DValidityV2: any MTLComputePipelineState?
 
-    var tensorOps2DValidityV2Available: Bool {
-        psoFullTensorOps2DValidityV2 != nil
-    }
-
-    convenience init(context: MetalContext) throws {
-        try self.init(context: context, simulatingMissingTensorOps: false)
-    }
-
-    /// Tests can force the production fallback even on a host where the MSL 4
-    /// TensorOps pipeline builds.
-    init(context: MetalContext, simulatingMissingTensorOps: Bool) throws {
+    init(context: MetalContext) throws {
         self.context = context
         self.psoCausalTiled = try context.pipeline("attention_prefill_causal_tiled")
-        self.psoParamsSmoke = try context.pipeline("prefill_attention_params_smoke")
-        if simulatingMissingTensorOps {
+        do {
+            self.psoFullTensorOps2DValidityV2 = try context.pipeline(
+                "attention_prefill_full_tensorops_2d_validity_v2")
+        } catch {
             self.psoFullTensorOps2DValidityV2 = nil
-        } else {
-            do {
-                self.psoFullTensorOps2DValidityV2 = try context.pipeline(
-                    "attention_prefill_full_tensorops_2d_validity_v2")
-            } catch {
-                self.psoFullTensorOps2DValidityV2 = nil
-                FileHandle.standardError.write(Data(
-                    ("PrefillAttention: TensorOps 2D pipeline unavailable; "
-                     + "using causal-tiled fallback: \(error)\n").utf8))
-            }
+            FileHandle.standardError.write(Data(
+                ("PrefillAttention: TensorOps 2D pipeline unavailable; "
+                 + "using causal-tiled fallback: \(error)\n").utf8))
         }
     }
 
     func encodeCausal(commandBuffer: any MTLCommandBuffer,
-                             q: any MTLBuffer, qOffset: Int = 0,
-                             k: any MTLBuffer, kOffset: Int = 0,
-                             v: any MTLBuffer, vOffset: Int = 0,
-                             out: any MTLBuffer, outOffset: Int = 0,
-                             params: PrefillAttentionParams,
-                             kvRingCapacity: UInt32 = 0,
-                             layerKind: PrefillAttentionLayerKind = .full,
-                             path: RuntimePrefillAttentionPath = .causalTiled) throws {
+                      q: any MTLBuffer,
+                      k: any MTLBuffer,
+                      v: any MTLBuffer,
+                      out: any MTLBuffer,
+                      params: PrefillAttentionParams,
+                      kvRingCapacity: UInt32,
+                      layerKind: PrefillAttentionLayerKind,
+                      path: RuntimePrefillAttentionPath) throws {
         var effectiveParams = params
         // Only sliding-window layers make an image block bidirectional;
         // full-attention layers stay causal. Zeroed here as well as at the
@@ -134,8 +90,7 @@ final class PrefillAttention {
             preconditionFailure(
                 "TensorOps 2D prefill attention pipeline is unavailable on this Metal stack")
         } else {
-            // Explicit mode also falls back for incompatible shapes. Benchmark
-            // fixtures must use 512/16/2 to prove that TensorOps ran.
+            // Explicit mode also falls back for incompatible shapes.
             pipeline = try causalTiledPipeline(kvRingCapacity: kvRingCapacity)
         }
         let headDim = Int(effectiveParams.headDim)
@@ -148,12 +103,11 @@ final class PrefillAttention {
 
         guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(pipeline)
-        enc.setBuffer(q, offset: qOffset, index: 0)
-        enc.setBuffer(k, offset: kOffset, index: 1)
-        enc.setBuffer(v, offset: vOffset, index: 2)
-        enc.setBuffer(out, offset: outOffset, index: 3)
-        let p = effectiveParams
-        enc.setValue(p, index: 4)
+        enc.setBuffer(q, offset: 0, index: 0)
+        enc.setBuffer(k, offset: 0, index: 1)
+        enc.setBuffer(v, offset: 0, index: 2)
+        enc.setBuffer(out, offset: 0, index: 3)
+        enc.setValue(effectiveParams, index: 4)
         let groups = useTensorOps
             ? MTLSize(width: Int(effectiveParams.queryCount),
                       height: Int(effectiveParams.numQHeads) / 8,
@@ -166,7 +120,6 @@ final class PrefillAttention {
             threadsPerThreadgroup: MTLSize(width: threadCount, height: 1, depth: 1))
         enc.endEncoding()
     }
-
 
     private func validate(_ params: PrefillAttentionParams) {
         precondition(params.headDim > 0, "headDim must be positive")
@@ -189,26 +142,8 @@ final class PrefillAttention {
                      "bidirectional block exceeds valid KV rows")
     }
 
-
     private func roundUp(_ value: Int, toMultipleOf multiple: Int) -> Int {
         ((value + multiple - 1) / multiple) * multiple
-    }
-
-
-    /// Reads every field back through the MSL struct. `PrefillAttentionParams`
-    /// is mirrored by hand in `prefill.metal`, and a field added on one side
-    /// only shifts every later field silently.
-    func encodeParamsSmoke(commandBuffer: any MTLCommandBuffer,
-                           params: PrefillAttentionParams,
-                           out: any MTLBuffer) {
-        guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
-        enc.setComputePipelineState(psoParamsSmoke)
-        let p = params
-        enc.setValue(p, index: 0)
-        enc.setBuffer(out, offset: 0, index: 1)
-        enc.dispatchThreads(MTLSize(width: 13, height: 1, depth: 1),
-                            threadsPerThreadgroup: MTLSize(width: 13, height: 1, depth: 1))
-        enc.endEncoding()
     }
 
     private func causalTiledPipeline(kvRingCapacity: UInt32) throws -> any MTLComputePipelineState {

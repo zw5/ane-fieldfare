@@ -1,9 +1,6 @@
 import Foundation
 
 public enum PrefillError: Error, CustomStringConvertible, Equatable {
-    public static let chunkedRequiresChunkedRunnerReason =
-        "chunked prefill requires a ChunkedPrefillRunner-backed runtime"
-
     case chunkedUnsupported(String)
     case chunkedRunnerDirty(String)
     case prefillCursorMismatch(String)
@@ -20,48 +17,25 @@ public enum PrefillError: Error, CustomStringConvertible, Equatable {
     }
 }
 
-struct PrefillChunkCommitState: Sendable, Equatable {
-    private(set) var isDirty = false
-    private(set) var inFlightStartPosition: Int?
-    private(set) var inFlightTokenCount: Int?
-
-    var inFlightEndPosition: Int? {
-        guard let start = inFlightStartPosition,
-              let count = inFlightTokenCount else { return nil }
-        return start + count
-    }
-
-    init() {}
+/// Tracks a prefill chunk that has written KV rows but not yet advanced the
+/// cursor; a runner left in that state must be reset before reuse.
+struct PrefillChunkCommitState {
+    private var inFlight: Range<Int>?
 
     mutating func markDirty(startPosition: Int, tokenCount: Int) {
         precondition(startPosition >= 0, "prefill dirty startPosition must be non-negative")
         precondition(tokenCount > 0, "prefill dirty tokenCount must be positive")
-        isDirty = true
-        inFlightStartPosition = startPosition
-        inFlightTokenCount = tokenCount
+        inFlight = startPosition..<(startPosition + tokenCount)
     }
 
     mutating func markCommitted() {
-        isDirty = false
-        inFlightStartPosition = nil
-        inFlightTokenCount = nil
-    }
-
-    mutating func reset() {
-        markCommitted()
+        inFlight = nil
     }
 
     func requireClean(operation: String) throws {
-        guard !isDirty else {
-            let range: String
-            if let start = inFlightStartPosition, let end = inFlightEndPosition {
-                range = " for in-flight chunk [\(start), \(end))"
-            } else {
-                range = ""
-            }
-            throw PrefillError.chunkedRunnerDirty(
-                "\(operation) rejected because a previous chunked prefill wrote KV rows\(range) but did not commit; call reset() before reusing the runner")
-        }
+        guard let inFlight else { return }
+        throw PrefillError.chunkedRunnerDirty(
+            "\(operation) rejected because a previous chunked prefill wrote KV rows for in-flight chunk [\(inFlight.lowerBound), \(inFlight.upperBound)) but did not commit; call reset() before reusing the runner")
     }
 }
 
@@ -70,17 +44,6 @@ struct PrefillChunkSpan: Sendable, Equatable {
     let tokenCount: Int
     let startPosition: Int
     let completedCount: Int
-
-    init(tokenOffset: Int,
-                tokenCount: Int,
-                startPosition: Int,
-                completedCount: Int) {
-        self.tokenOffset = tokenOffset
-        self.tokenCount = tokenCount
-        self.startPosition = startPosition
-        self.completedCount = completedCount
-    }
-
 }
 
 /// One item of a multimodal prefill turn: either a run of text small enough to
@@ -88,11 +51,6 @@ struct PrefillChunkSpan: Sendable, Equatable {
 struct PrefillWorkItem: Sendable, Equatable {
     let range: Range<Int>
     let imageIndex: Int?
-
-    init(range: Range<Int>, imageIndex: Int?) {
-        self.range = range
-        self.imageIndex = imageIndex
-    }
 
     var isImage: Bool { imageIndex != nil }
 }
@@ -132,19 +90,11 @@ enum PrefillChunkPlanner {
     }
 
     static func spans(tokenCount: Int,
-                             startPosition: Int,
-                             config: PrefillRuntimeConfig) -> [PrefillChunkSpan] {
-        spans(tokenCount: tokenCount,
-              startPosition: startPosition,
-              chunkTokens: config.chunkTokens)
-    }
-
-    static func spans(tokenCount: Int,
-                             startPosition: Int,
-                             chunkTokens: Int) -> [PrefillChunkSpan] {
+                      startPosition: Int,
+                      config: PrefillRuntimeConfig) -> [PrefillChunkSpan] {
         precondition(tokenCount >= 0, "prefill tokenCount must be non-negative")
         precondition(startPosition >= 0, "prefill startPosition must be non-negative")
-        let chunk = max(1, min(chunkTokens, PrefillRuntimeConfig.maxChunkTokens))
+        let chunk = max(1, min(config.chunkTokens, PrefillRuntimeConfig.maxChunkTokens))
         guard tokenCount > 0 else { return [] }
 
         var spans: [PrefillChunkSpan] = []
@@ -169,8 +119,6 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
         case chunked
     }
 
-    // Preserve ANE Fieldfare's validated wide-prefill sizes while
-    // accepting upstream's 256-token size and automatic selection.
     public static let maxChunkTokens = 4096
     public static let allowedChunkTokens = [32, 64, 128, 256, 512, 1024, 2048, 4096]
 
@@ -197,8 +145,6 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
         self.chunkTokens = chunkTokens
     }
 
-    public var enabled: Bool { mode == .chunked }
-
     public static var off: PrefillRuntimeConfig {
         PrefillRuntimeConfig(mode: .off, chunkTokens: 64)
     }
@@ -213,20 +159,12 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
         PrefillRuntimeConfig(mode: mode, chunkTokens: max(1, tokens))
     }
 
-    /// Whether the chunked path an image prompt needs is switched on. This tree
-    /// has no per-stage toggles, so the mode is the whole requirement.
-    ///
-    /// This is deliberately not "the image turn will succeed": a chunked config
-    /// is still held to its prompt-token budget afterwards.
+    /// Whether the chunked path an image prompt needs is switched on.
     public var servesImagePrompt: Bool { mode == .chunked }
 
     /// The config an image prompt can run under, or nil when it already runs.
-    ///
-    /// Image spans are only served by the chunked multimodal path, so anything
-    /// short of it threw after the model was loaded and every image had been
-    /// encoded on the GPU. Prefill mode is a performance choice; whether images
-    /// work at all is not, so an image turn is coerced rather than refused.
-    /// Callers report the coercion.
+    /// Prefill mode is a performance choice, so an image turn is coerced rather
+    /// than refused; callers report the coercion.
     public func coercedForImagePrompt() -> PrefillRuntimeConfig? {
         servesImagePrompt ? nil : .defaultChunked
     }

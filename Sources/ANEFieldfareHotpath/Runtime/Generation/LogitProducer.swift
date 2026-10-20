@@ -27,6 +27,16 @@ public protocol SamplingTokenProducer: FusedGreedyProducer {
     var tokenSampling: TokenSampling? { get set }
 }
 
+/// A producer that can keep the first tokens of its cache for the next
+/// generation instead of resetting: a chat's next turn re-sends the whole
+/// conversation, and only what follows the shared prefix needs a prefill.
+public protocol PrefixReusingProducer: LogitProducer {
+    /// Whether `rewindForReuse(to:)` can keep the first `position` tokens.
+    func canReuse(prefix position: Int) -> Bool
+    /// Abandons everything past the first `position` cached tokens.
+    func rewindForReuse(to position: Int) throws
+}
+
 protocol ContextWindowReporting {
     var maxContext: Int { get }
 }

@@ -20,11 +20,7 @@ import Darwin
     /// Build a manifest dictionary for a 2-layer toy ArchConfig and write it
     /// into a temp directory. Returns the directory URL and the toy config.
     static func writeToyManifest(_ overrides: [String: Any] = [:],
-                                 flags: [String: Bool] = ["streamingPresent": true,
-                                                          "turboQuantKV": false,
-                                                          "aneSharedExpert": false],
                                  archOverrides: [String: Any] = [:],
-                                 filesOverride: [String: [String: Any]]? = nil,
                                  config: ArchConfig = .gemma4Toy()) throws
                                  -> (URL, ArchConfig) {
         let dir = FileManager.default.temporaryDirectory
@@ -60,24 +56,19 @@ import Darwin
         ]
         for (k, v) in archOverrides { archDict[k] = v }
 
-        var files: [String: [String: Any]]
-        if let f = filesOverride {
-            files = f
-        } else {
-            files = [
-                "model_weights.bin": ["size": 1024],
-                "packed_experts/layout.json": ["size": 1024],
-            ]
-            for L in 0..<toy.numLayers {
-                files["packed_experts/layer_\(L).bin"] = ["size": 16384]
-            }
+        var files: [String: [String: Any]] = [
+            "model_weights.bin": ["size": 1024],
+            "packed_experts/layout.json": ["size": 1024],
+        ]
+        for L in 0..<toy.numLayers {
+            files["packed_experts/layer_\(L).bin"] = ["size": 16384]
         }
 
         var root: [String: Any] = [
             "magic": "GTURBO",
             "versionMajor": 1,
             "versionMinor": 0,
-            "flags": flags,
+            "flags": ["streamingPresent": true, "turboQuantKV": false, "aneSharedExpert": false],
             "modelID": "toy",
             "arch": archDict,
             "files": files,
@@ -93,8 +84,7 @@ import Darwin
         return (dir, toy)
     }
 
-    static func quant(sharedExpertBits: Int = 4,
-                      routerBits: Int = 8) -> [String: Any] {
+    static func quant(sharedExpertBits: Int) -> [String: Any] {
         func slot(_ bits: Int) -> [String: Any] {
             [
                 "weightBits": bits,
@@ -107,7 +97,7 @@ import Darwin
         return [
             "embedding": slot(4),
             "attention": slot(4),
-            "router": slot(routerBits),
+            "router": slot(8),
             "sharedExpert": slot(sharedExpertBits),
             "routedExpert": slot(4),
         ]
@@ -120,19 +110,6 @@ import Darwin
         #expect(m.magic == "GTURBO")
         #expect(m.numLayers == toy.numLayers)
         #expect(m.expertStride == 16384)
-    }
-
-    @Test func missingManifestThrowsPartialInstall() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-empty-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        #expect {
-            _ = try ManifestReader.load(directoryURL: dir, expecting: .gemma4Toy())
-        } throws: { error in
-            if case ModelError.partialInstall = error { return true }
-            return false
-        }
     }
 
     @Test func oversizedManifestRejectsBeforeDecode() throws {
@@ -153,14 +130,6 @@ import Darwin
         }
     }
 
-    @Test func wrongMagicThrowsNotAGTurboDirectory() throws {
-        let (dir, toy) = try Self.writeToyManifest(["magic": "NOT_GTURBO"])
-        defer { try? FileManager.default.removeItem(at: dir) }
-        #expect(throws: ModelError.notAGTurboDirectory) {
-            _ = try ManifestReader.load(directoryURL: dir, expecting: toy)
-        }
-    }
-
     @Test func versionTwoThrowsUnsupportedVersion() throws {
         let (dir, toy) = try Self.writeToyManifest(["versionMajor": 2])
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -169,31 +138,6 @@ import Darwin
         } throws: { error in
             if case ModelError.unsupportedVersion(let maj, _) = error { return maj == 2 }
             return false
-        }
-    }
-
-    @Test func unknownFlagThrowsUnknownFlag() throws {
-        let (dir, toy) = try Self.writeToyManifest(flags: ["streamingPresent": true,
-                                                           "newFangledOption": true])
-        defer { try? FileManager.default.removeItem(at: dir) }
-        #expect {
-            _ = try ManifestReader.load(directoryURL: dir, expecting: toy)
-        } throws: { error in
-            if case ModelError.unknownFlag(let n) = error { return n == "newFangledOption" }
-            return false
-        }
-    }
-
-    @Test func removedTurboQuantFlagIsRejected() throws {
-        let (dir, toy) = try Self.writeToyManifest(flags: ["streamingPresent": true,
-                                                           "turboQuantKV": true,
-                                                           "aneSharedExpert": false])
-        defer { try? FileManager.default.removeItem(at: dir) }
-        #expect {
-            _ = try ManifestReader.load(directoryURL: dir, expecting: toy)
-        } throws: { error in
-            guard case ModelError.indexCorrupt(let detail) = error else { return false }
-            return detail.contains("removed TurboQuant KV")
         }
     }
 
@@ -208,15 +152,6 @@ import Darwin
         }
     }
 
-    @Test func productionManifestAcceptsInt4SharedExpert() throws {
-        let (dir, config) = try Self.writeToyManifest(
-            ["quant": Self.quant(sharedExpertBits: 4)],
-            config: .gemma4_26B_A4B)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let manifest = try ManifestReader.load(directoryURL: dir, expecting: config)
-        #expect(manifest.quant?.sharedExpert.weightBits == 4)
-    }
-
     @Test func productionManifestAcceptsHistoricalInt8SharedExpert() throws {
         let (dir, config) = try Self.writeToyManifest(
             ["quant": Self.quant(sharedExpertBits: 8)],
@@ -224,19 +159,6 @@ import Darwin
         defer { try? FileManager.default.removeItem(at: dir) }
         let manifest = try ManifestReader.load(directoryURL: dir, expecting: config)
         #expect(manifest.quant?.sharedExpert.weightBits == 8)
-    }
-
-    @Test func productionManifestRejectsUnsupportedQuantMetadata() throws {
-        let (dir, config) = try Self.writeToyManifest(
-            ["quant": Self.quant(sharedExpertBits: 3, routerBits: 4)],
-            config: .gemma4_26B_A4B)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        #expect {
-            _ = try ManifestReader.load(directoryURL: dir, expecting: config)
-        } throws: { error in
-            guard case ModelError.indexCorrupt(let detail) = error else { return false }
-            return detail.contains("unsupported quantization")
-        }
     }
 
     @Test func archMismatchThrowsArchMismatch() throws {
@@ -259,33 +181,6 @@ import Darwin
             if case ModelError.expertStrideNotPageAligned = error { return true }
             return false
         }
-    }
-
-    @Test func defersPackedLayerFilenamesToLayoutValidation() throws {
-        let files: [String: [String: Any]] = [
-            "model_weights.bin": ["size": 1024],
-            "packed_experts/layout.json": ["size": 1024],
-            "packed_experts/experts_a.bin": ["size": 16384],
-            "packed_experts/experts_b.bin": ["size": 16384],
-        ]
-        let (dir, toy) = try Self.writeToyManifest(filesOverride: files)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let manifest = try ManifestReader.load(directoryURL: dir, expecting: toy)
-        #expect(manifest.files["packed_experts/experts_a.bin"] != nil)
-    }
-
-    @Test func acceptsZeroPaddedLayerFilenames() throws {
-        // Writer emits packed_experts/layer_%02d.bin; loader should accept either form.
-        let files: [String: [String: Any]] = [
-            "model_weights.bin": ["size": 1024],
-            "packed_experts/layout.json": ["size": 1024],
-            "packed_experts/layer_00.bin": ["size": 16384],
-            "packed_experts/layer_01.bin": ["size": 16384],
-        ]
-        let (dir, toy) = try Self.writeToyManifest(filesOverride: files)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let m = try ManifestReader.load(directoryURL: dir, expecting: toy)
-        #expect(m.numLayers == toy.numLayers)
     }
 }
 

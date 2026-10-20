@@ -20,8 +20,6 @@ public enum GPUTrace {
     static let sink: GPUTraceSink? = ProcessInfo.processInfo
         .environment["ANE_FIELDFARE_GPU_TRACE"].map(GPUTraceSink.init(path:))
 
-    public static var enabled: Bool { sink != nil }
-
     /// The host-side lane a span is drawn on.
     public enum Track: String, Sendable {
         case host
@@ -68,12 +66,12 @@ public enum GPUTrace {
 
 extension MTLCommandBuffer {
     /// `makeComputeCommandEncoder()`, timestamped when GPU tracing is on.
-    func makeTracedComputeEncoder(_ name: String? = nil, fileID: StaticString = #fileID,
+    func makeTracedComputeEncoder(fileID: StaticString = #fileID,
                                   function: StaticString = #function,
                                   line: UInt = #line) -> (any MTLComputeCommandEncoder)? {
         guard let sink = GPUTrace.sink,
               let slot = sink.reserve(device: device,
-                                      name: name ?? GPUTrace.callSiteName(fileID, function, line)) else {
+                                      name: GPUTrace.callSiteName(fileID, function, line)) else {
             return makeComputeCommandEncoder()
         }
         let pass = MTLComputePassDescriptor()
@@ -85,12 +83,12 @@ extension MTLCommandBuffer {
     }
 
     /// `makeBlitCommandEncoder()`, timestamped when GPU tracing is on.
-    func makeTracedBlitEncoder(_ name: String? = nil, fileID: StaticString = #fileID,
+    func makeTracedBlitEncoder(fileID: StaticString = #fileID,
                                function: StaticString = #function,
                                line: UInt = #line) -> (any MTLBlitCommandEncoder)? {
         guard let sink = GPUTrace.sink,
               let slot = sink.reserve(device: device,
-                                      name: name ?? GPUTrace.callSiteName(fileID, function, line)) else {
+                                      name: GPUTrace.callSiteName(fileID, function, line)) else {
             return makeBlitCommandEncoder()
         }
         let pass = MTLBlitPassDescriptor()

@@ -44,7 +44,6 @@ final class MoE {
     private static let realDecodeRouterConstants: [MetalFunctionConstant] = [
         MetalFunctionConstant(index: 40, value: .uint32(realDecodeNumExperts)),
         MetalFunctionConstant(index: 41, value: .uint32(realDecodeD)),
-        MetalFunctionConstant(index: 42, value: .uint32(realDecodeTopK)),
         MetalFunctionConstant(index: 43, value: .bool(true)),
     ]
 
@@ -60,7 +59,7 @@ final class MoE {
     private let routerRowsLogits: any MTLBuffer
     /// The last row router's next-layer guess scores, `[rows][numExperts]` FP32.
     let guessRowsLogits: any MTLBuffer
-    static let maxRouterRows = 16
+    private static let maxRouterRows = 16
     private let routerLogits: any MTLBuffer
     private let phase1U16PSO: any MTLComputePipelineState
     private let phase1U16SpecializedPSO: any MTLComputePipelineState
@@ -137,10 +136,8 @@ final class MoE {
     }
 
     /// The router GEMV alone: `numExperts` Float32 scores into `outLogits`,
-    /// with no top-k. `encodeRouterGemma4` runs this into its own logits
-    /// buffer; the next-layer early read runs it with the next layer's
-    /// weights over this layer's router input.
-    func encodeRouterLogitsGemma4(commandBuffer: any MTLCommandBuffer,
+    /// with no top-k.
+    private func encodeRouterLogitsGemma4(commandBuffer: any MTLCommandBuffer,
                                   weights: any MTLBuffer, weightsOffset: Int = 0,
                                   scales: any MTLBuffer, scalesOffset: Int = 0,
                                   biases: any MTLBuffer, biasesOffset: Int = 0,
@@ -324,40 +321,13 @@ final class MoE {
         }
     }
 
-    func makeRoutedArgumentBuffer(routedBlobs: [any MTLBuffer],
-                                         topK: UInt32) -> any MTLBuffer? {
-        validate(routedBlobs: routedBlobs, topK: topK)
-        guard let buffer = routedBlobs.first?.device.makeBuffer(
-            length: routedArgEncoder.encodedLength,
-            options: .storageModeShared) else {
-            return nil
-        }
-        encodeRoutedArgumentBuffer(buffer, routedBlobs: routedBlobs)
-        return buffer
-    }
-
-    func makeRoutedArgumentBuffer(routedViews: [TensorView],
-                                  topK: UInt32) -> any MTLBuffer? {
-        let blobs = routedViews.map(\.buffer)
-        validate(routedBlobs: blobs, topK: topK)
-        guard let buffer = blobs.first?.device.makeBuffer(
-            length: routedArgEncoder.encodedLength,
-            options: .storageModeShared) else { return nil }
-        encodeRoutedArgumentBuffer(buffer, routedViews: routedViews)
-        return buffer
-    }
-
-    func makeReusedRoutedArgumentBuffer(routedBlobs: [any MTLBuffer],
-                                               topK: UInt32) -> any MTLBuffer {
-        validate(routedBlobs: routedBlobs, topK: topK)
-        encodeRoutedArgumentBuffer(reusableRoutedArgBuffer, routedBlobs: routedBlobs)
-        return reusableRoutedArgBuffer
-    }
-
     func makeReusedRoutedArgumentBuffer(routedViews: [TensorView],
                                         topK: UInt32) -> any MTLBuffer {
         validate(routedBlobs: routedViews.map(\.buffer), topK: topK)
-        encodeRoutedArgumentBuffer(reusableRoutedArgBuffer, routedViews: routedViews)
+        routedArgEncoder.setArgumentBuffer(reusableRoutedArgBuffer, offset: 0)
+        for (index, view) in routedViews.enumerated() {
+            routedArgEncoder.setBuffer(view.buffer, offset: Int(view.offset), index: index)
+        }
         return reusableRoutedArgBuffer
     }
 
@@ -566,23 +536,6 @@ final class MoE {
     private func validate(routedBlobs: [any MTLBuffer], topK: UInt32) {
         precondition(topK > 0 && topK <= UInt32(Self.maxStreamedExperts))
         precondition(routedBlobs.count == Int(topK))
-    }
-
-    private func encodeRoutedArgumentBuffer(_ buffer: any MTLBuffer,
-                                            routedBlobs: [any MTLBuffer]) {
-        routedArgEncoder.setArgumentBuffer(buffer, offset: 0)
-        for (index, blob) in routedBlobs.enumerated() {
-            routedArgEncoder.setBuffer(blob, offset: 0, index: index)
-        }
-    }
-
-
-    private func encodeRoutedArgumentBuffer(_ buffer: any MTLBuffer,
-                                            routedViews: [TensorView]) {
-        routedArgEncoder.setArgumentBuffer(buffer, offset: 0)
-        for (index, view) in routedViews.enumerated() {
-            routedArgEncoder.setBuffer(view.buffer, offset: Int(view.offset), index: index)
-        }
     }
 
     private func useRealDecodeConstants(d: UInt32, f: UInt32, topK: UInt32) -> Bool {

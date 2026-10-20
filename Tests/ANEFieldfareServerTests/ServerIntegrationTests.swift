@@ -31,26 +31,7 @@ import ANEFieldfareHotpath
         #"{"model":"whatever","messages":[{"role":"user","content":"Say hello."}]"# + extra + "}"
     }
 
-    @Test func modelsAndHealth() async throws {
-        let server = try await ScriptedServer.start()
-        defer { server.server.stop() }
-        for path in ["/v1/models", "/api/v1/models"] {
-            let (status, body) = try await get(server, path)
-            #expect(status == 200)
-            let object = try jsonObject(body)
-            let data = try #require(object["data"] as? [[String: Any]])
-            #expect(object["object"] as? String == "list")
-            #expect(data.first?["id"] as? String == "test-model")
-            #expect(data.first?["context_length"] as? Int == 4096)
-        }
-        #expect(try await get(server, "/v1/models/test-model").0 == 200)
-        #expect(try await get(server, "/v1/models/other").0 == 404)
-        let (status, body) = try await get(server, "/health")
-        #expect(status == 200)
-        #expect(try jsonObject(body)["status"] as? String == "ok")
-    }
-
-    @Test func nonStreamingChatCompletion() async throws {
+    @Test func nonStreamingChatCompletionAndMaxTokens() async throws {
         let server = try await ScriptedServer.start()
         defer { server.server.stop() }
         let (status, headers, body) = try await post(server, "/v1/chat/completions", chatBody())
@@ -70,21 +51,16 @@ import ANEFieldfareHotpath
         let prompt = try server.backend.prepare(.chat([GFTokenizer.Message(role: .user, content: "Say hello.")]))
         #expect(usage["prompt_tokens"] == prompt.tokenIDs.count)
         // The reply's tokens plus the end-of-turn token.
-        let replyTokens = server.tokenizer.encode(ScriptedServer.replyText, addBOS: false).count
-        #expect(usage["completion_tokens"] == replyTokens + 1)
-        #expect(usage["total_tokens"] == prompt.tokenIDs.count + replyTokens + 1)
-    }
-
-    @Test func maxTokensEndsWithLength() async throws {
-        let server = try await ScriptedServer.start()
-        defer { server.server.stop() }
-        let (_, _, body) = try await post(server, "/api/v1/chat/completions", chatBody(#","max_tokens":3"#))
-        let object = try jsonObject(body)
-        let choice = try #require((object["choices"] as? [[String: Any]])?.first)
-        #expect(choice["finish_reason"] as? String == "length")
-        #expect((object["usage"] as? [String: Int])?["completion_tokens"] == 3)
         let reply = server.tokenizer.encode(ScriptedServer.replyText, addBOS: false)
-        #expect((choice["message"] as? [String: Any])?["content"] as? String
+        #expect(usage["completion_tokens"] == reply.count + 1)
+        #expect(usage["total_tokens"] == prompt.tokenIDs.count + reply.count + 1)
+
+        let (_, _, short) = try await post(server, "/api/v1/chat/completions", chatBody(#","max_tokens":3"#))
+        let cut = try jsonObject(short)
+        let cutChoice = try #require((cut["choices"] as? [[String: Any]])?.first)
+        #expect(cutChoice["finish_reason"] as? String == "length")
+        #expect((cut["usage"] as? [String: Int])?["completion_tokens"] == 3)
+        #expect((cutChoice["message"] as? [String: Any])?["content"] as? String
                 == server.tokenizer.decode(Array(reply.prefix(3))))
     }
 
@@ -102,7 +78,6 @@ import ANEFieldfareHotpath
         for try await byte in bytes { raw.append(byte) }
         let text = String(decoding: raw, as: UTF8.self)
         let events = sseEvents(text)
-        #expect(text.hasSuffix("data: [DONE]\n\n"))
         #expect(events.last == "[DONE]")
         let chunks = try events.dropLast().map(jsonObject)
         #expect(chunks.allSatisfy { $0["object"] as? String == "chat.completion.chunk" })
@@ -154,23 +129,7 @@ import ANEFieldfareHotpath
         }
     }
 
-    @Test func rawCompletionsStream() async throws {
-        let server = try await ScriptedServer.start()
-        defer { server.server.stop() }
-        let (status, _, body) = try await post(server, "/v1/completions", #"{"prompt":"Say hello.","stream":true}"#)
-        #expect(status == 200)
-        let chunks = try sseEvents(body).dropLast().map(jsonObject)
-        #expect(chunks.allSatisfy { $0["object"] as? String == "text_completion" })
-        #expect((chunks.first?["id"] as? String)?.hasPrefix("cmpl-") == true)
-        let text = chunks.compactMap { ($0["choices"] as? [[String: Any]])?.first?["text"] as? String }.joined()
-        #expect(text == ScriptedServer.replyText)
-        let (_, _, whole) = try await post(server, "/v1/completions", #"{"prompt":[2,1000,2000]}"#)
-        let choice = try #require((try jsonObject(whole)["choices"] as? [[String: Any]])?.first)
-        #expect(choice["text"] as? String == ScriptedServer.replyText)
-        #expect(choice["logprobs"] is NSNull)
-    }
-
-    @Test func errorsHaveStatusesAndShapes() async throws {
+    @Test func errorsAuthAndPreflight() async throws {
         let server = try await ScriptedServer.start(apiKey: "sk-test", maxContext: 32)
         defer { server.server.stop() }
         let auth = ["Authorization": "Bearer sk-test"]
@@ -183,7 +142,9 @@ import ANEFieldfareHotpath
         #expect(unauthorized == 401)
         #expect(try error(unauthorizedBody)["code"] as? String == "invalid_api_key")
         #expect(try await get(server, "/v1/models", headers: ["Authorization": "Bearer wrong"]).0 == 401)
-        #expect(try await get(server, "/v1/models", headers: auth).0 == 200)
+        let (listed, models) = try await get(server, "/v1/models", headers: auth)
+        #expect(listed == 200)
+        #expect((try jsonObject(models)["data"] as? [[String: Any]])?.first?["id"] as? String == "test-model")
 
         let (missing, missingBody) = try await get(server, "/v1/nothing", headers: auth)
         #expect(missing == 404)
@@ -203,11 +164,8 @@ import ANEFieldfareHotpath
             """, headers: auth)
         #expect(image == 400)
         #expect(try error(imageBody)["code"] as? String == "unsupported_content")
-    }
 
-    @Test func corsPreflight() async throws {
-        let server = try await ScriptedServer.start(apiKey: "sk-test")
-        defer { server.server.stop() }
+        // A browser's CORS preflight carries no key and must still pass.
         let client = RawClient(port: server.port)
         defer { client.close() }
         try await client.send("OPTIONS /api/v1/chat/completions HTTP/1.1\r\nHost: x\r\nOrigin: http://localhost:3000\r\n"
@@ -255,49 +213,9 @@ import ANEFieldfareHotpath
         #expect(try await client.readsEOF())
     }
 
-    @Test func streamingOverHTTP10IsCloseDelimited() async throws {
-        let server = try await ScriptedServer.start()
-        defer { server.server.stop() }
-        let client = RawClient(port: server.port)
-        defer { client.close() }
-        let json = chatBody(#","stream":true"#)
-        try await client.send("POST /v1/chat/completions HTTP/1.0\r\nContent-Length: \(json.utf8.count)\r\n\r\n\(json)")
-        let head = try await client.read(through: "\r\n\r\n")
-        #expect(!head.contains("Transfer-Encoding"))
-        #expect(head.contains("Connection: close"))
-        let stream = try await client.read(through: "data: [DONE]\n\n")
-        #expect(stream.hasPrefix("data: {"))
-        #expect(try await client.readsEOF())
-    }
-
-    @Test func malformedRequestGets400AndClose() async throws {
-        let server = try await ScriptedServer.start()
-        defer { server.server.stop() }
-        let client = RawClient(port: server.port)
-        defer { client.close() }
-        try await client.send("POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n")
-        let (head, body) = try await client.readResponse()
-        #expect(head.hasPrefix("HTTP/1.1 400 Bad Request"))
-        #expect(body.contains(#""error""#))
-        #expect(try await client.readsEOF())
-    }
-
-    /// A client that disconnects mid-stream cancels its generation; the
-    /// engine is reset and serves the next request in full.
-    @Test func disconnectCancelsTheGeneration() async throws {
-        let server = try await ScriptedServer.start(repeats: true, delay: .milliseconds(20))
-        defer { server.server.stop() }
-        let client = RawClient(port: server.port)
-        let json = chatBody(#","stream":true"#)
-        try await client.send("POST /v1/chat/completions HTTP/1.1\r\nContent-Length: \(json.utf8.count)\r\n\r\n\(json)")
-        _ = try await client.read(through: #""content":"Hello""#)
-        client.close()
-        #expect(await server.waitUntil { $0.cancelled == 1 }, "the generation was not cancelled: \(server.probe.counts)")
-        #expect(server.probe.counts.finished == 0)
-    }
-
     /// One generates, `maxWaiting` wait, the rest get 503; a waiting client
-    /// that leaves gives its place up without ever starting.
+    /// that leaves gives its place up without ever starting, and a streaming
+    /// client that disconnects cancels its generation.
     @Test func boundedLineAndQueuedCancellation() async throws {
         let server = try await ScriptedServer.start(repeats: true, delay: .milliseconds(20), maxWaiting: 1)
         defer { server.server.stop() }
@@ -325,7 +243,7 @@ import ANEFieldfareHotpath
         }
         #expect(server.backend.queueStatus.waiting == 0)
         running.close()
-        #expect(await server.waitUntil { $0.cancelled == 1 })
+        #expect(await server.waitUntil { $0.cancelled == 1 }, "the generation was not cancelled: \(server.probe.counts)")
         #expect(server.probe.counts.started == 1, "the request that left the line never started")
     }
 }

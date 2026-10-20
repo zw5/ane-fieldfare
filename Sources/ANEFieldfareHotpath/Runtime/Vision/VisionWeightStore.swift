@@ -45,15 +45,12 @@ public enum VisionPackLocation {
 final class VisionWeightStore {
     let directoryURL: URL
     let manifest: GTurboVisionManifestV1
-    private let directory: GTurboModelDirectory
     private let weightsFD: Int32
 
     static func open(
         directoryURL: URL,
         compatibleTextSourceSnapshotHash: String
     ) throws -> VisionWeightStore {
-        // "Metadata is invalid" for a pack that was never installed sends the
-        // reader looking for corruption. Absence is its own answer.
         var isDirectory: ObjCBool = false
         guard unsafe FileManager.default.fileExists(
             atPath: directoryURL.standardizedFileURL.path,
@@ -94,40 +91,19 @@ final class VisionWeightStore {
         do { weightsFD = try directory.openFile(GTurboVisionFormatV1.weightsFile) }
         catch { throw VisionPackError.invalidMetadata("\(error)") }
         return VisionWeightStore(directoryURL: directoryURL.standardizedFileURL,
-                                 directory: directory, manifest: manifest,
-                                 weightsFD: weightsFD)
+                                 manifest: manifest, weightsFD: weightsFD)
     }
 
-    private init(directoryURL: URL, directory: GTurboModelDirectory,
-                 manifest: GTurboVisionManifestV1, weightsFD: Int32) {
+    private init(directoryURL: URL, manifest: GTurboVisionManifestV1, weightsFD: Int32) {
         self.directoryURL = directoryURL
-        self.directory = directory
         self.manifest = manifest
         self.weightsFD = weightsFD
     }
 
     deinit { close(weightsFD) }
 
-    func mapRegion(executionPosition: Int,
-                           device: any MTLDevice) throws -> ResidentBuffer {
-        guard manifest.tensors.indices.contains(executionPosition) else {
-            throw VisionPackError.invalidMetadata(
-                "missing execution position \(executionPosition)")
-        }
-        let region = manifest.tensors[executionPosition]
-        guard region.size <= UInt64(device.maxBufferLength) else {
-            throw VisionPackError.regionExceedsDevice(
-                name: region.name, bytes: region.size,
-                maximum: UInt64(device.maxBufferLength))
-        }
-        return try ResidentBuffer(
-            fileURL: directoryURL.appendingPathComponent(region.file),
-            fileOffset: region.offset, residentSize: region.size,
-            device: device, fileDescriptor: weightsFD)
-    }
-
     func mapRegion(tensorNames: [String],
-                           device: any MTLDevice) throws -> VisionMappedWeightRegion {
+                   device: any MTLDevice) throws -> VisionMappedWeightRegion {
         let byName = Dictionary(uniqueKeysWithValues: manifest.tensors.map { ($0.name, $0) })
         let tensors = try tensorNames.map { name -> GTurboVisionTensorRegionV1 in
             guard let tensor = byName[name] else {
@@ -153,9 +129,7 @@ final class VisionWeightStore {
         let offsets = Dictionary(uniqueKeysWithValues: tensors.map {
             ($0.name, Int($0.offset - start))
         })
-        return VisionMappedWeightRegion(resident: resident,
-                                        tensors: tensors,
-                                        offsets: offsets)
+        return VisionMappedWeightRegion(resident: resident, offsets: offsets)
     }
 
     func tensorNames(withPrefix prefix: String) -> [String] {
@@ -163,10 +137,8 @@ final class VisionWeightStore {
     }
 }
 
-
 struct VisionMappedWeightRegion {
     let resident: ResidentBuffer
-    let tensors: [GTurboVisionTensorRegionV1]
     let offsets: [String: Int]
 
     var buffer: any MTLBuffer { resident.buffer }

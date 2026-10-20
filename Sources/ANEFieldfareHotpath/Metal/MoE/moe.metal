@@ -8,7 +8,6 @@ constant constexpr float kGeluCubicCoeff = 0.044715f;
 
 constant uint FC_ROUTER_NUM_EXPERTS [[function_constant(40)]];
 constant uint FC_ROUTER_D [[function_constant(41)]];
-constant uint FC_ROUTER_TOP_K [[function_constant(42)]];
 constant bool FC_ROUTER_USE_FC [[function_constant(43)]];
 
 constant uint FC_MOE_D [[function_constant(0)]];
@@ -84,14 +83,14 @@ static inline void router_gemv_gemma4_body(
     device float* out_logits,
     constant uint& num_experts,
     constant uint& D,
-    uint rows_per_tg,
     uint tg_idx,
     uint sg_idx,
     uint lane
 ) {
     const uint NE = router_fc_num_experts(num_experts);
     const uint DD = router_fc_d(D);
-    const uint e = tg_idx * rows_per_tg + sg_idx;
+    // Four SIMD groups, one expert row each, per threadgroup.
+    const uint e = tg_idx * 4u + sg_idx;
     if (e >= NE) return;
 
     const uint n_groups = DD / kMoEGroupSize;
@@ -129,7 +128,7 @@ kernel void router_gemv_gemma4_r4(
     uint lane [[thread_index_in_simdgroup]]
 ) {
     router_gemv_gemma4_body(W, scales, biases, hidden, effective_scale,
-                            out_logits, num_experts, D, 4, tg_idx, sg_idx, lane);
+                            out_logits, num_experts, D, tg_idx, sg_idx, lane);
 }
 
 // The router GEMV over two weight sets in one dispatch: this layer's router
@@ -156,10 +155,10 @@ kernel void router_gemv_gemma4_pair_r4(
     const uint groups = (router_fc_num_experts(num_experts) + 3u) / 4u;
     if (tg_idx < groups) {
         router_gemv_gemma4_body(W, scales, biases, hidden, effective_scale,
-                                out_logits, num_experts, D, 4, tg_idx, sg_idx, lane);
+                                out_logits, num_experts, D, tg_idx, sg_idx, lane);
     } else {
         router_gemv_gemma4_body(W2, scales2, biases2, hidden, effective_scale2,
-                                out_logits2, num_experts, D, 4, tg_idx - groups, sg_idx, lane);
+                                out_logits2, num_experts, D, tg_idx - groups, sg_idx, lane);
     }
 }
 
@@ -189,10 +188,10 @@ kernel void router_gemv_gemma4_pair_rows_r4(
     device const half* h = hidden + tg.y * hidden_stride;
     if (tg.x < groups) {
         router_gemv_gemma4_body(W, scales, biases, h, effective_scale,
-                                out_logits + tg.y * NE, num_experts, D, 4, tg.x, sg_idx, lane);
+                                out_logits + tg.y * NE, num_experts, D, tg.x, sg_idx, lane);
     } else {
         router_gemv_gemma4_body(W2, scales2, biases2, h, effective_scale2,
-                                out_logits2 + tg.y * NE, num_experts, D, 4, tg.x - groups, sg_idx, lane);
+                                out_logits2 + tg.y * NE, num_experts, D, tg.x - groups, sg_idx, lane);
     }
 }
 
@@ -483,24 +482,18 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
     return float2(simd_sum(g_acc), simd_sum(u_acc));
 }
 
-static inline void moe_phase1_gate_up_act_u16load_body(
+// One gate/up row `f` of routed slot `slot`, activated into `acts`.
+static inline void moe_phase1_gate_up_act_row(
     device const RoutedBlobs& routed,
     constant ExpertOffsets& routed_offsets,
     device const half* x,
     device half* acts,
+    uint slot,
+    uint f,
     uint D,
     uint F,
-    uint top_k,
-    uint rows_per_tg,
-    uint tg_idx,
-    uint sg_idx,
     uint lane
 ) {
-    const uint rowg = tg_idx * rows_per_tg + sg_idx;
-    if (rowg >= top_k * F) return;
-    const uint slot = rowg / F;
-    const uint f = rowg % F;
-
     device const uint8_t* base = routed.blob[slot];
     const ExpertOffsets re = routed_offsets;
     device const uint8_t* gW = base + re.gate_W_off;
@@ -515,42 +508,7 @@ static inline void moe_phase1_gate_up_act_u16load_body(
     if (lane == 0) acts[slot * F + f] = half(gelu_pytorch_tanh(gu.x) * gu.y);
 }
 
-static inline void moe_phase1_gate_up_act_subset_u16load_body(
-    device const RoutedBlobs& routed,
-    constant ExpertOffsets& routed_offsets,
-    device const half* x,
-    device half* acts,
-    device const uint* active_slots,
-    uint active_count,
-    uint D,
-    uint F,
-    uint top_k,
-    uint rows_per_tg,
-    uint tg_idx,
-    uint sg_idx,
-    uint lane
-) {
-    const uint rowg = tg_idx * rows_per_tg + sg_idx;
-    if (rowg >= active_count * F) return;
-    const uint active_idx = rowg / F;
-    const uint slot = active_slots[active_idx];
-    if (slot >= top_k) return;
-    const uint f = rowg % F;
-
-    device const uint8_t* base = routed.blob[slot];
-    const ExpertOffsets re = routed_offsets;
-    device const uint8_t* gW = base + re.gate_W_off;
-    device const uint8_t* uW = base + re.up_W_off;
-    device const bfloat* gS = (device const bfloat*)(base + re.gate_s_off);
-    device const bfloat* uS = (device const bfloat*)(base + re.up_s_off);
-    device const bfloat* gB = (device const bfloat*)(base + re.gate_b_off);
-    device const bfloat* uB = (device const bfloat*)(base + re.up_b_off);
-
-    const float2 gu = moe_int4_gate_up_rows_simd_dev_vec_u16load(
-        gW, gS, gB, uW, uS, uB, x, f, D, lane);
-    if (lane == 0) acts[slot * F + f] = half(gelu_pytorch_tanh(gu.x) * gu.y);
-}
-
+// Eight SIMD groups, one (slot, f) row each, per threadgroup.
 kernel void moe_phase1_gate_up_act_u16load(
     device const RoutedBlobs& routed [[buffer(0)]],
     constant ExpertOffsets& routed_offsets [[buffer(1)]],
@@ -563,12 +521,15 @@ kernel void moe_phase1_gate_up_act_u16load(
     uint sg_idx [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]
 ) {
-    constexpr uint rows_per_tg = 8;
-    moe_phase1_gate_up_act_u16load_body(
-        routed, routed_offsets, x, acts, moe_fc_d(D), moe_fc_f(F),
-        moe_fc_top_k(top_k), rows_per_tg, tg_idx, sg_idx, lane);
+    const uint FF = moe_fc_f(F);
+    const uint rowg = tg_idx * 8u + sg_idx;
+    if (rowg >= moe_fc_top_k(top_k) * FF) return;
+    moe_phase1_gate_up_act_row(routed, routed_offsets, x, acts, rowg / FF, rowg % FF,
+                               moe_fc_d(D), FF, lane);
 }
 
+// moe_phase1_gate_up_act_u16load over the `active_count` slots listed in
+// `active_slots` only.
 kernel void moe_phase1_gate_up_act_subset_u16load(
     device const RoutedBlobs& routed [[buffer(0)]],
     constant ExpertOffsets& routed_offsets [[buffer(1)]],
@@ -583,11 +544,13 @@ kernel void moe_phase1_gate_up_act_subset_u16load(
     uint sg_idx [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]
 ) {
-    constexpr uint rows_per_tg = 8;
-    moe_phase1_gate_up_act_subset_u16load_body(
-        routed, routed_offsets, x, acts, active_slots, active_count,
-        moe_fc_d(D), moe_fc_f(F), moe_fc_top_k(top_k), rows_per_tg,
-        tg_idx, sg_idx, lane);
+    const uint FF = moe_fc_f(F);
+    const uint rowg = tg_idx * 8u + sg_idx;
+    if (rowg >= active_count * FF) return;
+    const uint slot = active_slots[rowg / FF];
+    if (slot >= moe_fc_top_k(top_k)) return;
+    moe_phase1_gate_up_act_row(routed, routed_offsets, x, acts, slot, rowg % FF,
+                               moe_fc_d(D), FF, lane);
 }
 
 // Shared FFN gate, up and GELU in one dispatch. Each SIMD computes one gate

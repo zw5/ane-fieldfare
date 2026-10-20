@@ -24,14 +24,11 @@ public final class HTTPServer: Sendable {
     public struct Configuration: Sendable {
         public var host: String
         public var port: UInt16
-        public var limits: HTTPRequestParser.Limits
         public var idleTimeout: Duration
 
-        public init(host: String = "127.0.0.1", port: UInt16 = 8080,
-                    limits: HTTPRequestParser.Limits = .init(), idleTimeout: Duration = .seconds(60)) {
+        public init(host: String, port: UInt16, idleTimeout: Duration = .seconds(60)) {
             self.host = host
             self.port = port
-            self.limits = limits
             self.idleTimeout = idleTimeout
         }
     }
@@ -112,7 +109,7 @@ public final class HTTPServer: Sendable {
     }
 
     private func serve(_ connection: HTTPConnection) async {
-        var parser = HTTPRequestParser(limits: configuration.limits)
+        var parser = HTTPRequestParser()
         while !Task.isCancelled {
             let request: HTTPRequest
             do {
@@ -122,8 +119,7 @@ public final class HTTPServer: Sendable {
                 }
                 request = next
             } catch let error as HTTPParseError {
-                let response = OpenAIErrorResponse.response(
-                    status: error.status, type: "invalid_request_error", code: nil, message: error.message)
+                let response = OpenAIErrorResponse.response(APIError(status: error.status, message: error.message))
                 await connection.close(after: response.serialized(keepAlive: false))
                 return
             } catch {
