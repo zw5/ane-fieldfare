@@ -28,9 +28,8 @@ final class LogitSoftcapSoftmax {
         enc.setBuffer(logits, offset: 0, index: 0)
         enc.setBuffer(probs,  offset: 0, index: 1)
         let vVar       = v
-        let softcapVar = softcap
         enc.setValue(vVar, index: 2)
-        enc.setValue(softcapVar, index: 3)
+        enc.setValue(softcap, index: 3)
 
         let threadsPerGroup = min(Int(pso.maxTotalThreadsPerThreadgroup), 256)
         let gridSize = MTLSize(width: threadsPerGroup, height: 1, depth: 1)

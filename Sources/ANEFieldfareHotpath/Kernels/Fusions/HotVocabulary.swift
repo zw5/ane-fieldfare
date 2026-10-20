@@ -52,11 +52,8 @@ final class HotVocabulary {
                 unsafe UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: 16 + 4 * $0, as: UInt32.self))
             }
         }
-        guard let ids = device.makeBuffer(length: Self.capacity * MemoryLayout<UInt32>.size,
-                                          options: .storageModeShared) else {
-            throw ModelError.residentBufferWrapFailed
-        }
-        self.ids = ids
+        self.ids = try device.newBuffer(length: Self.capacity * MemoryLayout<UInt32>.size,
+                                        options: .storageModeShared)
         member = Array(repeating: false, count: vocab)
         insert(ranked.prefix(shipped))
     }

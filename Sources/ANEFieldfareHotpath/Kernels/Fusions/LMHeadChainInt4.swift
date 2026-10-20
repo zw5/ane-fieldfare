@@ -67,9 +67,7 @@ final class LMHeadChainInt4 {
         self.rowsProjection = try DequantInt4GEMV(context: context)
         self.rowsArgmax = try context.pipeline("argmax_rows_f32")
         self.rowsSample = try context.pipeline("sample_rows_f32")
-        guard let zero = context.device.makeBuffer(length: 16, options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
+        let zero = try context.device.newBuffer(length: 16, options: .storageModeShared)
         unsafe memset(zero.contents(), 0, 16)
         self.zeroKeyOffset = zero
         self.maxD = maxD
@@ -78,35 +76,16 @@ final class LMHeadChainInt4 {
         let rowGroups = (maxVocab + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
         let xLength = max(maxD, 1) * MemoryLayout<Float16>.size
         let summaryLength = rowGroups * Self.rowSummaryStride * MemoryLayout<Float>.size
-        guard let xNormedBuffer = context.device.makeBuffer(
-                  length: xLength,
-                  options: .storageModePrivate),
-              let rowSummariesBuffer = context.device.makeBuffer(
-                  length: summaryLength,
-                  options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        self.xNormedBuffer = xNormedBuffer
-        self.rowSummariesBuffer = rowSummariesBuffer
-        guard let checkSummaries = context.device.makeBuffer(
-                  length: Self.maxCheckRows * summaryLength, options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        self.checkSummariesBuffer = checkSummaries
-        guard let xNormedRows = context.device.makeBuffer(
-                  length: Self.maxGreedyRows * xLength, options: .storageModePrivate),
-              let rowsLogits = context.device.makeBuffer(
-                  length: Self.maxGreedyRows * maxVocab * MemoryLayout<Float>.size,
-                  options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        self.xNormedRowsBuffer = xNormedRows
-        self.rowsLogitsBuffer = rowsLogits
-        guard let confidence = context.device.makeBuffer(
-                  length: Self.maxGreedyRows * MemoryLayout<Float>.size, options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
-        self.rowsConfidence = confidence
+        self.xNormedBuffer = try context.device.newBuffer(length: xLength, options: .storageModePrivate)
+        self.rowSummariesBuffer = try context.device.newBuffer(length: summaryLength, options: .storageModePrivate)
+        self.checkSummariesBuffer = try context.device.newBuffer(length: Self.maxCheckRows * summaryLength,
+                                                                 options: .storageModePrivate)
+        self.xNormedRowsBuffer = try context.device.newBuffer(length: Self.maxGreedyRows * xLength,
+                                                              options: .storageModePrivate)
+        self.rowsLogitsBuffer = try context.device.newBuffer(
+            length: Self.maxGreedyRows * maxVocab * MemoryLayout<Float>.size, options: .storageModePrivate)
+        self.rowsConfidence = try context.device.newBuffer(length: Self.maxGreedyRows * MemoryLayout<Float>.size,
+                                                           options: .storageModeShared)
     }
 
     /// Greedy tokens for `rowCount` consecutive FP16 hidden rows starting at
@@ -339,9 +318,8 @@ final class LMHeadChainInt4 {
         encoder.setBuffer(scales, offset: scalesOffset, index: 2)
         encoder.setBuffer(biases, offset: biasesOffset, index: 3)
         encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 4)
-        let dValue = d
         let count = UInt32(table.count)
-        encoder.setValue(dValue, index: 5)
+        encoder.setValue(d, index: 5)
         encoder.setValue(count, index: 6)
         encoder.setBuffer(table.ids, offset: 0, index: 7)
         encoder.dispatchThreadgroups(
@@ -397,10 +375,8 @@ final class LMHeadChainInt4 {
         encoder.setBuffer(scales, offset: scalesOffset, index: 2)
         encoder.setBuffer(biases, offset: biasesOffset, index: 3)
         encoder.setBuffer(checkSummariesBuffer, offset: 0, index: 4)
-        let dValue = d
-        let vocabValue = vocab
-        encoder.setValue(dValue, index: 5)
-        encoder.setValue(vocabValue, index: 6)
+        encoder.setValue(d, index: 5)
+        encoder.setValue(vocab, index: 6)
         encoder.dispatchThreadgroups(
             MTLSize(width: rowGroups, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup, height: 1, depth: 1))

@@ -72,9 +72,7 @@ extension PrefillGroupedRoutedMoETests {
       hiddenStrideElements: UInt32(d),
       binding: binding,
       offsets: pool.offsets)
-    let argumentBuffer = try grouped.makeStreamedArgumentBuffer(
-      device: ctx.device,
-      binding: binding)
+    let argumentBuffer = grouped.makeStreamedArgumentBuffer(binding: binding)
     try grouped.encodeStreamedBatched(
       commandBuffer: commandBuffer,
       hidden: hiddenBuffer,

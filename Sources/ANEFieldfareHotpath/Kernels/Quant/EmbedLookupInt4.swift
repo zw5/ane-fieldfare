@@ -29,10 +29,9 @@ final class EmbedLookupInt4 {
         enc.setBuffer(scales, offset: scalesOffset, index: 1)
         enc.setBuffer(biases, offset: biasesOffset, index: 2)
         enc.setBuffer(out,    offset: outOffset,    index: 3)
-        let tokenVar = tokenId
         let dVar     = d
         let sVar     = outScale
-        enc.setValue(tokenVar, index: 4)
+        enc.setValue(tokenId, index: 4)
         enc.setValue(dVar, index: 5)
         enc.setValue(sVar, index: 6)
 

@@ -28,6 +28,16 @@ enum MetalError: Error, CustomStringConvertible {
     }
 }
 
+extension MTLDevice {
+    /// `makeBuffer(length:options:)`, throwing when Metal cannot allocate.
+    func newBuffer(length: Int, options: MTLResourceOptions) throws -> any MTLBuffer {
+        guard let buffer = makeBuffer(length: length, options: options) else {
+            throw MetalError.allocationFailed(bytes: length)
+        }
+        return buffer
+    }
+}
+
 func metalCommandBufferStatusName(_ status: MTLCommandBufferStatus) -> String {
     switch status {
     case .notEnqueued: return "notEnqueued"

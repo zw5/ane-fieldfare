@@ -108,15 +108,12 @@ final class Attention {
                                                                    numKVHeads: 2,
                                                                    numChunks: 16)
         let md = Self.maxQHeads * Self.maxChunks
-        guard let m = context.device.makeBuffer(length: md * MemoryLayout<Float>.size,
-                                                options: .storageModeShared),
-	              let d = context.device.makeBuffer(length: md * MemoryLayout<Float>.size,
-	                                                options: .storageModeShared),
-	              let o = context.device.makeBuffer(length: md * Self.maxHeadDim * MemoryLayout<Float>.size,
-	                                                options: .storageModeShared) else {
-            throw MetalError.missingFunction("attention split-KV scratch")
-        }
-        self.mPartial = m; self.dPartial = d; self.oPartial = o
+        self.mPartial = try context.device.newBuffer(length: md * MemoryLayout<Float>.size,
+                                                     options: .storageModeShared)
+        self.dPartial = try context.device.newBuffer(length: md * MemoryLayout<Float>.size,
+                                                     options: .storageModeShared)
+        self.oPartial = try context.device.newBuffer(length: md * Self.maxHeadDim * MemoryLayout<Float>.size,
+                                                     options: .storageModeShared)
     }
 
     /// Number of K/V chunks for a range of `effLen` positions — the split

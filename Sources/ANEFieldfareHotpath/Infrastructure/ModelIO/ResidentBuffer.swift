@@ -34,16 +34,13 @@ final class ResidentBuffer {
             throw ModelError.indexCorrupt(detail: "resident weights are not a regular file")
         }
         let (fileEnd, endOverflow) = fileOffset.addingReportingOverflow(residentSize)
-        guard residentSize > 0, !endOverflow, fileEnd <= UInt64(info.st_size),
-              fileOffset <= UInt64(Int64.max) else {
+        // fileEnd <= st_size bounds both the offset and the size by Int64.max.
+        guard residentSize > 0, !endOverflow, fileEnd <= UInt64(info.st_size) else {
             throw ModelError.indexCorrupt(detail: "resident mapping exceeds the weights file")
         }
 
         let alignedOffset = (fileOffset / UInt64(pageSize)) * UInt64(pageSize)
         let sliceShift = Int(fileOffset - alignedOffset)
-        guard residentSize <= UInt64(Int.max - sliceShift) else {
-            throw ModelError.indexCorrupt(detail: "resident mapping exceeds addressable memory")
-        }
         let mappedLen = sliceShift + Int(residentSize)
         let mapped = unsafe mmap(nil, mappedLen, PROT_READ, MAP_PRIVATE,
                           fd, off_t(alignedOffset))

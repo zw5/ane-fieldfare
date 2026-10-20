@@ -155,39 +155,11 @@ public struct PrefillStreamedTileBinding {
         self.views = views
     }
 
-    public static func expertIDs(forTile tileIndex: Int,
-                                 routes: PrefillMoEGroupedRoutes) throws -> [Int] {
-        guard routes.tiles.indices.contains(tileIndex) else {
-            throw PrefillGroupedRoutedMoEError.invalidStreamedTileBinding(
-                "tile index \(tileIndex) is out of range")
-        }
+    /// The experts of `routes`' tile `tileIndex`, in group order.
+    public static func expertIDs(forTile tileIndex: Int, routes: PrefillMoEGroupedRoutes) -> [Int] {
         let tile = routes.tiles[tileIndex]
-        let groupStart = Int(tile.groupStart)
-        let groupCount = Int(tile.groupCount)
-        guard groupCount > 0, groupCount <= 16 else {
-            throw PrefillGroupedRoutedMoEError.invalidStreamedTileBinding(
-                "tile has \(groupCount) live experts; expected 1...16")
-        }
-        guard groupStart >= 0, groupStart + groupCount <= routes.groups.count else {
-            throw PrefillGroupedRoutedMoEError.invalidStreamedTileBinding(
-                "tile group range \(groupStart)..<\(groupStart + groupCount) exceeds \(routes.groups.count)")
-        }
-        return routes.groups[groupStart..<(groupStart + groupCount)].map { Int($0.expert) }
-    }
-
-    public func validateCoversPairs(_ pairs: [PrefillTokenExpertPair],
-                                    pairStart: Int,
-                                    pairCount: Int) throws {
-        guard pairStart >= 0, pairCount >= 0, pairStart + pairCount <= pairs.count else {
-            throw PrefillGroupedRoutedMoEError.invalidStreamedTileBinding(
-                "pair range \(pairStart)..<\(pairStart + pairCount) exceeds \(pairs.count)")
-        }
-        for pair in pairs[pairStart..<(pairStart + pairCount)] {
-            guard expertIDs.contains(Int(pair.expert)) else {
-                throw PrefillGroupedRoutedMoEError.invalidStreamedTileBinding(
-                    "route expert \(pair.expert) is not bound in tile")
-            }
-        }
+        let groups = Int(tile.groupStart)..<Int(tile.groupStart + tile.groupCount)
+        return routes.groups[groups].map { Int($0.expert) }
     }
 }
 
@@ -230,9 +202,8 @@ final class PrefillGroupedRoutedMoE {
     /// Pairs per expert one verify dispatch takes (`FC_VERIFY_ROWS` <= 16).
     static let verifyMaxRows = 16
 
-    func makeStreamedArgumentBuffer(device: any MTLDevice,
-                                    binding: PrefillStreamedTileBinding,
-                                    reuseSlot: Int = 0) throws -> PrefillStreamedTileArgumentBuffer {
+    func makeStreamedArgumentBuffer(binding: PrefillStreamedTileBinding,
+                                    reuseSlot: Int = 0) -> PrefillStreamedTileArgumentBuffer {
         precondition(reusableStreamedArgumentBuffers.indices.contains(reuseSlot))
         let buffer = reusableStreamedArgumentBuffers[reuseSlot]
 
@@ -246,10 +217,8 @@ final class PrefillGroupedRoutedMoE {
     }
 
     init(context: MetalContext) throws {
-        guard let plan = context.device.makeBuffer(length: Self.boundPlanArgsOffset + Self.boundPlanRowClasses * 24,
-                                                   options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
+        let plan = try context.device.newBuffer(length: Self.boundPlanArgsOffset + Self.boundPlanRowClasses * 24,
+                                                options: .storageModePrivate)
         plan.label = "prefill.groupedMoe.boundPlan"
         self.boundPlan = plan
         self.boundPlanPSO = try context.pipeline("verify_bound_plan")
@@ -264,31 +233,23 @@ final class PrefillGroupedRoutedMoE {
         // Two alternate for drained prefill tiles; verify commits up to eight
         // tiles of one layer before waiting, each with its own buffer.
         for index in 0..<Self.streamedArgumentBufferCount {
-            guard let buffer = context.device.makeBuffer(
-                length: streamedArgEncoder.encodedLength,
-                options: .storageModeShared) else {
-                throw MetalError.noDevice
-            }
+            let buffer = try context.device.newBuffer(length: streamedArgEncoder.encodedLength,
+                                                      options: .storageModeShared)
             buffer.label = "prefill.groupedMoe.streamedArgumentBuffer.\(index)"
             argumentBuffers.append(buffer)
         }
         self.reusableStreamedArgumentBuffers = argumentBuffers
         let maximumPairs = PrefillRuntimeConfig.maxChunkTokens * 8
-        guard let pairBuffer = context.device.makeBuffer(
-            length: maximumPairs * MemoryLayout<PrefillTokenExpertPair>.stride,
-            options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
+        let pairBuffer = try context.device.newBuffer(
+            length: maximumPairs * MemoryLayout<PrefillTokenExpertPair>.stride, options: .storageModeShared)
         pairBuffer.label = "prefill.groupedMoe.sortedPairs"
         self.reusableSortedPairsBuffer = pairBuffer
         self.context = context
     }
 
     func makeStreamedMetadataBuffers(
-        device: any MTLDevice,
         routes: PrefillMoEGroupedRoutes
     ) throws -> PrefillGroupedRoutedMoEStreamedMetadataBuffers {
-        _ = device // Buffer ownership is fixed at runtime construction.
         let bytes = routes.sortedPairs.count * MemoryLayout<PrefillTokenExpertPair>.stride
         guard bytes <= reusableSortedPairsBuffer.length else {
             throw PrefillGroupedRoutedMoEError.allocationFailed(
@@ -380,9 +341,9 @@ final class PrefillGroupedRoutedMoE {
         if let existing = verifyActs, existing.length >= actBytes {
             acts = existing
         } else {
-            guard let buffer = context.device.makeBuffer(
+            let buffer = try context.device.newBuffer(
                 length: max(actBytes, PrefillRuntimeConfig.maxChunkTokens * 8 * Int(params.routedIntermediate) * 2),
-                options: .storageModePrivate) else { throw MetalError.noDevice }
+                options: .storageModePrivate)
             buffer.label = "prefill.groupedMoe.verifyActs"
             verifyActs = buffer
             acts = buffer
@@ -433,16 +394,16 @@ final class PrefillGroupedRoutedMoE {
         if let existing = boundActs, existing.length >= actBytes {
             acts = existing
         } else {
-            guard let buffer = context.device.makeBuffer(
+            let buffer = try context.device.newBuffer(
                 length: Self.verifyMaxRows * Int(params.topK) * Int(params.routedIntermediate) * 2,
-                options: .storageModePrivate) else { throw MetalError.noDevice }
+                options: .storageModePrivate)
             buffer.label = "prefill.groupedMoe.boundActs"
             boundActs = buffer
             acts = buffer
         }
         let count = UInt32(routeCount), bounds = UInt32(boundCount)
-        // One serial encoder, so the experts are made resident once (each
-        // costs ~2.7 µs of host time per encoder).
+        // One serial encoder, so the experts are made resident once: each
+        // useResources costs host time per encoder.
         let enc = try commandBuffer.makeTracedComputeEncoder()
         enc.setBuffer(hidden, offset: 0, index: 0)
         enc.setBuffer(routeIDs, offset: 0, index: 1)
@@ -460,8 +421,8 @@ final class PrefillGroupedRoutedMoE {
         enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
         // Each row class (up to 2, 4, 8 or 16 rows) runs kernels
-        // specialized to it: register arrays sized for the block's rows cost
-        // occupancy (measured: an 8-row block's experts 8% slower).
+        // specialized to it: register arrays sized for more rows than the
+        // block has cost occupancy.
         let threads = MTLSize(width: 256, height: 1, depth: 1)
         let entryBytes = Self.boundPlanClassEntries * Self.boundPlanRoutedEntryBytes
         for c in 0..<Self.boundPlanRowClasses where c == 0 || 1 << c < rows {

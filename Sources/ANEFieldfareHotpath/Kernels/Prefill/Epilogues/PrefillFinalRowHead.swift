@@ -12,11 +12,8 @@ final class PrefillFinalRowHeadInt4 {
         self.rms = try RMSNorm(context: context)
         self.int4 = try DequantInt4GEMV(context: context)
         self.maxD = maxD
-        guard let normed = context.device.makeBuffer(length: maxD * MemoryLayout<Float16>.size,
-                                                     options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        self.normed = normed
+        self.normed = try context.device.newBuffer(length: maxD * MemoryLayout<Float16>.size,
+                                                   options: .storageModePrivate)
     }
 
     func encodeLogits(commandBuffer: any MTLCommandBuffer,

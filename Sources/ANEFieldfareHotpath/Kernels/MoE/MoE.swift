@@ -94,14 +94,10 @@ final class MoE {
         self.routerSelectK8SIMDRowsPSO = try context.pipeline(
             "router_topk_select_k8_simd_rows",
             constants: Self.realDecodeRouterConstants)
-        guard let rowsLogits = context.device.makeBuffer(
-                length: Self.maxRouterRows * 256 * MemoryLayout<Float>.stride, options: .storageModePrivate),
-              let guessLogits = context.device.makeBuffer(
-                length: Self.maxRouterRows * 256 * MemoryLayout<Float>.stride, options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
-        self.routerRowsLogits = rowsLogits
-        self.guessRowsLogits = guessLogits
+        self.routerRowsLogits = try context.device.newBuffer(
+            length: Self.maxRouterRows * 256 * MemoryLayout<Float>.stride, options: .storageModePrivate)
+        self.guessRowsLogits = try context.device.newBuffer(
+            length: Self.maxRouterRows * 256 * MemoryLayout<Float>.stride, options: .storageModeShared)
         self.phase1U16PSO = try context.pipeline("moe_phase1_gate_up_act_u16load")
         self.phase1U16SpecializedPSO = try context.pipeline(
             "moe_phase1_gate_up_act_u16load",
@@ -116,21 +112,14 @@ final class MoE {
             "moe_phase2_down_reduce_k8",
             constants: Self.realDecodeMoEConstants)
 
-        guard let logits = context.device.makeBuffer(
-            length: 256 * MemoryLayout<Float>.stride,
-            options: .storageModeShared),
-              let phase1Function = context.library.makeFunction(
-                name: "moe_phase1_gate_up_act_u16load") else {
-            throw MetalError.noDevice
+        self.routerLogits = try context.device.newBuffer(length: 256 * MemoryLayout<Float>.stride,
+                                                         options: .storageModeShared)
+        guard let phase1Function = context.library.makeFunction(name: "moe_phase1_gate_up_act_u16load") else {
+            throw MetalError.missingFunction("moe_phase1_gate_up_act_u16load")
         }
-        self.routerLogits = logits
         self.routedArgEncoder = phase1Function.makeArgumentEncoder(bufferIndex: 0)
-        guard let reusable = context.device.makeBuffer(
-            length: routedArgEncoder.encodedLength,
-            options: .storageModeShared) else {
-            throw MetalError.noDevice
-        }
-        self.reusableRoutedArgBuffer = reusable
+        self.reusableRoutedArgBuffer = try context.device.newBuffer(length: routedArgEncoder.encodedLength,
+                                                                    options: .storageModeShared)
     }
 
     /// The router GEMV alone: `numExperts` Float32 scores into `outLogits`,
@@ -148,8 +137,6 @@ final class MoE {
         precondition(numExperts <= 256)
         precondition(outLogits.length >= Int(numExperts) * MemoryLayout<Float>.stride)
 
-        let expertCount = numExperts
-        let dimension = d
         let useSpecialized = numExperts == Self.realDecodeNumExperts
             && d == Self.realDecodeD
         let encoder = try commandBuffer.makeTracedComputeEncoder()
@@ -161,8 +148,8 @@ final class MoE {
         encoder.setBuffer(hidden, offset: 0, index: 3)
         encoder.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 4)
         encoder.setBuffer(outLogits, offset: 0, index: 5)
-        encoder.setValue(expertCount, index: 6)
-        encoder.setValue(dimension, index: 7)
+        encoder.setValue(numExperts, index: 6)
+        encoder.setValue(d, index: 7)
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(numExperts) + 3) / 4, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
@@ -192,12 +179,10 @@ final class MoE {
                                    topK: UInt32,
                                    next: RouterLogitsTarget? = nil) throws {
         precondition(topK == UInt32(Self.maxStreamedExperts))
-        let expertCount = numExperts
         let useSpecialized = numExperts == Self.realDecodeNumExperts
             && d == Self.realDecodeD
         if useSpecialized, let next {
             let encoder = try commandBuffer.makeTracedComputeEncoder()
-            let dimension = d
             encoder.setComputePipelineState(routerGemvPairSpecializedPSO)
             encoder.setBuffer(weights, offset: weightsOffset, index: 0)
             encoder.setBuffer(scales, offset: scalesOffset, index: 1)
@@ -205,8 +190,8 @@ final class MoE {
             encoder.setBuffer(hidden, offset: 0, index: 3)
             encoder.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 4)
             encoder.setBuffer(routerLogits, offset: 0, index: 5)
-            encoder.setValue(expertCount, index: 6)
-            encoder.setValue(dimension, index: 7)
+            encoder.setValue(numExperts, index: 6)
+            encoder.setValue(d, index: 7)
             encoder.setBuffer(next.weights, offset: next.weightsOffset, index: 8)
             encoder.setBuffer(next.scales, offset: next.scalesOffset, index: 9)
             encoder.setBuffer(next.biases, offset: next.biasesOffset, index: 10)
@@ -244,7 +229,7 @@ final class MoE {
         encoder.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 1)
         encoder.setBuffer(outIndices, offset: 0, index: 2)
         encoder.setBuffer(outWeights, offset: 0, index: 3)
-        encoder.setValue(expertCount, index: 4)
+        encoder.setValue(numExperts, index: 4)
         encoder.dispatchThreadgroups(
             MTLSize(width: 1, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
@@ -274,9 +259,6 @@ final class MoE {
                                 nextPerExpertScale: any MTLBuffer?, nextPerExpertScaleOffset: Int = 0,
                                 nextIndices: any MTLBuffer?, nextWeights: any MTLBuffer?) throws {
         precondition(Self.routesRows(numExperts: numExperts, d: d, rows: rows))
-        let expertCount = numExperts
-        let dimension = d
-        let stride = hiddenStrideElements
         let groups = (Int(numExperts) + 3) / 4
         let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(routerGemvPairRowsSpecializedPSO)
@@ -286,14 +268,14 @@ final class MoE {
         encoder.setBuffer(hidden, offset: 0, index: 3)
         encoder.setBuffer(effectiveScale, offset: 0, index: 4)
         encoder.setBuffer(routerRowsLogits, offset: 0, index: 5)
-        encoder.setValue(expertCount, index: 6)
-        encoder.setValue(dimension, index: 7)
+        encoder.setValue(numExperts, index: 6)
+        encoder.setValue(d, index: 7)
         encoder.setBuffer(next?.weights ?? weights, offset: next?.weightsOffset ?? weightsOffset, index: 8)
         encoder.setBuffer(next?.scales ?? scales, offset: next?.scalesOffset ?? scalesOffset, index: 9)
         encoder.setBuffer(next?.biases ?? biases, offset: next?.biasesOffset ?? biasesOffset, index: 10)
         encoder.setBuffer(next?.effectiveScale ?? effectiveScale, offset: 0, index: 11)
         encoder.setBuffer(guessRowsLogits, offset: 0, index: 12)
-        encoder.setValue(stride, index: 13)
+        encoder.setValue(hiddenStrideElements, index: 13)
         encoder.dispatchThreadgroups(
             MTLSize(width: next == nil ? groups : 2 * groups, height: rows, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
@@ -310,7 +292,7 @@ final class MoE {
             encoder.setBuffer(scale, offset: scaleOffset, index: 1)
             encoder.setBuffer(indices, offset: 0, index: 2)
             encoder.setBuffer(weightsOut, offset: 0, index: 3)
-            encoder.setValue(expertCount, index: 4)
+            encoder.setValue(numExperts, index: 4)
             encoder.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                          threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
             encoder.endEncoding()
@@ -339,9 +321,6 @@ final class MoE {
         topK: UInt32
     ) throws {
         validate(routedBlobs: routedBlobs, topK: topK)
-        let dimension = d
-        let intermediate = f
-        let expertCount = topK
         let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(
             useRealDecodeConstants(d: d, f: f, topK: topK)
@@ -349,13 +328,12 @@ final class MoE {
                 : phase1U16PSO)
         encoder.setBuffer(routedArgBuffer, offset: 0, index: 0)
         for buffer in routedBlobs { encoder.useResource(buffer, usage: .read) }
-        let offsets = routedOffsets
-        encoder.setValue(offsets, index: 1)
+        encoder.setValue(routedOffsets, index: 1)
         encoder.setBuffer(x, offset: 0, index: 2)
         encoder.setBuffer(acts, offset: 0, index: 3)
-        encoder.setValue(dimension, index: 4)
-        encoder.setValue(intermediate, index: 5)
-        encoder.setValue(expertCount, index: 6)
+        encoder.setValue(d, index: 4)
+        encoder.setValue(f, index: 5)
+        encoder.setValue(topK, index: 6)
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(topK * f) + 7) / 8, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -380,10 +358,6 @@ final class MoE {
         guard activeCount > 0 else { return }
         validate(routedBlobs: routedBlobs, topK: topK)
         precondition(activeSlotIndices.count == Int(activeCount))
-        let dimension = d
-        let intermediate = f
-        let expertCount = topK
-        let active = activeCount
         let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(
             useRealDecodeConstants(d: d, f: f, topK: topK)
@@ -393,15 +367,14 @@ final class MoE {
         for slot in activeSlotIndices {
             encoder.useResource(routedBlobs[Int(slot)], usage: .read)
         }
-        let offsets = routedOffsets
-        encoder.setValue(offsets, index: 1)
+        encoder.setValue(routedOffsets, index: 1)
         encoder.setBuffer(x, offset: 0, index: 2)
         encoder.setBuffer(acts, offset: 0, index: 3)
-        encoder.setValue(dimension, index: 4)
-        encoder.setValue(intermediate, index: 5)
-        encoder.setValue(expertCount, index: 6)
+        encoder.setValue(d, index: 4)
+        encoder.setValue(f, index: 5)
+        encoder.setValue(topK, index: 6)
         encoder.setBuffer(activeSlots, offset: activeSlotsOffset, index: 7)
-        encoder.setValue(active, index: 8)
+        encoder.setValue(activeCount, index: 8)
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(activeCount * f) + 7) / 8, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -422,8 +395,6 @@ final class MoE {
         topK: UInt32
     ) throws {
         validate(routedBlobs: routedBlobs, topK: topK)
-        let dimension = d
-        let intermediate = f
         let encoder = try commandBuffer.makeTracedComputeEncoder()
         encoder.setComputePipelineState(
             useRealDecodeConstants(d: d, f: f, topK: topK)
@@ -431,14 +402,13 @@ final class MoE {
                 : phase2ReduceK8PSO)
         encoder.setBuffer(routedArgBuffer, offset: 0, index: 0)
         for buffer in routedBlobs { encoder.useResource(buffer, usage: .read) }
-        let offsets = routedOffsets
-        encoder.setValue(offsets, index: 1)
+        encoder.setValue(routedOffsets, index: 1)
         encoder.setBuffer(acts, offset: 0, index: 2)
         encoder.setBuffer(routingWeights, offset: 0, index: 3)
         encoder.setBuffer(residual, offset: 0, index: 4)
         encoder.setBuffer(y, offset: 0, index: 5)
-        encoder.setValue(dimension, index: 6)
-        encoder.setValue(intermediate, index: 7)
+        encoder.setValue(d, index: 6)
+        encoder.setValue(f, index: 7)
         encoder.setValue(topK, index: 8)
         encoder.dispatchThreadgroups(
             MTLSize(width: Int(d), height: 1, depth: 1),
@@ -493,18 +463,16 @@ final class MoE {
                                         d: UInt32, f: UInt32, topK: UInt32) throws {
         precondition(topK > 0 && topK <= UInt32(Self.maxStreamedExperts))
         let specialized = useRealDecodeConstants(d: d, f: f, topK: topK)
-        let offsets = routedOffsets
-        let dimension = d, intermediate = f, expertCount = topK
         let phase1 = try commandBuffer.makeTracedComputeEncoder()
         phase1.setComputePipelineState(specialized ? phase1U16SpecializedPSO : phase1U16PSO)
         phase1.setBuffer(slots, offset: 0, index: 0)
         phase1.useResources(resident, usage: .read)
-        phase1.setValue(offsets, index: 1)
+        phase1.setValue(routedOffsets, index: 1)
         phase1.setBuffer(x, offset: 0, index: 2)
         phase1.setBuffer(acts, offset: 0, index: 3)
-        phase1.setValue(dimension, index: 4)
-        phase1.setValue(intermediate, index: 5)
-        phase1.setValue(expertCount, index: 6)
+        phase1.setValue(d, index: 4)
+        phase1.setValue(f, index: 5)
+        phase1.setValue(topK, index: 6)
         phase1.dispatchThreadgroups(
             MTLSize(width: (Int(topK * f) + 7) / 8, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -513,14 +481,14 @@ final class MoE {
         reduce.setComputePipelineState(specialized ? phase2ReduceK8SpecializedPSO : phase2ReduceK8PSO)
         reduce.setBuffer(slots, offset: 0, index: 0)
         reduce.useResources(resident, usage: .read)
-        reduce.setValue(offsets, index: 1)
+        reduce.setValue(routedOffsets, index: 1)
         reduce.setBuffer(acts, offset: 0, index: 2)
         reduce.setBuffer(routingWeights, offset: 0, index: 3)
         reduce.setBuffer(residual, offset: 0, index: 4)
         reduce.setBuffer(y, offset: 0, index: 5)
-        reduce.setValue(dimension, index: 6)
-        reduce.setValue(intermediate, index: 7)
-        reduce.setValue(expertCount, index: 8)
+        reduce.setValue(d, index: 6)
+        reduce.setValue(f, index: 7)
+        reduce.setValue(topK, index: 8)
         reduce.dispatchThreadgroups(
             MTLSize(width: Int(d), height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))

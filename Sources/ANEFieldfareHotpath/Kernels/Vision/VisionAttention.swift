@@ -72,10 +72,7 @@ public final class VisionAttention {
     }
 
     private static func makePrivateBuffer(device: any MTLDevice, bytes: Int) throws -> any MTLBuffer {
-        guard let buffer = device.makeBuffer(length: bytes, options: .storageModePrivate) else {
-            throw MetalError.noDevice
-        }
-        return buffer
+        try device.newBuffer(length: bytes, options: .storageModePrivate)
     }
 }
 

@@ -1213,7 +1213,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         let routes = try PrefillMoEGrouping.groupTokenExpertPairs(
             pairs, queryCount: t, topK: cfg.topKExperts, numExperts: cfg.numExperts,
             tileExpertCount: 16, expertSortKeys: expertSortKeys)
-        let metadata = try prefillGroupedMoE.makeStreamedMetadataBuffers(device: ctx.device, routes: routes)
+        let metadata = try prefillGroupedMoE.makeStreamedMetadataBuffers(routes: routes)
         return RoutedTilePlan(routes: routes, metadata: metadata, absent: absent)
     }
 
@@ -1229,8 +1229,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                      _ arguments: PrefillStreamedTileArgumentBuffer) throws -> Void
     ) async throws -> [any MTLCommandBuffer] {
         let routes = plan.routes
-        let missingByTile = try routes.tiles.indices.map { tileIndex in
-            try PrefillStreamedTileBinding.expertIDs(forTile: tileIndex, routes: routes).filter(plan.absent.contains)
+        let missingByTile = routes.tiles.indices.map { tileIndex in
+            PrefillStreamedTileBinding.expertIDs(forTile: tileIndex, routes: routes).filter(plan.absent.contains)
         }
         let mapped = try model.expertLayer(L)
         var tileCBs: [any MTLCommandBuffer] = []
@@ -1268,19 +1268,17 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 }
                 let traceTile = GPUTrace.begin()
                 defer { GPUTrace.end("tile_encode", since: traceTile) }
-                let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: tileIndex, routes: routes)
+                let expertIDs = PrefillStreamedTileBinding.expertIDs(forTile: tileIndex, routes: routes)
                 let binding = try PrefillStreamedTileBinding(
                     expertIDs: expertIDs, views: try model.routedExpertViews(layer: L, experts: expertIDs))
-                try binding.validateCoversPairs(routes.sortedPairs, pairStart: Int(tile.pairStart),
-                                                pairCount: Int(tile.pairCount))
                 if tileIndex >= argumentSlots {
                     // The argument buffer this tile reuses must be free.
                     let drainStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                     try waitForCompletion(tileCBs[tileIndex - argumentSlots])
                     prefillTileDrainNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - drainStart
                 }
-                let argumentBuffer = try prefillGroupedMoE.makeStreamedArgumentBuffer(
-                    device: ctx.device, binding: binding, reuseSlot: tileIndex % argumentSlots)
+                let argumentBuffer = prefillGroupedMoE.makeStreamedArgumentBuffer(
+                    binding: binding, reuseSlot: tileIndex % argumentSlots)
                 let tileCB = try ctx.makeCommandBuffer()
                 try encodeTile(tileCB, tile, binding, argumentBuffer)
                 tileCB.commit()
