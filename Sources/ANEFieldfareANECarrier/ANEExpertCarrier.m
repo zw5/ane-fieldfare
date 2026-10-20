@@ -52,101 +52,75 @@ static IOSurfaceRef makeSurface(uint64_t bytes) {
     });
 }
 
-static NSString *expertMIL(uint32_t Positions) {
-    uint32_t CarrierStride = Positions + 3 * Intermediate;
+// The MIL program for one request bank: BatchExperts experts, each a
+// [Hidden, lanes + 3 * Intermediate] slice of the packed input holding the
+// activations and the expanded gate/up/down weights. The external channels
+// flatten experts and Hidden.
+//
+// Activations arrive scaled by 64: a power-of-two scale avoids the ANE's loss
+// of tiny products. It is undone before the nonlinear gate and after the down
+// product; the up branch carries it through GELU(gate) * up.
+//
+// Positional arguments: 1 experts, 2 channels (experts * Hidden), 3 Hidden,
+// 4 Intermediate, 5 lanes, 6 carrier stride, 7 and 8 the up and down weight
+// offsets.
+static NSString *carrierMIL(uint32_t lanes) {
+    uint32_t stride = lanes + 3 * Intermediate;
     return [NSString stringWithFormat:
         @"program(1.3)\n"
          "[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n"
          "{\n"
-         "  func main<ios18>(tensor<fp16,[1,%d,1,%d]> packed) {\n"
-         "    tensor<fp16,[1,2816,1,2176]> p=identity(x=packed)[name=string(\"carrier\")];\n"
+         "  func main<ios18>(tensor<fp16,[1,%2$d,1,%6$d]> packed) {\n"
+         "    tensor<fp16,[1,%2$d,1,%6$d]> p=identity(x=packed)[name=string(\"carrier\")];\n"
          "    tensor<int32,[4]> pm=const()[name=string(\"pm\"),val=tensor<int32,[4]>([0,1,3,2])];\n"
          "    bool no=const()[name=string(\"no\"),val=bool(false)];\n"
          "    tensor<int32,[4]> xb=const()[name=string(\"xb\"),val=tensor<int32,[4]>([0,0,0,0])];\n"
-         "    tensor<int32,[4]> xs=const()[name=string(\"xs\"),val=tensor<int32,[4]>([1,%d,1,%d])];\n"
-         "    tensor<fp16,[1,%d,1,%d]> x=slice_by_size(x=p,begin=xb,size=xs)[name=string(\"x\")];\n"
-         "    tensor<int32,[4]> xr=const()[name=string(\"xr\"),val=tensor<int32,[4]>([1,1,%d,%d])];\n"
-         "    tensor<fp16,[1,1,%d,%d]> x2=reshape(shape=xr,x=x)[name=string(\"x2\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> xt=transpose(perm=pm,x=x2)[name=string(\"xt\")];\n"
-         "    tensor<int32,[4]> ws=const()[name=string(\"ws\"),val=tensor<int32,[4]>([1,%d,1,%d])];\n"
-         "    tensor<int32,[4]> gb=const()[name=string(\"gb\"),val=tensor<int32,[4]>([0,0,0,%d])];\n"
-         "    tensor<int32,[4]> ub=const()[name=string(\"ub\"),val=tensor<int32,[4]>([0,0,0,%d])];\n"
-         "    tensor<int32,[4]> db=const()[name=string(\"db\"),val=tensor<int32,[4]>([0,0,0,%d])];\n"
-         "    tensor<fp16,[1,%d,1,%d]> gw=slice_by_size(x=p,begin=gb,size=ws)[name=string(\"gw\")];\n"
-         "    tensor<fp16,[1,%d,1,%d]> uw=slice_by_size(x=p,begin=ub,size=ws)[name=string(\"uw\")];\n"
-         "    tensor<fp16,[1,%d,1,%d]> dw=slice_by_size(x=p,begin=db,size=ws)[name=string(\"dw\")];\n"
-         "    tensor<int32,[4]> wr=const()[name=string(\"wr\"),val=tensor<int32,[4]>([1,1,%d,%d])];\n"
-         "    tensor<fp16,[1,1,%d,%d]> g2=reshape(shape=wr,x=gw)[name=string(\"g2\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> u2=reshape(shape=wr,x=uw)[name=string(\"u2\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> gate=matmul(transpose_x=no,transpose_y=no,x=xt,y=g2)[name=string(\"gate\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> up=matmul(transpose_x=no,transpose_y=no,x=xt,y=u2)[name=string(\"up\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> gate2=mul(x=gate,y=gate)[name=string(\"gate2\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> gate3=mul(x=gate2,y=gate)[name=string(\"gate3\")];\n"
+         "    tensor<int32,[4]> xs=const()[name=string(\"xs\"),val=tensor<int32,[4]>([1,%2$d,1,%5$d])];\n"
+         "    tensor<fp16,[1,%2$d,1,%5$d]> x=slice_by_size(x=p,begin=xb,size=xs)[name=string(\"x\")];\n"
+         "    tensor<int32,[4]> xr=const()[name=string(\"xr\"),val=tensor<int32,[4]>([%1$d,1,%3$d,%5$d])];\n"
+         "    tensor<fp16,[%1$d,1,%3$d,%5$d]> x2=reshape(shape=xr,x=x)[name=string(\"x2\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%3$d]> xt=transpose(perm=pm,x=x2)[name=string(\"xt\")];\n"
+         "    tensor<int32,[4]> ws=const()[name=string(\"ws\"),val=tensor<int32,[4]>([1,%2$d,1,%4$d])];\n"
+         "    tensor<int32,[4]> gb=const()[name=string(\"gb\"),val=tensor<int32,[4]>([0,0,0,%5$d])];\n"
+         "    tensor<int32,[4]> ub=const()[name=string(\"ub\"),val=tensor<int32,[4]>([0,0,0,%7$d])];\n"
+         "    tensor<int32,[4]> db=const()[name=string(\"db\"),val=tensor<int32,[4]>([0,0,0,%8$d])];\n"
+         "    tensor<fp16,[1,%2$d,1,%4$d]> gw=slice_by_size(x=p,begin=gb,size=ws)[name=string(\"gw\")];\n"
+         "    tensor<fp16,[1,%2$d,1,%4$d]> uw=slice_by_size(x=p,begin=ub,size=ws)[name=string(\"uw\")];\n"
+         "    tensor<fp16,[1,%2$d,1,%4$d]> dw=slice_by_size(x=p,begin=db,size=ws)[name=string(\"dw\")];\n"
+         "    tensor<int32,[4]> wr=const()[name=string(\"wr\"),val=tensor<int32,[4]>([%1$d,1,%3$d,%4$d])];\n"
+         "    tensor<fp16,[%1$d,1,%3$d,%4$d]> g2=reshape(shape=wr,x=gw)[name=string(\"g2\")];\n"
+         "    tensor<fp16,[%1$d,1,%3$d,%4$d]> u2=reshape(shape=wr,x=uw)[name=string(\"u2\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> gate_scaled=matmul(transpose_x=no,transpose_y=no,x=xt,y=g2)[name=string(\"gate\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> up=matmul(transpose_x=no,transpose_y=no,x=xt,y=u2)[name=string(\"up\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> gate=mul(x=gate_scaled,y=fp16(0.015625))[name=string(\"gate_unscale\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> gate2=mul(x=gate,y=gate)[name=string(\"gate2\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> gate3=mul(x=gate2,y=gate)[name=string(\"gate3\")];\n"
          "    fp16 ck=const()[name=string(\"ck\"),val=fp16(0.044715)];\n"
-         "    tensor<fp16,[1,1,%d,%d]> cubic=mul(x=gate3,y=ck)[name=string(\"cubic\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> inner=add(x=gate,y=cubic)[name=string(\"inner\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> cubic=mul(x=gate3,y=ck)[name=string(\"cubic\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> inner=add(x=gate,y=cubic)[name=string(\"inner\")];\n"
          "    fp16 tk=const()[name=string(\"tk\"),val=fp16(0.7978845608028654)];\n"
-         "    tensor<fp16,[1,1,%d,%d]> scaled=mul(x=inner,y=tk)[name=string(\"scaled\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> th=tanh(x=scaled)[name=string(\"th\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> scaled=mul(x=inner,y=tk)[name=string(\"scaled\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> th=tanh(x=scaled)[name=string(\"th\")];\n"
          "    fp16 one=const()[name=string(\"one\"),val=fp16(1.0)];\n"
          "    fp16 half=const()[name=string(\"half\"),val=fp16(0.5)];\n"
-         "    tensor<fp16,[1,1,%d,%d]> plus=add(x=th,y=one)[name=string(\"plus\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> hg=mul(x=gate,y=half)[name=string(\"hg\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> gelu=mul(x=hg,y=plus)[name=string(\"gelu\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> act=mul(x=gelu,y=up)[name=string(\"act\")];\n"
-         "    tensor<int32,[4]> dr=const()[name=string(\"dr\"),val=tensor<int32,[4]>([1,1,%d,%d])];\n"
-         "    tensor<fp16,[1,1,%d,%d]> d2=reshape(shape=dr,x=dw)[name=string(\"d2\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> dt=transpose(perm=pm,x=d2)[name=string(\"dt\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> o2=matmul(transpose_x=no,transpose_y=no,x=act,y=dt)[name=string(\"down\")];\n"
-         "    tensor<fp16,[1,1,%d,%d]> ot=transpose(perm=pm,x=o2)[name=string(\"ot\")];\n"
-         "    tensor<int32,[4]> os=const()[name=string(\"os\"),val=tensor<int32,[4]>([1,%d,1,%d])];\n"
-         "    tensor<fp16,[1,%d,1,%d]> or=reshape(shape=os,x=ot)[name=string(\"or\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> plus=add(x=th,y=one)[name=string(\"plus\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> hg=mul(x=gate,y=half)[name=string(\"hg\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> gelu=mul(x=hg,y=plus)[name=string(\"gelu\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%4$d]> act=mul(x=gelu,y=up)[name=string(\"act\")];\n"
+         "    tensor<int32,[4]> dr=const()[name=string(\"dr\"),val=tensor<int32,[4]>([%1$d,1,%3$d,%4$d])];\n"
+         "    tensor<fp16,[%1$d,1,%3$d,%4$d]> d2=reshape(shape=dr,x=dw)[name=string(\"d2\")];\n"
+         "    tensor<fp16,[%1$d,1,%4$d,%3$d]> dt=transpose(perm=pm,x=d2)[name=string(\"dt\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%3$d]> o2_scaled=matmul(transpose_x=no,transpose_y=no,x=act,y=dt)[name=string(\"down\")];\n"
+         "    tensor<fp16,[%1$d,1,%5$d,%3$d]> o2=mul(x=o2_scaled,y=fp16(0.015625))[name=string(\"down_unscale\")];\n"
+         "    tensor<fp16,[%1$d,1,%3$d,%5$d]> ot=transpose(perm=pm,x=o2)[name=string(\"ot\")];\n"
+         "    tensor<int32,[4]> os=const()[name=string(\"os\"),val=tensor<int32,[4]>([1,%2$d,1,%5$d])];\n"
+         "    tensor<fp16,[1,%2$d,1,%5$d]> or=reshape(shape=os,x=ot)[name=string(\"or\")];\n"
          "    string f32=const()[name=string(\"f32\"),val=string(\"fp32\")];\n"
-         "    tensor<fp32,[1,%d,1,%d]> out=cast(dtype=f32,x=or)[name=string(\"cast_out\")];\n"
+         "    tensor<fp32,[1,%2$d,1,%5$d]> out=cast(dtype=f32,x=or)[name=string(\"cast_out\")];\n"
          "  } -> (out);\n"
          "}\n",
-         Hidden, CarrierStride,
-         Hidden, Positions, Hidden, Positions,
-         Hidden, Positions, Hidden, Positions, Positions, Hidden,
-         Hidden, Intermediate,
-         Positions, Positions + Intermediate, Positions + 2 * Intermediate,
-         Hidden, Intermediate, Hidden, Intermediate, Hidden, Intermediate,
-         Hidden, Intermediate, Hidden, Intermediate, Hidden, Intermediate,
-         Positions, Intermediate, Positions, Intermediate,
-         Positions, Intermediate, Positions, Intermediate,
-         Positions, Intermediate, Positions, Intermediate,
-         Positions, Intermediate, Positions, Intermediate,
-         Positions, Intermediate, Positions, Intermediate,
-         Positions, Intermediate, Positions, Intermediate,
-         Hidden, Intermediate, Hidden, Intermediate, Intermediate, Hidden,
-         Positions, Hidden, Hidden, Positions,
-         Hidden, Positions, Hidden, Positions, Hidden, Positions];
-}
-
-static NSString *carrierMIL(uint32_t lanes) {
-    NSMutableString *mil = [expertMIL(lanes) mutableCopy];
-    NSRange all = NSMakeRange(0, mil.length);
-    // Power-of-two input scaling avoids ANE's loss of tiny products. Undo it
-    // before the nonlinear gate and after the down product; the up branch
-    // carries the scale through GELU(gate) * up.
-    [mil replaceOccurrencesOfString:@"> gate=matmul(" withString:@"> gate_scaled=matmul(" options:0 range:all];
-    all = NSMakeRange(0, mil.length);
-    [mil replaceOccurrencesOfString:[NSString stringWithFormat:@"    tensor<fp16,[1,1,%u,704]> gate2=", lanes]
-                         withString:[NSString stringWithFormat:@"    tensor<fp16,[1,1,%u,704]> gate=mul(x=gate_scaled,y=fp16(0.015625))[name=string(\"gate_unscale\")];\n    tensor<fp16,[1,1,%u,704]> gate2=", lanes, lanes]
-                            options:0 range:all];
-    all = NSMakeRange(0, mil.length);
-    [mil replaceOccurrencesOfString:@"> o2=matmul(" withString:@"> o2_scaled=matmul(" options:0 range:all];
-    all = NSMakeRange(0, mil.length);
-    [mil replaceOccurrencesOfString:[NSString stringWithFormat:@"    tensor<fp16,[1,1,2816,%u]> ot=", lanes]
-                         withString:[NSString stringWithFormat:@"    tensor<fp16,[1,1,%u,2816]> o2=mul(x=o2_scaled,y=fp16(0.015625))[name=string(\"down_unscale\")];\n    tensor<fp16,[1,1,2816,%u]> ot=", lanes, lanes]
-                            options:0 range:all];
-    // Keep each expert's D/F matrix axes and add a leading batch dimension.
-    // External channels flatten batch and D.
-    all = NSMakeRange(0, mil.length);
-    [mil replaceOccurrencesOfString:@"[1,2816,1," withString:@"[1,11264,1," options:0 range:all];
-    all = NSMakeRange(0, mil.length);
-    [mil replaceOccurrencesOfString:@"[1,1," withString:@"[4,1," options:0 range:all];
-    return mil;
+         (int)BatchExperts, (int)(BatchExperts * Hidden), (int)Hidden, (int)Intermediate,
+         (int)lanes, (int)stride, (int)(lanes + Intermediate), (int)(lanes + 2 * Intermediate)];
 }
 
 ANEExpertCarrier *ANEExpertCarrierCreate(uint32_t lanes, const char **errorMessage) {
