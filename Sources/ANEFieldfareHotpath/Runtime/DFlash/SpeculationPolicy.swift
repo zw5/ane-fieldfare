@@ -31,13 +31,13 @@ public struct SpeculationPolicy: Sendable {
     private var calibrationAccepted: [Double]
     private var calibrationSeen: [Double]
     private let calibrationDecay = 0.995
-    public private(set) var decodeSeconds = 0.030
+    public private(set) var decodeSeconds = 0.021
     /// Seconds per drafter call by block length (anchor plus drafts).
     public private(set) var draftSeconds: [Double]
     /// Seconds per verify by verified rows.
     public private(set) var verifySeconds: [Double]
     /// Recent realized tokens per second, the value of time in truncation.
-    private var throughput = 1 / 0.030
+    private var throughput = 1 / 0.021
     private let smoothing = 0.2
     private static let minExplore = 8, maxExplore = 128
     private var explore = SpeculationPolicy.minExplore
@@ -46,7 +46,8 @@ public struct SpeculationPolicy: Sendable {
     public init(maxBlock: Int) {
         precondition(maxBlock >= 2)
         self.maxBlock = maxBlock
-        // Priors until the first observations: a fixed cost plus a cost per row.
+        // Priors until the first observations: a fixed cost plus a cost per row,
+        // fitted to an M5 (16 GB).
         draftSeconds = (0...maxBlock).map { Self.priorDraft($0) }
         verifySeconds = (0...maxBlock).map { Self.priorVerify($0) }
         // Two pseudo-observations per decile at its midpoint: trust the
@@ -55,8 +56,8 @@ public struct SpeculationPolicy: Sendable {
         calibrationSeen = Array(repeating: 2, count: 10)
     }
 
-    private static func priorDraft(_ length: Int) -> Double { 0.004 + 0.0012 * Double(length) }
-    private static func priorVerify(_ length: Int) -> Double { 0.026 + 0.0055 * Double(length) }
+    private static func priorDraft(_ length: Int) -> Double { 0.0042 + 0.00015 * Double(length) }
+    private static func priorVerify(_ length: Int) -> Double { 0.019 + 0.0036 * Double(length) }
 
     /// The per-draft acceptance rate the draft-length planner assumes.
     public var acceptanceRate: Double { accepts / (accepts + rejects) }
