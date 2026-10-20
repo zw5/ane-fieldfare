@@ -1,9 +1,10 @@
 public import Foundation
 
 /// Where the DFlash drafter is looked for when `--drafter` is not given:
-/// beside the model, or in a `dflash` folder next to the model's folder, the
-/// layout the README's install steps use (`checkpoints/gturbo/gemma4.gturbo`
-/// and `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash`).
+/// beside the model, in a `dflash` folder beside the model (the README's
+/// layout: `checkpoints/gemma-4-26b-a4b-it-qat.fieldfare` and
+/// `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash`), or in a `dflash` folder
+/// next to the model's folder.
 public enum DrafterLocation {
     public static let directoryName = "gemma-4-26B-A4B-it-DFlash"
 
@@ -11,6 +12,7 @@ public enum DrafterLocation {
         let folder = URL(fileURLWithPath: model).standardizedFileURL.deletingLastPathComponent()
         return [
             folder.appendingPathComponent(directoryName),
+            folder.appendingPathComponent("dflash").appendingPathComponent(directoryName),
             folder.deletingLastPathComponent().appendingPathComponent("dflash")
                 .appendingPathComponent(directoryName),
         ]

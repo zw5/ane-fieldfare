@@ -2,7 +2,7 @@ import Foundation
 public import Metal
 
 /// The Gemma 4 forward pass (decode, chunked prefill and verify) against the
-/// `.gturbo` model. Per token:
+/// `.fieldfare` model. Per token:
 ///
 ///   embed_lookup_int4(token) * sqrt(H)
 ///   for L in 0..<30:
@@ -15,7 +15,7 @@ public import Metal
 ///     attn = o_proj(attn)
 ///     h = h + rmsnorm_bf16w(attn, post_attention_layernorm)
 ///     h1 = rmsnorm_bf16w(h, pre_feedforward_layernorm)
-///     h1 = SharedExpertInt8(h1)
+///     h1 = SharedExpertInt4(h1)
 ///     h1 = rmsnorm_bf16w(h1, post_feedforward_layernorm_1)
 ///     // router + routed branch
 ///     xr   = rmsnorm_no_scale(h)
@@ -45,7 +45,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     private let rms: RMSNorm
     private let int4: DequantInt4GEMV
     private let attention: Attention
-    private let shared: SharedExpertRuntime
+    private let shared: SharedExpertInt4
     private let moe: MoE
     private let fusionHead: LMHeadChainInt4
     private let fusedQKVGEMV: FusedQKVGEMV
@@ -242,8 +242,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.rms       = try RMSNorm(context: context)
         self.int4      = try DequantInt4GEMV(context: context)
         self.attention = try Attention(context: context)
-        self.shared    = try SharedExpertRuntime(context: context,
-                                                  weightBits: model.sharedExpertWeightBits)
+        self.shared    = try SharedExpertInt4(context: context)
         self.moe       = try MoE(context: context)
         self.fusionHead = try LMHeadChainInt4(context: context,
                                               maxD: cfg.hiddenSize,
@@ -260,10 +259,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         self.prefillAttention = try PrefillAttention(context: context)
         self.prefillPostAttention = try PrefillPostAttentionSetup(context: context)
         self.prefillRouter = try PrefillRouter(context: context)
-        self.prefillSharedExpert = try PrefillSharedExpert(
-            context: context,
-            weightBits: model.sharedExpertWeightBits,
-            batched: true)
+        self.prefillSharedExpert = try PrefillSharedExpert(context: context, batched: true)
         self.prefillGroupedMoE = try PrefillGroupedRoutedMoE(context: context)
         self.prefillMoE = try PrefillMoE(context: context)
         self.prefillLayerTail = try PrefillLayerTail(context: context)
@@ -336,10 +332,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         func sharedProj(_ view: TensorView, rows: UInt32, cols: UInt32) -> SharedExpertProjection {
             SharedExpertProjection(weights: view.buffer,
                                  scales: view.buffer,
-                                 biases: view.buffer,
                                  weightsOffset: Int(view.offset),
                                  scalesOffset: Int(view.scaleOffset),
-                                 biasesOffset: Int(view.biasOffset),
                                  rows: rows,
                                  cols: cols)
         }
@@ -496,7 +490,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             try int4.encodeRows(commandBuffer: cb,
                                 weights: w.buffer, weightsOffset: Int(w.offset),
                                 scales: w.buffer, scalesOffset: Int(w.scaleOffset),
-                                biases: w.buffer, biasesOffset: Int(w.biasOffset),
                                 x: x, y: y, m: UInt32(rows), n: UInt32(columns), rows: t,
                                 xStrideElements: columns, yStrideElements: rows)
         }
@@ -515,7 +508,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 prefillEmbed.encode(commandBuffer: cb,
                                     table: emb.buffer, tableOffset: Int(emb.offset),
                                     scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
-                                    biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
                                     tokens: tokens, out: scratch.hidden,
                                     t: UInt32(t), d: UInt32(D), outScale: Float(D).squareRoot())
             }
@@ -1178,7 +1170,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                         normWeight: finalNorm.buffer, normOffset: Int(finalNorm.offset),
                                         weights: lm.buffer, weightsOffset: Int(lm.offset),
                                         scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
-                                        biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                                         outTokens: outTokens, d: UInt32(cfg.hiddenSize),
                                         vocab: UInt32(cfg.vocabSize), rmsEps: 1e-6,
                                         softcap: Float(cfg.finalLogitSoftcap), sampling: sampling)
@@ -1349,7 +1340,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                prefillMPPAffineInt4.encode(commandBuffer: cb,
                                            weights: w.buffer, weightsOffset: Int(w.offset),
                                            scales: w.buffer, scalesOffset: Int(w.scaleOffset),
-                                           biases: w.buffer, biasesOffset: Int(w.biasOffset),
                                            x: x, y: y, m: t, n: rows, k: columns) == .affineThreadgroupF16 {
                 return
             }
@@ -1357,7 +1347,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 prefillQMM.encode(commandBuffer: cb,
                                   weights: w.buffer, weightsOffset: Int(w.offset),
                                   scales: w.buffer, scalesOffset: Int(w.scaleOffset),
-                                  biases: w.buffer, biasesOffset: Int(w.biasOffset),
                                   x: x, y: y, t: t, n: rows, k: columns)
                 return
             }
@@ -1365,7 +1354,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 int4.encode(commandBuffer: cb,
                             weights: w.buffer, weightsOffset: Int(w.offset),
                             scales: w.buffer, scalesOffset: Int(w.scaleOffset),
-                            biases: w.buffer, biasesOffset: Int(w.biasOffset),
                             x: x, xOffset: row * columns * MemoryLayout<Float16>.stride,
                             y: y, yOffset: row * rows * MemoryLayout<Float16>.stride,
                             m: UInt32(rows), n: UInt32(columns))
@@ -1393,7 +1381,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             prefillEmbed.encode(commandBuffer: cb,
                                 table: emb.buffer, tableOffset: Int(emb.offset),
                                 scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
-                                biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
                                 tokens: tokenBuffer, out: scratch.hidden,
                                 t: UInt32(t), d: UInt32(D), outScale: Float(D).squareRoot())
         }
@@ -1622,7 +1609,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     normWeight: finalNorm.buffer, normOffset: Int(finalNorm.offset),
                     weights: lm.buffer, weightsOffset: Int(lm.offset),
                     scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
-                    biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                     outToken: greedyTokenBuf, outTokenOffset: 0,
                     d: UInt32(D), vocab: UInt32(cfg.vocabSize), rmsEps: eps)
             } else {
@@ -1632,7 +1618,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                                  normWeightOffset: Int(finalNorm.offset),
                                                  weights: lm.buffer, weightsOffset: Int(lm.offset),
                                                  scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
-                                                 biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                                                  logits: logits, d: UInt32(D), vocab: UInt32(cfg.vocabSize),
                                                  rmsEps: eps)
             }
@@ -1753,7 +1738,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 embedInt4.encode(commandBuffer: cb,
                                  table:  emb.buffer, tableOffset:  Int(emb.offset),
                                  scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
-                                 biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
                                  out: hidden,
                                  tokenId: UInt32(bitPattern: token),
                                  d: D,
@@ -1770,13 +1754,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             fusedQKVGEMV.encode(commandBuffer: cb,
                                 qWeights: w.q.buffer, qWeightsOffset: Int(w.q.offset),
                                 qScales: w.q.buffer, qScalesOffset: Int(w.q.scaleOffset),
-                                qBiases: w.q.buffer, qBiasesOffset: Int(w.q.biasOffset),
                                 kWeights: w.k.buffer, kWeightsOffset: Int(w.k.offset),
                                 kScales: w.k.buffer, kScalesOffset: Int(w.k.scaleOffset),
-                                kBiases: w.k.buffer, kBiasesOffset: Int(w.k.biasOffset),
                                 vWeights: w.v.buffer, vWeightsOffset: Int(w.v.offset),
                                 vScales: w.v.buffer, vScalesOffset: Int(w.v.scaleOffset),
-                                vBiases: w.v.buffer, vBiasesOffset: Int(w.v.biasOffset),
                                 x: normed,
                                 qOut: qScratch,
                                 kOut: kSlot.buffer, kOutOffset: kSlot.offset,
@@ -1834,7 +1815,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             int4.encode(commandBuffer: cb,
                         weights: w.o.buffer, weightsOffset: Int(w.o.offset),
                         scales:  w.o.buffer, scalesOffset:  Int(w.o.scaleOffset),
-                        biases:  w.o.buffer, biasesOffset:  Int(w.o.biasOffset),
                         x: attnOut, y: oOut, m: D, n: qDim)
             try cut("o_proj")
             fusedPostAttentionSetup.encode(commandBuffer: cb,
@@ -2120,7 +2100,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         commandBuffer: cb, normedRows: self.headCheckRows, rowCount: row + 1,
                         weights: lm.buffer, weightsOffset: Int(lm.offset),
                         scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
-                        biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                         outTokens: self.headCheckTokens, d: D, vocab: UInt32(self.cfg.vocabSize))
                 } else {
                     self.fusionHead.encodeHotGreedyDecode(
@@ -2128,7 +2107,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         normWeight: fNorm.buffer, normOffset: Int(fNorm.offset), table: hot,
                         weights: lm.buffer, weightsOffset: Int(lm.offset),
                         scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
-                        biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                         normedRows: self.headCheckRows, row: row,
                         outToken: self.greedyTokenBuf, d: D, rmsEps: eps)
                 }
@@ -2149,7 +2127,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                     normWeight: fNorm.buffer, normOffset: Int(fNorm.offset),
                     weights: lm.buffer, weightsOffset: Int(lm.offset),
                     scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
-                    biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                     outToken: self.greedyTokenBuf,
                     d: D, vocab: UInt32(self.cfg.vocabSize),
                     rmsEps: eps)
@@ -2164,7 +2141,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 self.int4.encode(commandBuffer: cb,
                                  weights: lm.buffer, weightsOffset: Int(lm.offset),
                                  scales:  lm.buffer, scalesOffset:  Int(lm.scaleOffset),
-                                 biases:  lm.buffer, biasesOffset:  Int(lm.biasOffset),
                                  x: self.normed, y: logits, m: UInt32(self.cfg.vocabSize), n: D)
             }
             totalHeadNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead

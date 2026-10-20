@@ -5,14 +5,13 @@ import Metal
 import ANEFieldfareValidationSupport
 
 @Suite struct PrefillFinalRowHeadTests {
-    private static func packRows(_ rows: [Quantization.Int4AffineRow])
-        -> (packed: [UInt8], scales: [UInt16], biases: [UInt16])
+    private static func packRows(_ rows: [Quantization.Q4Row])
+        -> (packed: [UInt8], scales: [UInt16])
     {
         let rowBytes = rows[0].packed.count
         let groups = rows[0].scales.count
         var packed = [UInt8](repeating: 0, count: rows.count * rowBytes)
         var scales = [UInt16](repeating: 0, count: rows.count * groups)
-        var biases = [UInt16](repeating: 0, count: rows.count * groups)
 
         for row in 0..<rows.count {
             for i in 0..<rowBytes {
@@ -20,10 +19,9 @@ import ANEFieldfareValidationSupport
             }
             for g in 0..<groups {
                 scales[row * groups + g] = rows[row].scales[g]
-                biases[row * groups + g] = rows[row].biases[g]
             }
         }
-        return (packed, scales, biases)
+        return (packed, scales)
     }
 
     @Test func finalRowHeadLogitsMatchesScalarOffsetPath() throws {
@@ -42,11 +40,11 @@ import ANEFieldfareValidationSupport
             }
         }
         let normBits = (0..<d).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
-        let weightRows = (0..<vocab).map { _ -> Quantization.Int4AffineRow in
+        let weightRows = (0..<vocab).map { _ -> Quantization.Q4Row in
             let raw = (0..<d).map { _ in rng.uniform(-0.5, 0.5) }
-            return Quantization.quantizeInt4Affine(raw)
+            return Quantization.quantizeQ4_0(raw)
         }
-        let (packed, scales, biases) = Self.packRows(weightRows)
+        let (packed, scales) = Self.packRows(weightRows)
 
         let ctx = try MetalContext()
         let scalarNorm = try RMSNorm(context: ctx)
@@ -62,9 +60,6 @@ import ANEFieldfareValidationSupport
                                                options: .storageModeShared),
               let sBuf = unsafe ctx.device.makeBuffer(bytes: scales,
                                                length: scales.count * MemoryLayout<UInt16>.size,
-                                               options: .storageModeShared),
-              let bBuf = unsafe ctx.device.makeBuffer(bytes: biases,
-                                               length: biases.count * MemoryLayout<UInt16>.size,
                                                options: .storageModeShared),
               let scalarNormed = Fp16Buffer.make(ctx.device, count: d),
               let scalarLogits = Fp16Buffer.make(ctx.device, count: vocab),
@@ -84,7 +79,6 @@ import ANEFieldfareValidationSupport
         scalarHead.encode(commandBuffer: cb,
                           weights: wBuf,
                           scales: sBuf,
-                          biases: bBuf,
                           x: scalarNormed,
                           y: scalarLogits,
                           m: UInt32(vocab),
@@ -96,7 +90,6 @@ import ANEFieldfareValidationSupport
                                   normWeight: normBuf,
                                   weights: wBuf,
                                   scales: sBuf,
-                                  biases: bBuf,
                                   logits: blockLogits,
                                   d: UInt32(d),
                                   vocab: UInt32(vocab),

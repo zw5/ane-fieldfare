@@ -6,7 +6,11 @@ using namespace metal;
 using namespace mpp::tensor_ops;
 #endif
 
+// The router is affine INT8 in groups of 64; every 4-bit weight is Q4_0:
+// groups of 32, one FP16 scale d, w = d * (q - 8), written below as the
+// affine map q * s + b with b = -8 s.
 constant constexpr uint kPrefillGroupSize = 64;
+constant constexpr uint kPrefillQ4Group = 32;
 constant constexpr uint kPrefillRmsMaxSimdGroups = 8;
 constant constexpr uint kPrefillPostMaxD = 4096;
 constant constexpr uint kPrefillRouterMaxExperts = 256;
@@ -25,13 +29,12 @@ static inline float prefill_gelu_pytorch_tanh(float x) {
 }
 kernel void prefill_embed_lookup_int4_block(
     device const uint8_t* table     [[buffer(0)]],
-    device const bfloat*  scales    [[buffer(1)]],
-    device const bfloat*  biases    [[buffer(2)]],
-    device const uint*    tokens    [[buffer(3)]],
-    device half*          out       [[buffer(4)]],
-    constant uint&        T         [[buffer(5)]],
-    constant uint&        D         [[buffer(6)]],
-    constant float&       out_scale [[buffer(7)]],
+    device const half*    scales    [[buffer(1)]],
+    device const uint*    tokens    [[buffer(2)]],
+    device half*          out       [[buffer(3)]],
+    constant uint&        T         [[buffer(4)]],
+    constant uint&        D         [[buffer(5)]],
+    constant float&       out_scale [[buffer(6)]],
     uint2                 gid       [[thread_position_in_grid]]
 ) {
     const uint d = gid.x;
@@ -39,16 +42,14 @@ kernel void prefill_embed_lookup_int4_block(
     if (t >= T || d >= D) return;
 
     const uint token = tokens[t];
-    const uint groups_per_row = D / kPrefillGroupSize;
+    const uint groups_per_row = D / kPrefillQ4Group;
     device const uint8_t* row_q = table  + token * (D / 2u);
-    device const bfloat*  row_s = scales + token * groups_per_row;
-    device const bfloat*  row_b = biases + token * groups_per_row;
+    device const half*    row_s = scales + token * groups_per_row;
 
     const uint8_t byte = row_q[d >> 1];
     const uint q = (d & 1u) == 0u ? uint(byte & 0x0Fu) : uint(byte >> 4);
-    const float s = float(row_s[d / kPrefillGroupSize]);
-    const float b = float(row_b[d / kPrefillGroupSize]);
-    out[t * D + d] = half((float(q) * s + b) * out_scale);
+    const float s = float(row_s[d / kPrefillQ4Group]);
+    out[t * D + d] = half((float(q) - 8.0f) * s * out_scale);
 }
 
 static inline float prefill_rms_block_inv(
@@ -370,13 +371,10 @@ struct PrefillGroupedRoutedMoEStreamedParamsMSL {
     uint local_expert_15;
     uint gate_W_off;
     uint gate_s_off;
-    uint gate_b_off;
     uint up_W_off;
     uint up_s_off;
-    uint up_b_off;
     uint down_W_off;
     uint down_s_off;
-    uint down_b_off;
 };
 
 static inline uint prefill_streamed_local_expert_id(
@@ -405,27 +403,25 @@ static inline uint prefill_streamed_local_expert_id(
 
 static inline float prefill_moe_int4_gemv_row_dev(
     device const uint8_t* W,
-    device const bfloat* S,
-    device const bfloat* B,
+    device const half* S,
     device const half* x,
     uint row,
     uint N
 ) {
-    const uint groups = N / kPrefillGroupSize;
+    const uint groups = N / kPrefillQ4Group;
     const uint row_bytes = N / 2u;
     device const uint8_t* W_row = W + row * row_bytes;
-    device const bfloat* s_row = S + row * groups;
-    device const bfloat* b_row = B + row * groups;
+    device const half* s_row = S + row * groups;
 
     float acc = 0.0f;
     for (uint g = 0; g < groups; ++g) {
         const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
-        device const uint8_t* Wg = W_row + g * (kPrefillGroupSize / 2u);
-        device const half* xg = x + g * kPrefillGroupSize;
+        const float bias = -8.0f * scale;
+        device const uint8_t* Wg = W_row + g * (kPrefillQ4Group / 2u);
+        device const half* xg = x + g * kPrefillQ4Group;
         float dot_qx = 0.0f;
         float sum_x = 0.0f;
-        for (uint k = 0; k < kPrefillGroupSize / 2u; ++k) {
+        for (uint k = 0; k < kPrefillQ4Group / 2u; ++k) {
             const uint8_t packed = Wg[k];
             const float x0 = float(xg[2u * k]);
             const float x1 = float(xg[2u * k + 1u]);
@@ -584,14 +580,12 @@ kernel void prefill_grouped_routed_moe_batched_phase1(
     device const uint8_t* expert = routed.blob[local_slot];
     device const half* x = hidden + pair.token * p.hidden_stride_elements;
     device const uint8_t* gate_W = expert + p.gate_W_off;
-    device const bfloat* gate_s = reinterpret_cast<device const bfloat*>(expert + p.gate_s_off);
-    device const bfloat* gate_b = reinterpret_cast<device const bfloat*>(expert + p.gate_b_off);
+    device const half* gate_s = reinterpret_cast<device const half*>(expert + p.gate_s_off);
     device const uint8_t* up_W = expert + p.up_W_off;
-    device const bfloat* up_s = reinterpret_cast<device const bfloat*>(expert + p.up_s_off);
-    device const bfloat* up_b = reinterpret_cast<device const bfloat*>(expert + p.up_b_off);
+    device const half* up_s = reinterpret_cast<device const half*>(expert + p.up_s_off);
 
-    const float gate = prefill_moe_int4_gemv_row_dev(gate_W, gate_s, gate_b, x, f, p.D);
-    const float up = prefill_moe_int4_gemv_row_dev(up_W, up_s, up_b, x, f, p.D);
+    const float gate = prefill_moe_int4_gemv_row_dev(gate_W, gate_s, x, f, p.D);
+    const float up = prefill_moe_int4_gemv_row_dev(up_W, up_s, x, f, p.D);
     const uint row_elements = p.pair_count * p.F;
     const uint index = pair_local * p.F + f;
     gate_up_act_scratch[index] = half(gate);
@@ -625,23 +619,21 @@ kernel void prefill_grouped_routed_moe_batched_down(
 
     device const uint8_t* expert = routed.blob[local_slot];
     device const uint8_t* down_W = expert + p.down_W_off;
-    device const bfloat* down_s = reinterpret_cast<device const bfloat*>(expert + p.down_s_off);
-    device const bfloat* down_b = reinterpret_cast<device const bfloat*>(expert + p.down_b_off);
+    device const half* down_s = reinterpret_cast<device const half*>(expert + p.down_s_off);
     device const half* act = gate_up_act_scratch + 2u * p.pair_count * p.F + pair_local * p.F;
-    const half value = half(prefill_moe_int4_gemv_row_dev(down_W, down_s, down_b, act, d, p.F));
+    const half value = half(prefill_moe_int4_gemv_row_dev(down_W, down_s, act, d, p.F));
     down_scratch[pair_local * p.D + d] = value;
     route_partials[(pair.token * p.top_k + pair.rank) * p.D + d] = value;
 }
 
 kernel void prefill_dequant_int4_qmm_f16_block(
     device const uint8_t* W      [[buffer(0)]],
-    device const bfloat*  scales [[buffer(1)]],
-    device const bfloat*  biases [[buffer(2)]],
-    device const half*    X      [[buffer(3)]],
-    device half*          Y      [[buffer(4)]],
-    constant uint&        T      [[buffer(5)]],
-    constant uint&        N      [[buffer(6)]],
-    constant uint&        K      [[buffer(7)]],
+    device const half*    scales [[buffer(1)]],
+    device const half*    X      [[buffer(2)]],
+    device half*          Y      [[buffer(3)]],
+    constant uint&        T      [[buffer(4)]],
+    constant uint&        N      [[buffer(5)]],
+    constant uint&        K      [[buffer(6)]],
     uint2                 tid    [[thread_position_in_threadgroup]],
     uint2                 tgid   [[threadgroup_position_in_grid]]
 ) {
@@ -649,19 +641,18 @@ kernel void prefill_dequant_int4_qmm_f16_block(
     const uint t = tgid.y * 8u + tid.y;
     if (t >= T || n >= N) return;
 
-    const uint groups = K / kPrefillGroupSize;
+    const uint groups = K / kPrefillQ4Group;
     const uint row_bytes = K / 2u;
     device const uint8_t* w_row = W + n * row_bytes;
-    device const bfloat* s_row = scales + n * groups;
-    device const bfloat* b_row = biases + n * groups;
+    device const half* s_row = scales + n * groups;
     device const half* x_row = X + t * K;
 
     float acc = 0.0f;
     for (uint g = 0; g < groups; ++g) {
         const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
-        const uint group_base = g * kPrefillGroupSize;
-        for (uint kk = 0; kk < kPrefillGroupSize; ++kk) {
+        const float bias = -8.0f * scale;
+        const uint group_base = g * kPrefillQ4Group;
+        for (uint kk = 0; kk < kPrefillQ4Group; ++kk) {
             const uint k = group_base + kk;
             const uint8_t packed = w_row[k >> 1];
             const uint q = (k & 1u) == 0u ? uint(packed & 0x0Fu) : uint(packed >> 4);
@@ -1184,7 +1175,7 @@ kernel void attention_prefill_full_tensorops_2d_validity_v2(
 // once (the batched kernels above give each (row, pair) its own thread and
 // re-read the row per pair). `segments[slot]` is the slot's (first pair,
 // pair count) in `sorted_pairs`; at most FC_VERIFY_ROWS pairs per expert.
-// Row math is the decode GEMV's lane layout: 4 bytes per lane per 4-group
+// Row math is the decode GEMV's lane layout: 4 bytes per lane per 256-element
 // block, scale and bias factored per group, u16 weight loads.
 // ============================================================================
 constant uint FC_VERIFY_ROWS [[function_constant(90)]];
@@ -1219,13 +1210,11 @@ static inline void verify_gate_up_act_rows(
 ) {
     const uint R = FC_VERIFY_ROWS;
     const uint D = p.D;
-    const uint n_groups = D / kPrefillGroupSize;
+    const uint n_groups = D / kPrefillQ4Group;
     device const uint8_t* gW = expert + p.gate_W_off + f * (D / 2u);
     device const uint8_t* uW = expert + p.up_W_off + f * (D / 2u);
-    device const bfloat* gS = reinterpret_cast<device const bfloat*>(expert + p.gate_s_off) + f * n_groups;
-    device const bfloat* gB = reinterpret_cast<device const bfloat*>(expert + p.gate_b_off) + f * n_groups;
-    device const bfloat* uS = reinterpret_cast<device const bfloat*>(expert + p.up_s_off) + f * n_groups;
-    device const bfloat* uB = reinterpret_cast<device const bfloat*>(expert + p.up_b_off) + f * n_groups;
+    device const half* gS = reinterpret_cast<device const half*>(expert + p.gate_s_off) + f * n_groups;
+    device const half* uS = reinterpret_cast<device const half*>(expert + p.up_s_off) + f * n_groups;
 
     device const half* xrow[kVerifyMaxRows];
     float ga[kVerifyMaxRows], ua[kVerifyMaxRows];
@@ -1234,7 +1223,7 @@ static inline void verify_gate_up_act_rows(
         ga[r] = 0.0f; ua[r] = 0.0f;
     }
 
-    const uint full_blocks = n_groups / 4u;
+    const uint full_blocks = D / 256u;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         device const ushort* gp = (device const ushort*)(gW + byte_base);
@@ -1242,9 +1231,9 @@ static inline void verify_gate_up_act_rows(
         float qg[8], qu[8];
         verify_unpack8(uint(gp[0]) | (uint(gp[1]) << 16), qg);
         verify_unpack8(uint(up[0]) | (uint(up[1]) << 16), qu);
-        const uint g = blk * 4u + (lane >> 3);
-        const float gs = float(gS[g]), gb = float(gB[g]);
-        const float us = float(uS[g]), ub = float(uB[g]);
+        const uint g = blk * 8u + (lane >> 2);
+        const float gs = float(gS[g]), gb = -8.0f * gs;
+        const float us = float(uS[g]), ub = -8.0f * us;
         const uint elem = byte_base * 2u;
         for (uint r = 0; r < R; ++r) {
             if (r < n) {
@@ -1258,15 +1247,17 @@ static inline void verify_gate_up_act_rows(
             }
         }
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
-        const uint8_t gbv = gW[g * (kPrefillGroupSize / 2u) + lane];
-        const uint8_t ubv = uW[g * (kPrefillGroupSize / 2u) + lane];
-        const float gs = float(gS[g]), gb = float(gB[g]);
-        const float us = float(uS[g]), ub = float(uB[g]);
+    // 64-element steps: lanes 0-15 hold the step's first group, 16-31 its second.
+    for (uint c = full_blocks * 4u; c < D / 64u; ++c) {
+        const uint8_t gbv = gW[c * 32u + lane];
+        const uint8_t ubv = uW[c * 32u + lane];
+        const uint g = c * 2u + (lane >> 4);
+        const float gs = float(gS[g]), gb = -8.0f * gs;
+        const float us = float(uS[g]), ub = -8.0f * us;
         for (uint r = 0; r < R; ++r) {
             if (r < n) {
-                const float x0 = float(xrow[r][g * kPrefillGroupSize + lane * 2u]);
-                const float x1 = float(xrow[r][g * kPrefillGroupSize + lane * 2u + 1u]);
+                const float x0 = float(xrow[r][c * 64u + lane * 2u]);
+                const float x1 = float(xrow[r][c * 64u + lane * 2u + 1u]);
                 const float gd = fma(float(uint(gbv >> 4)), x1, float(uint(gbv & 0x0Fu)) * x0);
                 const float ud = fma(float(uint(ubv >> 4)), x1, float(uint(ubv & 0x0Fu)) * x0);
                 ga[r] = fma(gs, gd, ga[r]); ga[r] = fma(gb, x0 + x1, ga[r]);
@@ -1295,21 +1286,20 @@ static inline void verify_down_rows(
 ) {
     const uint R = FC_VERIFY_ROWS;
     const uint F = p.F;
-    const uint n_groups = F / kPrefillGroupSize;
+    const uint n_groups = F / kPrefillQ4Group;
     const uint d1 = min(d0 + 1u, p.D - 1u);
     device const uint8_t* W0 = expert + p.down_W_off + d0 * (F / 2u);
     device const uint8_t* W1 = expert + p.down_W_off + d1 * (F / 2u);
-    device const bfloat* S = reinterpret_cast<device const bfloat*>(expert + p.down_s_off);
-    device const bfloat* B = reinterpret_cast<device const bfloat*>(expert + p.down_b_off);
+    device const half* S = reinterpret_cast<device const half*>(expert + p.down_s_off);
 
     float acc0[kVerifyMaxRows], acc1[kVerifyMaxRows];
     for (uint r = 0; r < R; ++r) { acc0[r] = 0.0f; acc1[r] = 0.0f; }
 
-    // F = 704 is 11 groups: the last 4-group block runs with its fourth
-    // group's lanes masked, so every group takes the vector path.
-    const uint blocks = (n_groups + 3u) / 4u;
+    // F = 704 is 22 groups: the last 256-element block runs with its last
+    // two groups' lanes masked, so every group takes the vector path.
+    const uint blocks = (n_groups + 7u) / 8u;
     for (uint blk = 0; blk < blocks; ++blk) {
-        const uint g = blk * 4u + (lane >> 3);
+        const uint g = blk * 8u + (lane >> 2);
         if (g >= n_groups) continue;
         const uint byte_base = blk * 128u + lane * 4u;
         device const ushort* wp0 = (device const ushort*)(W0 + byte_base);
@@ -1317,8 +1307,8 @@ static inline void verify_down_rows(
         float q0[8], q1[8];
         verify_unpack8(uint(wp0[0]) | (uint(wp0[1]) << 16), q0);
         verify_unpack8(uint(wp1[0]) | (uint(wp1[1]) << 16), q1);
-        const float s0 = float(S[d0 * n_groups + g]), b0 = float(B[d0 * n_groups + g]);
-        const float s1 = float(S[d1 * n_groups + g]), b1 = float(B[d1 * n_groups + g]);
+        const float s0 = float(S[d0 * n_groups + g]), b0 = -8.0f * s0;
+        const float s1 = float(S[d1 * n_groups + g]), b1 = -8.0f * s1;
         const uint elem = byte_base * 2u;
         for (uint r = 0; r < R; ++r) {
             if (r < n) {

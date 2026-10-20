@@ -12,7 +12,7 @@ prompts = {
 env = {k: v for k, v in os.environ.items() if not k.startswith("ANE_FIELDFARE_")} | {"ANE_FIELDFARE_HOTPATH_PROFILE": "1"}
 for name, text in prompts.items():
     cmd = [f"{root}/Scripts/with_benchmark_lock.sh", f"{root}/.build/swift-hotpath/release/ANEFieldfareHotpathCLI",
-           "--model", f"{root}/checkpoints/gturbo/gemma4.gturbo", "--chat-prompt", text, "--backend", "metal",
+           "--model", f"{root}/checkpoints/gemma-4-26b-a4b-it-qat.fieldfare", "--chat-prompt", text, "--backend", "metal",
            "--max-new", sys.argv[1] if len(sys.argv) > 1 else "256", "--max-context", "4096",
            "--temperature", "0", "--top-k", "0", "--top-p", "1"]
     p = subprocess.run(cmd, env=env, capture_output=True, text=True)

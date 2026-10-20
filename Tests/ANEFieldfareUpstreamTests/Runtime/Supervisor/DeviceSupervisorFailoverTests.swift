@@ -8,9 +8,9 @@ import Testing
 let installedCheckpointURL: URL? = {
     let environment = ProcessInfo.processInfo.environment["ANE_FIELDFARE_TEST_CHECKPOINT"]
     let url = environment.map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().appendingPathComponent("../../../../checkpoints/gturbo/gemma4.gturbo")
+        .deletingLastPathComponent().appendingPathComponent("../../../../checkpoints/gemma-4-26b-a4b-it-qat.fieldfare")
         .standardizedFileURL
-    let weights = url.appendingPathComponent("model_weights.bin").path
+    let weights = url.appendingPathComponent("resident.bin").path
     return FileManager.default.fileExists(atPath: weights) ? url : nil
 }()
 

@@ -11,7 +11,6 @@ final class PrefillEmbedLookupInt4 {
     func encode(commandBuffer: any MTLCommandBuffer,
                        table: any MTLBuffer, tableOffset: Int = 0,
                        scales: any MTLBuffer, scalesOffset: Int = 0,
-                       biases: any MTLBuffer, biasesOffset: Int = 0,
                        tokens: any MTLBuffer,
                        out: any MTLBuffer,
                        t: UInt32,
@@ -23,12 +22,11 @@ final class PrefillEmbedLookupInt4 {
         enc.setComputePipelineState(pso)
         enc.setBuffer(table, offset: tableOffset, index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)
-        enc.setBuffer(biases, offset: biasesOffset, index: 2)
-        enc.setBuffer(tokens, offset: 0, index: 3)
-        enc.setBuffer(out, offset: 0, index: 4)
-        enc.setValue(t, index: 5)
-        enc.setValue(d, index: 6)
-        enc.setValue(outScale, index: 7)
+        enc.setBuffer(tokens, offset: 0, index: 2)
+        enc.setBuffer(out, offset: 0, index: 3)
+        enc.setValue(t, index: 4)
+        enc.setValue(d, index: 5)
+        enc.setValue(outScale, index: 6)
         enc.dispatchThreads(MTLSize(width: Int(d), height: Int(t), depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         enc.endEncoding()
@@ -74,7 +72,6 @@ final class PrefillInt4QMM {
     func encode(commandBuffer: any MTLCommandBuffer,
                        weights: any MTLBuffer, weightsOffset: Int = 0,
                        scales: any MTLBuffer, scalesOffset: Int = 0,
-                       biases: any MTLBuffer, biasesOffset: Int = 0,
                        x: any MTLBuffer,
                        y: any MTLBuffer,
                        t: Int,
@@ -86,12 +83,11 @@ final class PrefillInt4QMM {
         enc.setComputePipelineState(pso)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)
-        enc.setBuffer(biases, offset: biasesOffset, index: 2)
-        enc.setBuffer(x, offset: 0, index: 3)
-        enc.setBuffer(y, offset: 0, index: 4)
-        enc.setValue(UInt32(t), index: 5)
-        enc.setValue(UInt32(n), index: 6)
-        enc.setValue(UInt32(k), index: 7)
+        enc.setBuffer(x, offset: 0, index: 2)
+        enc.setBuffer(y, offset: 0, index: 3)
+        enc.setValue(UInt32(t), index: 4)
+        enc.setValue(UInt32(n), index: 5)
+        enc.setValue(UInt32(k), index: 6)
         enc.dispatchThreadgroups(
             MTLSize(width: (n + 7) / 8, height: (t + 7) / 8, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))

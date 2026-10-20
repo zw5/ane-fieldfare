@@ -12,7 +12,6 @@ public struct Args: Equatable, Sendable {
     public var chatPrompt: String?
     public var messagesFile: String?
     public var images: [String]
-    public var visionPack: String?
     public var visionResidency: VisionResidencyPolicy
     public var maxNew: Int
     public var maxContext: Int
@@ -57,7 +56,6 @@ public struct Args: Equatable, Sendable {
                 chatPrompt: String? = nil,
                 messagesFile: String? = nil,
                 images: [String] = [],
-                visionPack: String? = nil,
                 visionResidency: VisionResidencyPolicy = .defaultPolicy,
                 maxNew: Int = 1_024,
                 maxContext: Int = 32_768,
@@ -89,7 +87,6 @@ public struct Args: Equatable, Sendable {
         self.chatPrompt = chatPrompt
         self.messagesFile = messagesFile
         self.images = images
-        self.visionPack = visionPack
         self.visionResidency = visionResidency
         self.maxNew = maxNew
         self.maxContext = maxContext
@@ -147,13 +144,13 @@ extension Args {
            (--prompt <string> | --prompt-file <path> | --chat-prompt <string> | --messages-file <path>) [options]
 
     required:
-      --model <dir>             Path to a .gturbo model directory.
+      --model <dir>             Path to a .fieldfare model directory
+                                (see ANEFieldfareInstall).
       --prompt <string>         Raw-completion prompt.
       --chat-prompt <string>    Single-turn instruction chat; pairs with --image
       --messages-file <path>    JSON chat messages with role and content fields.
       --image <path>            Attach an image; repeatable. Needs --chat-prompt
-                                and an installed companion pack.
-      --vision-pack <dir>       Companion pack (default beside the model).
+                                and a model installed with its vision weights.
       --vision-residency <on-demand|keep-ready>
                                 Routed-expert residency during vision (default on-demand).
 
@@ -240,7 +237,6 @@ extension Args {
         var chatPrompt: String?
         var messagesFile: String?
         var images: [String] = []
-        var visionPack: String?
         var visionResidency: VisionResidencyPolicy = .defaultPolicy
         var maxNew = 1_024
         var maxContext = 32_768
@@ -298,8 +294,6 @@ extension Args {
                 chatPrompt = try takeValue(argv, &index, flag: flag)
             case "--image":
                 images.append(try takeValue(argv, &index, flag: flag))
-            case "--vision-pack":
-                visionPack = try takeValue(argv, &index, flag: flag)
             case "--vision-residency":
                 let value = try takeValue(argv, &index, flag: flag)
                 guard let policy = VisionResidencyPolicy(rawValue: value) else {
@@ -460,7 +454,6 @@ extension Args {
                              chatPrompt: chatPrompt,
                              messagesFile: messagesFile,
                              images: images,
-                             visionPack: visionPack,
                              visionResidency: visionResidency,
                              maxNew: maxNew,
                              maxContext: maxContext,

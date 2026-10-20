@@ -9,7 +9,7 @@ import ANEFieldfareValidationSupport
 
     private static func cpuGreedy(hiddenFp16: [Float16],
                                   normWeightBF16: [UInt16],
-                                  rows: [Quantization.Int4AffineRow],
+                                  rows: [Quantization.Q4Row],
                                   d: Int,
                                   v: Int) -> UInt32 {
         let hidden = hiddenFp16.map(Float.init)
@@ -20,7 +20,7 @@ import ANEFieldfareValidationSupport
         var bestValue: Float = -.infinity
         var bestIndex: UInt32 = 0
         for row in 0..<v {
-            let dequantized = Quantization.dequantizeInt4Affine(rows[row], n: d)
+            let dequantized = Quantization.dequantizeQ4_0(rows[row], n: d)
             var dot: Float = 0
             dequantized.withUnsafeBufferPointer { weights in
                 normed.withUnsafeBufferPointer { input in
@@ -38,17 +38,17 @@ import ANEFieldfareValidationSupport
         return bestIndex
     }
 
-    private static func packRows(_ rows: [Quantization.Int4AffineRow])
-        -> (packed: [UInt8], scales: [UInt16], biases: [UInt16]) {
-        (rows.flatMap(\.packed), rows.flatMap(\.scales), rows.flatMap(\.biases))
+    private static func packRows(_ rows: [Quantization.Q4Row])
+        -> (packed: [UInt8], scales: [UInt16]) {
+        (rows.flatMap(\.packed), rows.flatMap(\.scales))
     }
 
     private static func gpuGreedy(hiddenFp16: [Float16],
                                   normBF16: [UInt16],
-                                  rows: [Quantization.Int4AffineRow],
+                                  rows: [Quantization.Q4Row],
                                   d: Int,
                                   v: Int) throws -> UInt32 {
-        let (packed, scales, biases) = Self.packRows(rows)
+        let (packed, scales) = Self.packRows(rows)
         let context = try MetalContext()
         let chain = try LMHeadChainInt4(context: context, maxD: d, maxVocab: v)
         func buffer<T: BitwiseCopyable>(_ values: [T]) throws -> any MTLBuffer {
@@ -57,7 +57,7 @@ import ANEFieldfareValidationSupport
                                                           options: .storageModeShared))
         }
         let hidden = try buffer(hiddenFp16), norm = try buffer(normBF16)
-        let weights = try buffer(packed), scaleBuffer = try buffer(scales), biasBuffer = try buffer(biases)
+        let weights = try buffer(packed), scaleBuffer = try buffer(scales)
         let output = try buffer([UInt32(0)])
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
         chain.encodeGreedyDecode(commandBuffer: commandBuffer,
@@ -65,7 +65,6 @@ import ANEFieldfareValidationSupport
                                  normWeight: norm,
                                  weights: weights,
                                  scales: scaleBuffer,
-                                 biases: biasBuffer,
                                  outToken: output,
                                  d: UInt32(d),
                                  vocab: UInt32(v))
@@ -81,7 +80,7 @@ import ANEFieldfareValidationSupport
         let hidden = (0..<d).map { _ in Float16(rng.uniform(-1, 1)) }
         let norm = (0..<d).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
         let rows = (0..<v).map { _ in
-            Quantization.quantizeInt4Affine((0..<d).map { _ in rng.uniform(-1, 1) })
+            Quantization.quantizeQ4_0((0..<d).map { _ in rng.uniform(-1, 1) })
         }
 
         let reference = Self.cpuGreedy(hiddenFp16: hidden,
@@ -104,7 +103,7 @@ import ANEFieldfareValidationSupport
         let norm = (0..<d).map { _ in Quantization.bf16Bits(1) }
         let rows = (0..<v).map { row in
             let value: Float = (row == 17 || row == 311) ? 1 : -0.25
-            return Quantization.quantizeInt4Affine([Float](repeating: value, count: d))
+            return Quantization.quantizeQ4_0([Float](repeating: value, count: d))
         }
 
         let result = try Self.gpuGreedy(hiddenFp16: hidden,
@@ -123,10 +122,10 @@ import ANEFieldfareValidationSupport
         let d = 2816, v = 4099, rowsChecked = 4
         var rng = SplitMix64(seed: 0xC4EC_4EAD)
         var rows = (0..<v).map { _ in
-            Quantization.quantizeInt4Affine((0..<d).map { _ in rng.uniform(-0.5, 0.5) })
+            Quantization.quantizeQ4_0((0..<d).map { _ in rng.uniform(-0.5, 0.5) })
         }
         rows[3001] = rows[1200]
-        let (packed, scales, biases) = Self.packRows(rows)
+        let (packed, scales) = Self.packRows(rows)
         let hidden = (0..<(rowsChecked * d)).map { _ in Float16(rng.uniform(-1, 1)) }
         let norm = (0..<d).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
         let context = try MetalContext()
@@ -138,7 +137,7 @@ import ANEFieldfareValidationSupport
             }
         }
         let hiddenBuffer = buffer(hidden), normBuffer = buffer(norm)
-        let w = buffer(packed), s = buffer(scales), b = buffer(biases)
+        let w = buffer(packed), s = buffer(scales)
         let normed = device.makeBuffer(length: rowsChecked * d * 2, options: .storageModeShared)!
         let out = device.makeBuffer(length: 16, options: .storageModeShared)!
 
@@ -146,7 +145,7 @@ import ANEFieldfareValidationSupport
         for row in 0..<rowsChecked {
             let cb = context.queue.makeCommandBuffer()!
             chain.encodeGreedyDecode(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
-                                     normWeight: normBuffer, weights: w, scales: s, biases: b,
+                                     normWeight: normBuffer, weights: w, scales: s,
                                      outToken: out, d: UInt32(d), vocab: UInt32(v))
             cb.commit(); cb.waitUntilCompleted()
             single.append(unsafe out.contents().load(as: UInt32.self))
@@ -158,7 +157,7 @@ import ANEFieldfareValidationSupport
                                     normWeight: normBuffer, normedRows: normed, row: row, d: UInt32(d))
             }
             chain.encodeGreedyCheck(commandBuffer: cb, normedRows: normed, rowCount: count,
-                                    weights: w, scales: s, biases: b, outTokens: out,
+                                    weights: w, scales: s, outTokens: out,
                                     d: UInt32(d), vocab: UInt32(v))
             cb.commit(); cb.waitUntilCompleted()
             let checked = (0..<count).map { unsafe out.contents().load(fromByteOffset: 4 * $0, as: UInt32.self) }
@@ -178,7 +177,7 @@ import ANEFieldfareValidationSupport
         for row in 0..<rowsChecked {
             let cb = context.queue.makeCommandBuffer()!
             chain.encodeHotGreedyDecode(commandBuffer: cb, hidden: hiddenBuffer, hiddenOffset: row * d * 2,
-                                        normWeight: normBuffer, table: table, weights: w, scales: s, biases: b,
+                                        normWeight: normBuffer, table: table, weights: w, scales: s,
                                         normedRows: normed, row: row, outToken: out, d: UInt32(d))
             cb.commit(); cb.waitUntilCompleted()
             #expect(unsafe out.contents().load(as: UInt32.self) == single[row], "hot guess row \(row)")

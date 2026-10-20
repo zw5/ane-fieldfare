@@ -1,6 +1,8 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// The router is affine INT8 in groups of 64; expert and shared-FFN weights
+// are Q4_0 (groups of 32, FP16 scale d, w = d * (q - 8)).
 constant constexpr uint kMoEGroupSize = 64;
 constant constexpr uint kMaxStreamedExperts = 8;
 constant constexpr float kGeluSqrt2OverPi = 0.7978845608028654f;
@@ -61,13 +63,10 @@ static inline float gelu_pytorch_tanh(float x) {
 struct ExpertOffsets {
     uint gate_W_off;
     uint gate_s_off;
-    uint gate_b_off;
     uint up_W_off;
     uint up_s_off;
-    uint up_b_off;
     uint down_W_off;
     uint down_s_off;
-    uint down_b_off;
 };
 
 struct RoutedBlobs {
@@ -330,31 +329,30 @@ kernel void router_topk_select_k8(
     }
 }
 
-// Each SIMD computes one affine INT4 row. Four adjacent groups are loaded as
-// aligned 32-bit chunks; remaining groups use one byte per lane.
+// Each SIMD computes one Q4_0 row, as the affine map q * s + b with
+// b = -8 s. 256-element blocks are loaded as aligned 32-bit chunks, 8
+// elements of one group per lane; the remainder uses one byte per lane.
 static inline float moe_int4_gemv_row_simd_dev_vec(
     device const uint8_t* W,
-    device const bfloat* S,
-    device const bfloat* B,
+    device const half* S,
     device const half* x,
     uint row,
     uint N,
     uint lane
 ) {
-    const uint n_groups = N / kMoEGroupSize;
+    const uint n_groups = N / 32u;
     const uint row_bytes = N / 2;
     device const uint8_t* W_row = W + uint(row) * row_bytes;
-    device const bfloat* s_row = S + uint(row) * n_groups;
-    device const bfloat* b_row = B + uint(row) * n_groups;
+    device const half* s_row = S + uint(row) * n_groups;
 
     float acc = 0.0f;
-    const uint full_blocks = n_groups / 4;
+    const uint full_blocks = N / 256u;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         const uint w4 = *((device const uint*)(W_row + byte_base));
-        const uint g = blk * 4u + (lane >> 3);
+        const uint g = blk * 8u + (lane >> 2);
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = -8.0f * s;
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -375,12 +373,13 @@ static inline float moe_int4_gemv_row_simd_dev_vec(
         acc = fma(s, dot, acc);
         acc = fma(b, sum, acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
-        const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
-        const uint8_t byte = W_row[g * (kMoEGroupSize / 2) + lane];
-        const float x0 = float(x[g * kMoEGroupSize + lane * 2u]);
-        const float x1 = float(x[g * kMoEGroupSize + lane * 2u + 1u]);
+    // 64-element steps: lanes 0-15 hold the step's first group, 16-31 its second.
+    for (uint c = full_blocks * 4u; c < N / 64u; ++c) {
+        const float s = float(s_row[c * 2u + (lane >> 4)]);
+        const float b = -8.0f * s;
+        const uint8_t byte = W_row[c * 32u + lane];
+        const float x0 = float(x[c * 64u + lane * 2u]);
+        const float x1 = float(x[c * 64u + lane * 2u + 1u]);
         float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
         dot = fma(float(uint(byte >> 4)), x1, dot);
         acc = fma(s, dot, acc);
@@ -390,42 +389,38 @@ static inline float moe_int4_gemv_row_simd_dev_vec(
 }
 
 // Gate and up rows share activation loads. Two 16-bit loads assemble each
-// 4-byte weight chunk because packed sub-tensor offsets need only be 2-byte aligned.
+// 4-byte weight chunk because resident weight offsets need only be 2-byte aligned.
 static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
     device const uint8_t* gateW,
-    device const bfloat* gateS,
-    device const bfloat* gateB,
+    device const half* gateS,
     device const uint8_t* upW,
-    device const bfloat* upS,
-    device const bfloat* upB,
+    device const half* upS,
     device const half* x,
     uint row,
     uint N,
     uint lane
 ) {
-    const uint n_groups = N / kMoEGroupSize;
+    const uint n_groups = N / 32u;
     const uint row_bytes = N / 2;
     device const uint8_t* gW_row = gateW + uint(row) * row_bytes;
     device const uint8_t* uW_row = upW + uint(row) * row_bytes;
-    device const bfloat* gS_row = gateS + uint(row) * n_groups;
-    device const bfloat* gB_row = gateB + uint(row) * n_groups;
-    device const bfloat* uS_row = upS + uint(row) * n_groups;
-    device const bfloat* uB_row = upB + uint(row) * n_groups;
+    device const half* gS_row = gateS + uint(row) * n_groups;
+    device const half* uS_row = upS + uint(row) * n_groups;
 
     float g_acc = 0.0f;
     float u_acc = 0.0f;
-    const uint full_blocks = n_groups / 4;
+    const uint full_blocks = N / 256u;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         device const ushort* gp = (device const ushort*)(gW_row + byte_base);
         device const ushort* up = (device const ushort*)(uW_row + byte_base);
         const uint gw4 = uint(gp[0]) | (uint(gp[1]) << 16);
         const uint uw4 = uint(up[0]) | (uint(up[1]) << 16);
-        const uint g = blk * 4u + (lane >> 3);
+        const uint g = blk * 8u + (lane >> 2);
         const float gs = float(gS_row[g]);
-        const float gb = float(gB_row[g]);
+        const float gb = -8.0f * gs;
         const float us = float(uS_row[g]);
-        const float ub = float(uB_row[g]);
+        const float ub = -8.0f * us;
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -460,15 +455,16 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
         u_acc = fma(us, u_dot, u_acc);
         u_acc = fma(ub, sum, u_acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    for (uint c = full_blocks * 4u; c < N / 64u; ++c) {
+        const uint g = c * 2u + (lane >> 4);
         const float gs = float(gS_row[g]);
-        const float gb = float(gB_row[g]);
+        const float gb = -8.0f * gs;
         const float us = float(uS_row[g]);
-        const float ub = float(uB_row[g]);
-        const uint8_t gbv = gW_row[g * (kMoEGroupSize / 2) + lane];
-        const uint8_t ubv = uW_row[g * (kMoEGroupSize / 2) + lane];
-        const float x0 = float(x[g * kMoEGroupSize + lane * 2u]);
-        const float x1 = float(x[g * kMoEGroupSize + lane * 2u + 1u]);
+        const float ub = -8.0f * us;
+        const uint8_t gbv = gW_row[c * 32u + lane];
+        const uint8_t ubv = uW_row[c * 32u + lane];
+        const float x0 = float(x[c * 64u + lane * 2u]);
+        const float x1 = float(x[c * 64u + lane * 2u + 1u]);
         const float sum = x0 + x1;
         float g_dot = fma(float(uint(gbv & 0x0Fu)), x0, 0.0f);
         g_dot = fma(float(uint(gbv >> 4)), x1, g_dot);
@@ -498,13 +494,11 @@ static inline void moe_phase1_gate_up_act_row(
     const ExpertOffsets re = routed_offsets;
     device const uint8_t* gW = base + re.gate_W_off;
     device const uint8_t* uW = base + re.up_W_off;
-    device const bfloat* gS = (device const bfloat*)(base + re.gate_s_off);
-    device const bfloat* uS = (device const bfloat*)(base + re.up_s_off);
-    device const bfloat* gB = (device const bfloat*)(base + re.gate_b_off);
-    device const bfloat* uB = (device const bfloat*)(base + re.up_b_off);
+    device const half* gS = (device const half*)(base + re.gate_s_off);
+    device const half* uS = (device const half*)(base + re.up_s_off);
 
     const float2 gu = moe_int4_gate_up_rows_simd_dev_vec_u16load(
-        gW, gS, gB, uW, uS, uB, x, f, D, lane);
+        gW, gS, uW, uS, x, f, D, lane);
     if (lane == 0) acts[slot * F + f] = half(gelu_pytorch_tanh(gu.x) * gu.y);
 }
 
@@ -559,15 +553,13 @@ kernel void moe_phase1_gate_up_act_subset_u16load(
 // GEMV + gelu_mul_fp16 path does, so the result is bitwise that path's.
 kernel void shared_gate_up_act_int4(
     device const uint8_t* gW [[buffer(0)]],
-    device const bfloat* gS [[buffer(1)]],
-    device const bfloat* gB [[buffer(2)]],
-    device const uint8_t* uW [[buffer(3)]],
-    device const bfloat* uS [[buffer(4)]],
-    device const bfloat* uB [[buffer(5)]],
-    device const half* x [[buffer(6)]],
-    device half* acts [[buffer(7)]],
-    constant uint& D [[buffer(8)]],
-    constant uint& F [[buffer(9)]],
+    device const half* gS [[buffer(1)]],
+    device const uint8_t* uW [[buffer(2)]],
+    device const half* uS [[buffer(3)]],
+    device const half* x [[buffer(4)]],
+    device half* acts [[buffer(5)]],
+    constant uint& D [[buffer(6)]],
+    constant uint& F [[buffer(7)]],
     uint tg_idx [[threadgroup_position_in_grid]],
     uint sg_idx [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]
@@ -575,7 +567,7 @@ kernel void shared_gate_up_act_int4(
     const uint row = tg_idx * 8u + sg_idx;
     if (row >= moe_fc_f(F)) return;
     const float2 gu = moe_int4_gate_up_rows_simd_dev_vec_u16load(
-        gW, gS, gB, uW, uS, uB, x, row, moe_fc_d(D), lane);
+        gW, gS, uW, uS, x, row, moe_fc_d(D), lane);
     if (lane == 0) {
         acts[row] = half(gelu_pytorch_tanh(float(half(gu.x))) * float(half(gu.y)));
     }
@@ -626,12 +618,11 @@ kernel void moe_phase2_down_reduce_k8(
     device const uint8_t* base = routed.blob[sg_idx];
     const ExpertOffsets re = routed_offsets;
     device const uint8_t* dW = base + re.down_W_off;
-    device const bfloat* dS = (device const bfloat*)(base + re.down_s_off);
-    device const bfloat* dB = (device const bfloat*)(base + re.down_b_off);
+    device const half* dS = (device const half*)(base + re.down_s_off);
     device const half* act_slot = acts + sg_idx * FF;
 
     const float value = moe_int4_gemv_row_simd_dev_vec(
-        dW, dS, dB, act_slot, d, FF, lane);
+        dW, dS, act_slot, d, FF, lane);
     if (lane == 0) partial[sg_idx] = float(routing_w[sg_idx]) * value;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 

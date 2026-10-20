@@ -46,7 +46,7 @@ public struct ServerOptions: Sendable, Equatable {
     usage: ANEFieldfareServer --model <dir> [options]
 
     required:
-      --model <dir>              Path to a .gturbo model directory.
+      --model <dir>              Path to a .fieldfare model directory.
 
     options:
       --drafter <dir|off>        DFlash drafter checkpoint: requests decode

@@ -17,7 +17,7 @@ run() {  # snapshot round [bench flags...]
   local name="$1" round="$2"; shift 2
   local bin="$root/.build/bench-bins/$name"
   ANE_FIELDFARE_BENCH_GIT="$(cat "$bin/GIT")" "$bin/ANEFieldfareBench" \
-    --model "$root/checkpoints/gturbo/gemma4.gturbo" --label "$name" --out "$out/$name-r$round.json" "$@"
+    --model "$root/checkpoints/gemma-4-26b-a4b-it-qat.fieldfare" --label "$name" --out "$out/$name-r$round.json" "$@"
 }
 for ((i = 0; i < rounds; i++)); do
   if (( i % 2 == 0 )); then run "$a" "$i" "$@"; run "$b" "$i" "$@"

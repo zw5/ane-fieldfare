@@ -45,13 +45,10 @@ struct PrefillGroupedRoutedMoEStreamedParams: Equatable, Sendable {
     var localExpert15: UInt32
     var gateWOff: UInt32
     var gateSOff: UInt32
-    var gateBOff: UInt32
     var upWOff: UInt32
     var upSOff: UInt32
-    var upBOff: UInt32
     var downWOff: UInt32
     var downSOff: UInt32
-    var downBOff: UInt32
 
     init(pairStart: UInt32,
                 pairCount: UInt32,
@@ -90,13 +87,10 @@ struct PrefillGroupedRoutedMoEStreamedParams: Equatable, Sendable {
         self.localExpert15 = ids[15]
         self.gateWOff = offsets.gateWOff
         self.gateSOff = offsets.gateSOff
-        self.gateBOff = offsets.gateBOff
         self.upWOff = offsets.upWOff
         self.upSOff = offsets.upSOff
-        self.upBOff = offsets.upBOff
         self.downWOff = offsets.downWOff
         self.downSOff = offsets.downSOff
-        self.downBOff = offsets.downBOff
     }
 
     /// Parameters for the GPU-routed verify kernels, which take their

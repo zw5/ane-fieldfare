@@ -12,11 +12,11 @@
 #   Scripts/with_benchmark_lock.sh Scripts/server/smoke.sh
 #
 # Environment: ANE_FIELDFARE_TEST_CHECKPOINT (model, default
-# checkpoints/gturbo/gemma4.gturbo), SMOKE_DRAFTER (drafter directory),
+# checkpoints/gemma-4-26b-a4b-it-qat.fieldfare), SMOKE_DRAFTER (drafter directory),
 # SMOKE_MAX_NEW (default 128), SMOKE_SKIP_BUILD=1.
 set -euo pipefail
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-model="${ANE_FIELDFARE_TEST_CHECKPOINT:-$project_root/checkpoints/gturbo/gemma4.gturbo}"
+model="${ANE_FIELDFARE_TEST_CHECKPOINT:-$project_root/checkpoints/gemma-4-26b-a4b-it-qat.fieldfare}"
 drafter="${SMOKE_DRAFTER:-}"
 max_new="${SMOKE_MAX_NEW:-128}"
 context=4096

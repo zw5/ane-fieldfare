@@ -7,30 +7,28 @@ import ANEFieldfareValidationSupport
 @Suite struct PrefillPrimitiveTests {
     private static let vocab = 16
     private static let d = 128
-    private static let groupsPerRow = d / Quantization.groupSize
+    private static let groupsPerRow = d / Quantization.q4GroupSize
 
-    private static func buildInt4Table(seed: UInt64) -> (packed: [UInt8], scales: [UInt16], biases: [UInt16]) {
+    private static func buildInt4Table(seed: UInt64) -> (packed: [UInt8], scales: [UInt16]) {
         var rng = SeedTree(seed).key("prefill-int4-embed-table")
         var packed = [UInt8](repeating: 0, count: vocab * (d / 2))
         var scales = [UInt16](repeating: 0, count: vocab * groupsPerRow)
-        var biases = [UInt16](repeating: 0, count: vocab * groupsPerRow)
 
         for v in 0..<vocab {
             let row = (0..<d).map { _ in rng.uniform(-1.0, 1.0) }
-            let q = Quantization.quantizeInt4Affine(row)
+            let q = Quantization.quantizeQ4_0(row)
             for i in 0..<(d / 2) {
                 packed[v * (d / 2) + i] = q.packed[i]
             }
             for g in 0..<groupsPerRow {
                 scales[v * groupsPerRow + g] = q.scales[g]
-                biases[v * groupsPerRow + g] = q.biases[g]
             }
         }
-        return (packed, scales, biases)
+        return (packed, scales)
     }
 
     @Test func embedBlockMatchesPerTokenEmbed() throws {
-        let (packed, scales, biases) = Self.buildInt4Table(seed: 0x5101)
+        let (packed, scales) = Self.buildInt4Table(seed: 0x5101)
         let tokens: [UInt32] = [3, 11, 2, 9, 14]
         let outScale = Float(Self.d).squareRoot()
         let ctx = try MetalContext()
@@ -40,9 +38,6 @@ import ANEFieldfareValidationSupport
         guard let tableBuf = unsafe ctx.device.makeBuffer(bytes: packed, length: packed.count, options: .storageModeShared),
               let scalesBuf = unsafe ctx.device.makeBuffer(bytes: scales,
                                                     length: scales.count * MemoryLayout<UInt16>.size,
-                                                    options: .storageModeShared),
-              let biasesBuf = unsafe ctx.device.makeBuffer(bytes: biases,
-                                                    length: biases.count * MemoryLayout<UInt16>.size,
                                                     options: .storageModeShared),
               let tokenBuf = unsafe ctx.device.makeBuffer(bytes: tokens,
                                                    length: tokens.count * MemoryLayout<UInt32>.size,
@@ -58,7 +53,6 @@ import ANEFieldfareValidationSupport
             scalar.encode(commandBuffer: cb,
                           table: tableBuf,
                           scales: scalesBuf,
-                          biases: biasesBuf,
                           out: scalarOut,
                           outOffset: row * Self.d * MemoryLayout<Float16>.size,
                           tokenId: token,
@@ -68,7 +62,6 @@ import ANEFieldfareValidationSupport
         block.encode(commandBuffer: cb,
                      table: tableBuf,
                      scales: scalesBuf,
-                     biases: biasesBuf,
                      tokens: tokenBuf,
                      out: blockOut,
                      t: UInt32(tokens.count),

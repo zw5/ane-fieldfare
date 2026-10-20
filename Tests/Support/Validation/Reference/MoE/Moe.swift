@@ -23,9 +23,9 @@ public enum MoeRef {
     /// Runs one FFN block: `down(gelu(gate(x)) * up(x))`.
     /// `gateRows` / `upRows` are F-by-D affine INT4. `downRows` is D-by-F.
     public static func runFFN(
-        gateRows: [Quantization.Int4AffineRow],
-        upRows:   [Quantization.Int4AffineRow],
-        downRows: [Quantization.Int4AffineRow],
+        gateRows: [Quantization.Q4Row],
+        upRows:   [Quantization.Q4Row],
+        downRows: [Quantization.Q4Row],
         x: [Float],
         d: Int,
         f: Int
@@ -48,9 +48,9 @@ public enum MoeRef {
     public static func applyStreamedRouted(
         x: [Float],
         residual: [Float],
-        routedGate: [[Quantization.Int4AffineRow]],
-        routedUp:   [[Quantization.Int4AffineRow]],
-        routedDown: [[Quantization.Int4AffineRow]],
+        routedGate: [[Quantization.Q4Row]],
+        routedUp:   [[Quantization.Q4Row]],
+        routedDown: [[Quantization.Q4Row]],
         indices: [Int],
         routingWeights: [Float],
         d: Int,

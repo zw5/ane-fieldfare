@@ -1,8 +1,11 @@
 import Darwin
 package import Foundation
-import ANEFieldfareImportedFormat
+import ANEFieldfareModelFormat
 
-package final class GTurboModelDirectory: Sendable {
+/// The model directory, opened once. Every file is opened relative to it,
+/// component by component with `O_NOFOLLOW`, so no symlink inside the model
+/// can redirect a read.
+package final class ModelDirectory: Sendable {
     private let rootFD: Int32
 
     package init(rootURL: URL) throws {
@@ -18,8 +21,7 @@ package final class GTurboModelDirectory: Sendable {
 
     package func openFile(_ relativePath: String) throws -> Int32 {
         do {
-            try GTurboPathValidator.validateRelativePath(relativePath,
-                                                         field: "path.\(relativePath)")
+            try FieldfarePath.validate(relativePath, field: "path.\(relativePath)")
         } catch {
             throw ModelError.indexCorrupt(detail: "unsafe path \(relativePath): \(error)")
         }

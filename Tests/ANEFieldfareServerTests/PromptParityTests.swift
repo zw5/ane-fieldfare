@@ -37,7 +37,7 @@ private final class IdleEngine: CompletionEngine {
         let file = directory.appendingPathComponent("messages.json")
         try Data(conversation.utf8).write(to: file)
 
-        let args = try Args.parse(["--model", "m.gturbo", "--messages-file", file.path])
+        let args = try Args.parse(["--model", "m.fieldfare", "--messages-file", file.path])
         guard case .messages(let cliMessages) = try parseInput(args: args) else {
             Issue.record("the CLI did not read a text conversation")
             return

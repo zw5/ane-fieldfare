@@ -49,17 +49,16 @@ import ANEFieldfareValidationSupport
     }
 
     private static func pack(_ values: [[Float]]) ->
-        (rows: [Quantization.Int4AffineRow], packed: [UInt8], scales: [UInt16], biases: [UInt16]) {
-        let rows = values.map(Quantization.quantizeInt4Affine)
+        (rows: [Quantization.Q4Row], packed: [UInt8], scales: [UInt16]) {
+        let rows = values.map(Quantization.quantizeQ4_0)
         return (rows,
                 rows.flatMap(\.packed),
-                rows.flatMap(\.scales),
-                rows.flatMap(\.biases))
+                rows.flatMap(\.scales))
     }
 
     private static func projection(
         _ context: MetalContext,
-        _ packed: (rows: [Quantization.Int4AffineRow], packed: [UInt8], scales: [UInt16], biases: [UInt16]),
+        _ packed: (rows: [Quantization.Q4Row], packed: [UInt8], scales: [UInt16]),
         rows: Int,
         cols: Int
     ) -> SharedExpertProjection {
@@ -69,9 +68,6 @@ import ANEFieldfareValidationSupport
                                                 options: .storageModeShared)!,
             scales: context.device.makeBuffer(bytes: packed.scales,
                                                length: packed.scales.count * 2,
-                                               options: .storageModeShared)!,
-            biases: context.device.makeBuffer(bytes: packed.biases,
-                                               length: packed.biases.count * 2,
                                                options: .storageModeShared)!,
             rows: UInt32(rows), cols: UInt32(cols))
     }

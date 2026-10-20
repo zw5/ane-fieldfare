@@ -1,26 +1,20 @@
 import Darwin
-public import Foundation
+import Foundation
 import Metal
-import ANEFieldfareImportedFormat
+import ANEFieldfareModelFormat
 
 public enum VisionPackError: Error, Equatable, CustomStringConvertible, Sendable {
-    case invalidTextModelPath(String)
-    case packNotFound(String)
+    case notInstalled(String)
     case invalidMetadata(String)
-    case incompatibleTextArtifact
     case fileSizeMismatch(file: String, expected: UInt64, actual: UInt64)
     case regionExceedsDevice(name: String, bytes: UInt64, maximum: UInt64)
 
     public var description: String {
         switch self {
-        case let .invalidTextModelPath(path):
-            "text model path is not a .gturbo directory: \(path)"
-        case let .packNotFound(path):
-            "no vision companion pack at \(path)"
+        case let .notInstalled(path):
+            "\(path) was installed without the vision weights"
         case let .invalidMetadata(detail):
-            "vision companion metadata is invalid: \(detail)"
-        case .incompatibleTextArtifact:
-            "vision companion does not match the loaded text artifact"
+            "vision weights are invalid: \(detail)"
         case let .fileSizeMismatch(file, expected, actual):
             "\(file) size \(actual) does not match manifest size \(expected)"
         case let .regionExceedsDevice(name, bytes, maximum):
@@ -29,90 +23,58 @@ public enum VisionPackError: Error, Equatable, CustomStringConvertible, Sendable
     }
 }
 
-public enum VisionPackLocation {
-    public static func companionURL(forTextModel textModelURL: URL) throws -> URL {
-        let standardized = textModelURL.standardizedFileURL
-        let name = standardized.lastPathComponent
-        guard name.hasSuffix(".gturbo"), name.count > ".gturbo".count else {
-            throw VisionPackError.invalidTextModelPath(standardized.path)
-        }
-        let stem = name.dropLast(".gturbo".count)
-        return standardized.deletingLastPathComponent()
-            .appendingPathComponent("\(stem).vision.gturbo", isDirectory: true)
-    }
-}
-
+/// The vision tower's tensors: the `vision` section of the model's
+/// manifest, in its own file inside the model directory.
 final class VisionWeightStore {
-    let directoryURL: URL
-    let manifest: GTurboVisionManifestV1
+    let fileURL: URL
+    let tensors: [String: FieldfareTensor]
+    private let names: [String]
     private let weightsFD: Int32
 
-    static func open(
-        directoryURL: URL,
-        compatibleTextSourceSnapshotHash: String
-    ) throws -> VisionWeightStore {
-        var isDirectory: ObjCBool = false
-        guard unsafe FileManager.default.fileExists(
-            atPath: directoryURL.standardizedFileURL.path,
-            isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw VisionPackError.packNotFound(directoryURL.standardizedFileURL.path)
+    static func open(directory: ModelDirectory, directoryURL: URL,
+                     manifest: FieldfareManifest) throws -> VisionWeightStore {
+        guard let vision = manifest.vision else {
+            throw VisionPackError.notInstalled(directoryURL.standardizedFileURL.path)
         }
-        let directory: GTurboModelDirectory
-        do { directory = try GTurboModelDirectory(rootURL: directoryURL) }
-        catch { throw VisionPackError.invalidMetadata("\(error)") }
-
-        let manifestData: Data
+        let weightsFD: Int32
+        let actual: UInt64
         do {
-            manifestData = try directory.readMetadata(
-                GTurboVisionFormatV1.manifestFile,
-                maxBytes: GTurboVisionFormatV1.metadataMaxBytes)
+            weightsFD = try directory.openFile(vision.file)
+            actual = try directory.fileSize(fileDescriptor: weightsFD, relativePath: vision.file)
         } catch {
             throw VisionPackError.invalidMetadata("\(error)")
         }
-
-        let manifest: GTurboVisionManifestV1
-        do { manifest = try GTurboVisionManifestCodec.decode(manifestData) }
-        catch { throw VisionPackError.invalidMetadata("\(error)") }
-        guard manifest.compatibleTextSourceSnapshotHash == compatibleTextSourceSnapshotHash else {
-            throw VisionPackError.incompatibleTextArtifact
+        let expected = manifest.files[vision.file]?.size ?? 0
+        guard actual == expected else {
+            close(weightsFD)
+            throw VisionPackError.fileSizeMismatch(file: vision.file, expected: expected, actual: actual)
         }
-
-        for (path, file) in manifest.files {
-            let actual: UInt64
-            do { actual = try directory.fileSize(path) }
-            catch { throw VisionPackError.invalidMetadata("\(error)") }
-            guard actual == file.size else {
-                throw VisionPackError.fileSizeMismatch(
-                    file: path, expected: file.size, actual: actual)
-            }
-        }
-
-        let weightsFD: Int32
-        do { weightsFD = try directory.openFile(GTurboVisionFormatV1.weightsFile) }
-        catch { throw VisionPackError.invalidMetadata("\(error)") }
-        return VisionWeightStore(directoryURL: directoryURL.standardizedFileURL,
-                                 manifest: manifest, weightsFD: weightsFD)
+        return VisionWeightStore(fileURL: directoryURL.standardizedFileURL.appendingPathComponent(vision.file),
+                                 tensors: vision.tensors, weightsFD: weightsFD)
     }
 
-    private init(directoryURL: URL, manifest: GTurboVisionManifestV1, weightsFD: Int32) {
-        self.directoryURL = directoryURL
-        self.manifest = manifest
+    private init(fileURL: URL, tensors: [FieldfareTensor], weightsFD: Int32) {
+        self.fileURL = fileURL
+        self.tensors = Dictionary(uniqueKeysWithValues: tensors.map { ($0.name, $0) })
+        self.names = tensors.map(\.name)
         self.weightsFD = weightsFD
     }
 
     deinit { close(weightsFD) }
 
+    /// Maps the smallest span of the file holding every region of the named
+    /// tensors.
     func mapRegion(tensorNames: [String],
                    device: any MTLDevice) throws -> VisionMappedWeightRegion {
-        let byName = Dictionary(uniqueKeysWithValues: manifest.tensors.map { ($0.name, $0) })
-        let tensors = try tensorNames.map { name -> GTurboVisionTensorRegionV1 in
-            guard let tensor = byName[name] else {
+        let selected = try tensorNames.map { name -> FieldfareTensor in
+            guard let tensor = tensors[name] else {
                 throw VisionPackError.invalidMetadata("missing tensor \(name)")
             }
             return tensor
         }
-        guard let start = tensors.map(\.offset).min(),
-              let end = tensors.map({ $0.offset + $0.size }).max(),
+        let regions = selected.flatMap { [$0.weights, $0.scales, $0.biases].compactMap { $0 } }
+        guard let start = regions.map(\.offset).min(),
+              let end = regions.map({ $0.offset + $0.size }).max(),
               end > start else {
             throw VisionPackError.invalidMetadata("empty mapped tensor group")
         }
@@ -122,31 +84,38 @@ final class VisionWeightStore {
                 name: tensorNames.first ?? "group", bytes: length,
                 maximum: UInt64(device.maxBufferLength))
         }
-        let resident = try ResidentBuffer(
-            fileURL: directoryURL.appendingPathComponent(GTurboVisionFormatV1.weightsFile),
-            fileOffset: start, residentSize: length,
-            device: device, fileDescriptor: weightsFD)
-        let offsets = Dictionary(uniqueKeysWithValues: tensors.map {
-            ($0.name, Int($0.offset - start))
-        })
-        return VisionMappedWeightRegion(resident: resident, offsets: offsets)
+        let resident = try ResidentBuffer(fileURL: fileURL, fileOffset: start, residentSize: length,
+                                          device: device, fileDescriptor: weightsFD)
+        return VisionMappedWeightRegion(
+            resident: resident,
+            tensors: Dictionary(uniqueKeysWithValues: selected.map { ($0.name, $0) }),
+            base: start)
     }
 
     func tensorNames(withPrefix prefix: String) -> [String] {
-        manifest.tensors.lazy.filter { $0.name.hasPrefix(prefix) }.map(\.name)
+        names.filter { $0.hasPrefix(prefix) }
     }
 }
 
 struct VisionMappedWeightRegion {
     let resident: ResidentBuffer
-    let offsets: [String: Int]
+    let tensors: [String: FieldfareTensor]
+    /// File offset of byte 0 of `buffer`.
+    let base: UInt64
 
     var buffer: any MTLBuffer { resident.buffer }
 
     func offset(of name: String) throws -> Int {
-        guard let value = offsets[name] else {
+        guard let tensor = tensors[name] else {
             throw VisionPackError.invalidMetadata("tensor \(name) is outside mapped region")
         }
-        return value
+        return Int(tensor.weights.offset - base)
+    }
+
+    func scalesOffset(of name: String) throws -> Int {
+        guard let scales = tensors[name]?.scales else {
+            throw VisionPackError.invalidMetadata("tensor \(name) has no scales")
+        }
+        return Int(scales.offset - base)
     }
 }

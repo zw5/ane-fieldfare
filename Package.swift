@@ -26,18 +26,12 @@ let package = Package(
         .executable(name: "ANEFieldfareDFlashCapture", targets: ["ANEFieldfareDFlashCapture"]),
         .executable(name: "ANEFieldfareBench", targets: ["ANEFieldfareBench"]),
         .executable(name: "ANEFieldfareServer", targets: ["ANEFieldfareServer"]),
+        .executable(name: "ANEFieldfareInstall", targets: ["ANEFieldfareInstall"]),
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
     ],
     targets: [
-        // Resident-index fixture types for the synthetic loader fixtures.
-        .target(
-            name: "ANEFieldfareRepackTestSupport",
-            dependencies: ["ANEFieldfareImportedFormat"],
-            path: "Tests/Support/Repack",
-            swiftSettings: strictSwiftSettings
-        ),
         .target(
             name: "ANEFieldfareValidationSupport",
             dependencies: ["ANEFieldfareHotpath"],
@@ -48,8 +42,7 @@ let package = Package(
             name: "ANEFieldfareUpstreamTests",
             dependencies: [
                 "ANEFieldfareHotpath", "ANEFieldfareHotpathCLICore",
-                "ANEFieldfareImportedFormat", "ANEFieldfareValidationSupport",
-                "ANEFieldfareRepackTestSupport",
+                "ANEFieldfareModelFormat", "ANEFieldfareValidationSupport",
                 .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ],
@@ -58,9 +51,9 @@ let package = Package(
             swiftSettings: strictSwiftSettings
         ),
         .testTarget(
-            name: "ANEFieldfareFormatTests",
-            dependencies: ["ANEFieldfareImportedFormat"],
-            path: "Tests/ANEFieldfareFormatTests",
+            name: "ANEFieldfareInstallTests",
+            dependencies: ["ANEFieldfareInstallCore", "ANEFieldfareModelFormat"],
+            path: "Tests/ANEFieldfareInstallTests",
             swiftSettings: strictSwiftSettings
         ),
         .testTarget(
@@ -88,16 +81,30 @@ let package = Package(
                 .linkedLibrary("dl"),
             ]
         ),
+        // The `.fieldfare` model directory, shared by the runtime and the installer.
         .target(
-            name: "ANEFieldfareImportedFormat",
-            path: "Sources/ANEFieldfareImportedFormat",
+            name: "ANEFieldfareModelFormat",
+            path: "Sources/ANEFieldfareModelFormat",
+            swiftSettings: strictSwiftSettings
+        ),
+        // Builds a `.fieldfare` directory from Google's QAT GGUF.
+        .target(
+            name: "ANEFieldfareInstallCore",
+            dependencies: ["ANEFieldfareModelFormat"],
+            path: "Sources/ANEFieldfareInstallCore",
+            swiftSettings: strictSwiftSettings
+        ),
+        .executableTarget(
+            name: "ANEFieldfareInstall",
+            dependencies: ["ANEFieldfareInstallCore"],
+            path: "Sources/ANEFieldfareInstall",
             swiftSettings: strictSwiftSettings
         ),
         .target(
             name: "ANEFieldfareHotpath",
             dependencies: [
                 "ANEFieldfareANECarrier",
-                "ANEFieldfareImportedFormat",
+                "ANEFieldfareModelFormat",
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "Hub", package: "swift-transformers"),
             ],

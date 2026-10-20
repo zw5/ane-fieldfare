@@ -1,6 +1,7 @@
 import Foundation
 public import Metal
 
+/// Q4_0 weights times a block of activations on the tensor-op matmul units.
 public final class MPPPrefillInt4QMM {
     public enum Variant: String, Sendable {
         case control
@@ -82,7 +83,6 @@ public final class MPPPrefillInt4QMM {
     public func encode(commandBuffer: any MTLCommandBuffer,
                        weights: any MTLBuffer, weightsOffset: Int = 0,
                        scales: any MTLBuffer, scalesOffset: Int = 0,
-                       biases: any MTLBuffer, biasesOffset: Int = 0,
                        x: any MTLBuffer,
                        y: any MTLBuffer,
                        m: Int,
@@ -103,7 +103,6 @@ public final class MPPPrefillInt4QMM {
         guard supportedShape,
               weightsOffset >= 0,
               scalesOffset.isMultiple(of: MemoryLayout<UInt16>.stride),
-              biasesOffset.isMultiple(of: MemoryLayout<UInt16>.stride),
               let pso = selectedPSO,
               let encoder = commandBuffer.makeTracedComputeEncoder() else {
             return .fallback
@@ -112,12 +111,11 @@ public final class MPPPrefillInt4QMM {
         encoder.setComputePipelineState(pso)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
-        encoder.setBuffer(biases, offset: biasesOffset, index: 2)
-        encoder.setBuffer(x, offset: 0, index: 3)
-        encoder.setBuffer(y, offset: 0, index: 4)
-        encoder.setValue(UInt32(m), index: 5)
-        encoder.setValue(UInt32(n), index: 6)
-        encoder.setValue(UInt32(k), index: 7)
+        encoder.setBuffer(x, offset: 0, index: 2)
+        encoder.setBuffer(y, offset: 0, index: 3)
+        encoder.setValue(UInt32(m), index: 4)
+        encoder.setValue(UInt32(n), index: 5)
+        encoder.setValue(UInt32(k), index: 6)
         encoder.dispatchThreadgroups(
             MTLSize(width: (n + (useApple10 ? 64 : Self.tileN) - 1)
                         / (useApple10 ? 64 : Self.tileN),

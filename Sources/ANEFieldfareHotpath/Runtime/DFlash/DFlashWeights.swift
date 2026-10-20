@@ -59,27 +59,25 @@ public struct DFlashDrafterConfig: Sendable, Equatable, Codable {
     }
 }
 
-/// An INT4 affine matrix inside `DFlashWeights.buffer`: `rows` rows of
-/// `columns`, group 64, BF16 scales and biases.
+/// A Q4_0 matrix inside `DFlashWeights.buffer`: `rows` rows of `columns`,
+/// one FP16 scale per 32 values.
 struct DFlashMatrix {
     let weights: Int
     let scales: Int
-    let biases: Int
     let rows: Int
     let columns: Int
 
-    /// Rows `range` of this matrix, which are contiguous in all three arrays.
+    /// Rows `range` of this matrix, which are contiguous in both arrays.
     func rows(_ range: Range<Int>) -> DFlashMatrix {
-        let groups = columns / Quantization.groupSize
+        let groups = columns / Quantization.q4GroupSize
         return DFlashMatrix(weights: weights + range.lowerBound * columns / 2,
                             scales: scales + range.lowerBound * groups * 2,
-                            biases: biases + range.lowerBound * groups * 2,
                             rows: range.count, columns: columns)
     }
 }
 
 /// The drafter's weights as installed for this runtime: every projection in
-/// the target's INT4 format (group 64, BF16 scale and bias), Q/K/V and
+/// the target's Q4_0 format (group 32, FP16 scale), Q/K/V and
 /// gate/up concatenated by rows so each is one dispatch, the norms in BF16.
 ///
 /// They live in one file next to the checkpoint, built once from
@@ -89,12 +87,13 @@ struct DFlashMatrix {
 /// no load-time quantization, no 860 MB BF16 staging copy, and its pages
 /// stay clean, so the OS can reclaim them like any cached file.
 ///
-/// Layout: 8-byte magic `GFDFI4\0\1`, UInt32 header length, a JSON header
+/// Layout: 8-byte magic `GFDFI4\0\2`, UInt32 header length, a JSON header
 /// (source fingerprint, config, tensor table) padded to `dataAlignment`, then
 /// the tensors, each 256-byte aligned within the data region.
 struct DFlashWeights {
     static let fileName = "fieldfare-dflash-int4.bin"
-    static let magic: [UInt8] = Array("GFDFI4".utf8) + [0, 1]
+    /// Version 2 is Q4_0; a version 1 (affine) file is rebuilt.
+    static let magic: [UInt8] = Array("GFDFI4".utf8) + [0, 2]
     static let dataAlignment = 16384
 
     struct Layer {
@@ -142,7 +141,7 @@ struct DFlashWeights {
            header.sourceModified == sourceModified, header.config == config {
             return Layout(tensors: header.tensors, dataBytes: header.dataBytes)
         }
-        FileHandle.standardError.write(Data("[dflash] installing INT4 drafter weights to \(installed.path)\n".utf8))
+        FileHandle.standardError.write(Data("[dflash] installing Q4_0 drafter weights to \(installed.path)\n".utf8))
         removeStalePartials(in: directory)
         try build(source: source, into: installed, config: config,
                   fingerprint: (sourceBytes, sourceModified))
@@ -200,10 +199,10 @@ struct DFlashWeights {
         }
         func vector(_ name: String, length: Int) throws -> Int { try offset(name, bytes: length * 2) }
         func matrix(_ name: String, rows: Int, columns: Int) throws -> DFlashMatrix {
-            let groups = rows * columns / Quantization.groupSize
+            let groups = rows * columns / Quantization.q4GroupSize
             return DFlashMatrix(weights: try offset(name + ".q4", bytes: rows * columns / 2),
                                 scales: try offset(name + ".scales", bytes: groups * 2),
-                                biases: try offset(name + ".biases", bytes: groups * 2), rows: rows, columns: columns)
+                                rows: rows, columns: columns)
         }
         let D = config.hiddenSize, F = config.intermediateSize
         self.buffer = buffer
@@ -322,8 +321,7 @@ struct DFlashWeights {
             }
             let total = sources.map(rows).reduce(0, +)
             take(name + ".q4", total * columns / 2)
-            take(name + ".scales", total * columns / Quantization.groupSize * 2)
-            take(name + ".biases", total * columns / Quantization.groupSize * 2)
+            take(name + ".scales", total * columns / Quantization.q4GroupSize * 2)
         }
         for (name, source) in vectors { take(name, vectorLength(source) * 2) }
         let dataBytes = cursor
@@ -367,18 +365,17 @@ struct DFlashWeights {
         let data = unsafe mapped + dataAlignment
 
         for (name, sources, columns) in matrices {
-            guard let w = tensors[name + ".q4"], let s = tensors[name + ".scales"], let b = tensors[name + ".biases"] else {
+            guard let w = tensors[name + ".q4"], let s = tensors[name + ".scales"] else {
                 throw DFlashError.invalidCheckpoint("\(name) was not laid out")
             }
             var row0 = 0
             for sourceName in sources {
                 let n = rows(sourceName)
                 let source = unsafe try st.bf16(sourceName, shape: [n, columns])
-                let groups = columns / Quantization.groupSize
+                let groups = columns / Quantization.q4GroupSize
                 unsafe quantize(source, rows: n, columns: columns,
                                 packed: (data + w).assumingMemoryBound(to: UInt8.self) + row0 * columns / 2,
-                                scales: (data + s).assumingMemoryBound(to: UInt16.self) + row0 * groups,
-                                biases: (data + b).assumingMemoryBound(to: UInt16.self) + row0 * groups)
+                                scales: (data + s).assumingMemoryBound(to: UInt16.self) + row0 * groups)
                 row0 += n
             }
         }
@@ -397,38 +394,35 @@ struct DFlashWeights {
         renamed = true
     }
 
-    /// `[rows][columns]` BF16 to INT4 affine with the target installer's
-    /// rounding: per 64-wide group, scale = (max - min) / 15 and bias = min,
-    /// both rounded to BF16 first.
+    /// `[rows][columns]` BF16 to Q4_0 with ggml's reference rounding: per
+    /// 32-wide group, `d = m / -8` for the first value `m` of largest
+    /// magnitude, stored as FP16, and `q = min(15, trunc(x / d + 8.5))`.
     private static func quantize(_ source: UnsafePointer<UInt16>, rows: Int, columns: Int,
-                                 packed: UnsafeMutablePointer<UInt8>, scales: UnsafeMutablePointer<UInt16>,
-                                 biases: UnsafeMutablePointer<UInt16>) {
-        let groupsPerRow = columns / Quantization.groupSize
+                                 packed: UnsafeMutablePointer<UInt8>, scales: UnsafeMutablePointer<UInt16>) {
+        let group = Quantization.q4GroupSize
+        let groupsPerRow = columns / group
         // SAFETY: iteration `row` reads only row `row` of the source and
-        // writes only that row's packed weights, scales and biases, so no two
+        // writes only that row's packed weights and scales, so no two
         // iterations touch the same bytes, and every write lands before
         // `concurrentPerform` returns.
-        nonisolated(unsafe) let (wp, pp, sp, bp) = unsafe (source, packed, scales, biases)
+        nonisolated(unsafe) let (wp, pp, sp) = unsafe (source, packed, scales)
         // SAFETY: one-time CPU quantization at install, fanned over GCD
         // workers. `install` runs on `BlockingIO`'s queue, so neither the
         // caller nor the workers are Swift concurrency pool threads.
         DispatchQueue.concurrentPerform(iterations: rows) { row in
             for g in 0..<groupsPerRow {
-                let base = row * columns + g * Quantization.groupSize
-                var lo = Float.infinity, hi = -Float.infinity
-                for i in 0..<Quantization.groupSize {
+                let base = row * columns + g * group
+                var amax: Float = 0, extreme: Float = 0
+                for i in 0..<group {
                     let v = unsafe Quantization.bf16ToFloat(wp[base + i])
-                    lo = min(lo, v); hi = max(hi, v)
+                    if amax < abs(v) { amax = abs(v); extreme = v }
                 }
-                let sBits = Quantization.bf16Bits(hi == lo ? 1 : (hi - lo) / 15)
-                let bBits = Quantization.bf16Bits(lo)
-                unsafe sp[row * groupsPerRow + g] = sBits
-                unsafe bp[row * groupsPerRow + g] = bBits
-                let scale = Quantization.bf16ToFloat(sBits), bias = Quantization.bf16ToFloat(bBits)
-                let inv = scale == 0 ? 0 : 1 / scale
-                for i in stride(from: 0, to: Quantization.groupSize, by: 2) {
+                let d = extreme / -8
+                let inv: Float = d != 0 ? 1 / d : 0
+                unsafe sp[row * groupsPerRow + g] = Float16(d).bitPattern
+                for i in stride(from: 0, to: group, by: 2) {
                     func q(_ v: UInt16) -> UInt8 {
-                        UInt8(max(0, min(15, Int(((Quantization.bf16ToFloat(v) - bias) * inv).rounded()))))
+                        UInt8(min(15, Int(Quantization.bf16ToFloat(v) * inv + 8.5)))
                     }
                     unsafe pp[(base + i) / 2] = unsafe q(wp[base + i]) | (q(wp[base + i + 1]) << 4)
                 }

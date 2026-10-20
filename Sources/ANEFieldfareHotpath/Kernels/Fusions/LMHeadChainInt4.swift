@@ -112,7 +112,7 @@ final class LMHeadChainInt4 {
     }
 
     /// Greedy tokens for `rowCount` consecutive FP16 hidden rows starting at
-    /// `hiddenOffset`, written as `UInt32` to `outTokens`. Reads the INT4 table
+    /// `hiddenOffset`, written as `UInt32` to `outTokens`. Reads the Q4_0 table
     /// once for all rows.
     func encodeGreedyRows(commandBuffer: any MTLCommandBuffer,
                           hidden: any MTLBuffer,
@@ -124,8 +124,6 @@ final class LMHeadChainInt4 {
                           weightsOffset: Int = 0,
                           scales: any MTLBuffer,
                           scalesOffset: Int = 0,
-                          biases: any MTLBuffer,
-                          biasesOffset: Int = 0,
                           outTokens: any MTLBuffer,
                           outTokensOffset: Int = 0,
                           d: UInt32,
@@ -151,7 +149,6 @@ final class LMHeadChainInt4 {
         try rowsProjection.encodeRows(commandBuffer: commandBuffer,
                                   weights: weights, weightsOffset: weightsOffset,
                                   scales: scales, scalesOffset: scalesOffset,
-                                  biases: biases, biasesOffset: biasesOffset,
                                   x: xNormedRowsBuffer, y: rowsLogitsBuffer,
                                   m: vocab, n: d, rows: rowCount,
                                   xStrideElements: Int(d), yStrideElements: Int(vocab),
@@ -174,8 +171,6 @@ final class LMHeadChainInt4 {
                              weightsOffset: Int = 0,
                              scales: any MTLBuffer,
                              scalesOffset: Int = 0,
-                             biases: any MTLBuffer,
-                             biasesOffset: Int = 0,
                              outIndices: any MTLBuffer,
                              d: UInt32,
                              rmsEps: Float = 1e-6,
@@ -194,7 +189,6 @@ final class LMHeadChainInt4 {
         try rowsProjection.encodeRowsListed(commandBuffer: commandBuffer,
                                             weights: weights, weightsOffset: weightsOffset,
                                             scales: scales, scalesOffset: scalesOffset,
-                                            biases: biases, biasesOffset: biasesOffset,
                                             ids: table.ids, x: xNormedRowsBuffer, y: rowsLogitsBuffer,
                                             m: UInt32(table.count), n: d, rows: rowCount,
                                             xStrideElements: Int(d), yStrideElements: table.count)
@@ -254,8 +248,6 @@ final class LMHeadChainInt4 {
                             weightsOffset: Int = 0,
                             scales: any MTLBuffer,
                             scalesOffset: Int = 0,
-                            biases: any MTLBuffer,
-                            biasesOffset: Int = 0,
                             outToken: any MTLBuffer,
                             outTokenOffset: Int = 0,
                             d: UInt32,
@@ -287,12 +279,11 @@ final class LMHeadChainInt4 {
             encoder.setBuffer(xNormedBuffer, offset: 0, index: 0)
             encoder.setBuffer(weights, offset: weightsOffset, index: 1)
             encoder.setBuffer(scales, offset: scalesOffset, index: 2)
-            encoder.setBuffer(biases, offset: biasesOffset, index: 3)
-            encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 4)
+            encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 3)
             let dValue = d
             let vocabValue = vocab
-            encoder.setValue(dValue, index: 5)
-            encoder.setValue(vocabValue, index: 6)
+            encoder.setValue(dValue, index: 4)
+            encoder.setValue(vocabValue, index: 5)
 
             let threadgroupSize = MTLSize(
                 width: 32 * Self.rowsPerThreadgroup,
@@ -331,8 +322,6 @@ final class LMHeadChainInt4 {
                                weightsOffset: Int = 0,
                                scales: any MTLBuffer,
                                scalesOffset: Int = 0,
-                               biases: any MTLBuffer,
-                               biasesOffset: Int = 0,
                                normedRows: any MTLBuffer,
                                row: Int,
                                outToken: any MTLBuffer,
@@ -350,13 +339,12 @@ final class LMHeadChainInt4 {
         encoder.setBuffer(normedRows, offset: rowOffset, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)
         encoder.setBuffer(scales, offset: scalesOffset, index: 2)
-        encoder.setBuffer(biases, offset: biasesOffset, index: 3)
-        encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 4)
+        encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 3)
         let dValue = d
         let count = UInt32(table.count)
-        encoder.setValue(dValue, index: 5)
-        encoder.setValue(count, index: 6)
-        encoder.setBuffer(table.ids, offset: 0, index: 7)
+        encoder.setValue(dValue, index: 4)
+        encoder.setValue(count, index: 5)
+        encoder.setBuffer(table.ids, offset: 0, index: 6)
         encoder.dispatchThreadgroups(
             MTLSize(width: rowGroups, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup, height: 1, depth: 1))
@@ -382,7 +370,7 @@ final class LMHeadChainInt4 {
     }
 
     /// The full head's greedy token for each of `rowCount` already
-    /// normalized rows, written as `UInt32` to `outTokens`. Reads the INT4
+    /// normalized rows, written as `UInt32` to `outTokens`. Reads the Q4_0
     /// table once; row r's token is bitwise `encodeGreedyDecode`'s for the
     /// hidden row it was normalized from.
     func encodeGreedyCheck(commandBuffer: any MTLCommandBuffer,
@@ -392,8 +380,6 @@ final class LMHeadChainInt4 {
                            weightsOffset: Int = 0,
                            scales: any MTLBuffer,
                            scalesOffset: Int = 0,
-                           biases: any MTLBuffer,
-                           biasesOffset: Int = 0,
                            outTokens: any MTLBuffer,
                            d: UInt32,
                            vocab: UInt32) {
@@ -408,12 +394,11 @@ final class LMHeadChainInt4 {
         encoder.setBuffer(normedRows, offset: 0, index: 0)
         encoder.setBuffer(weights, offset: weightsOffset, index: 1)
         encoder.setBuffer(scales, offset: scalesOffset, index: 2)
-        encoder.setBuffer(biases, offset: biasesOffset, index: 3)
-        encoder.setBuffer(checkSummariesBuffer, offset: 0, index: 4)
+        encoder.setBuffer(checkSummariesBuffer, offset: 0, index: 3)
         let dValue = d
         let vocabValue = vocab
-        encoder.setValue(dValue, index: 5)
-        encoder.setValue(vocabValue, index: 6)
+        encoder.setValue(dValue, index: 4)
+        encoder.setValue(vocabValue, index: 5)
         encoder.dispatchThreadgroups(
             MTLSize(width: rowGroups, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup, height: 1, depth: 1))

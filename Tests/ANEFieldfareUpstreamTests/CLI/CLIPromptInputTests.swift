@@ -28,7 +28,7 @@ import ANEFieldfareHotpath
           {"type":"text","text":"what is this?"}]}]
         """.utf8).write(to: messages)
 
-        let args = try Args.parse(["--model", "m.gturbo", "--messages-file", messages.path])
+        let args = try Args.parse(["--model", "m.fieldfare", "--messages-file", messages.path])
         guard case .multimodal(_, let images) = try parseInput(args: args) else {
             Issue.record("expected a multimodal input")
             return
@@ -44,12 +44,12 @@ import ANEFieldfareHotpath
     /// `--chat-prompt`, and `--help` already says so.
     @Test func aBareImageNamesTheMissingChatPromptRatherThanAConflict() {
         #expect(throws: ArgsError.requiredMissing("--chat-prompt")) {
-            _ = try Args.parse(["--model", "m.gturbo", "--image", "/tmp/a.png"])
+            _ = try Args.parse(["--model", "m.fieldfare", "--image", "/tmp/a.png"])
         }
         // The conflict message is still right when the conflict is real.
         #expect(throws: ArgsError.mutuallyExclusive("--image", "--messages-file")) {
             _ = try Args.parse([
-                "--model", "m.gturbo", "--image", "/tmp/a.png", "--messages-file", "/tmp/m.json",
+                "--model", "m.fieldfare", "--image", "/tmp/a.png", "--messages-file", "/tmp/m.json",
             ])
         }
     }

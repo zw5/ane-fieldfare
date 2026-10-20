@@ -1,300 +1,172 @@
 import Testing
 import Foundation
+import CryptoKit
 @testable import ANEFieldfareHotpath
-@testable import ANEFieldfareImportedFormat
-@testable import ANEFieldfareRepackTestSupport
-import ANEFieldfareValidationSupport
+import ANEFieldfareModelFormat
 
 @Suite struct ModelLoaderTests {
-    /// Build a minimal valid `model.gturbo/` directory in a temp dir and
-    /// return the URL. Uses the toy ArchConfig `gemma4Toy()`: 2 layers,
-    /// 8 experts, hidden 64, vocab 1024. Resident contains the embedding
-    /// (alias: lmHead), final norm, and the tiny layer-resident tensors needed
-    /// to construct `RealForwardRunner` in unit tests.
-    static func writeToySynthetic() throws -> URL {
+    /// Build a minimal valid `.fieldfare/` directory in a temp dir and return
+    /// its URL. Uses the toy ArchConfig `gemma4Toy()`: 2 layers, 8 experts,
+    /// hidden 64, vocab 1024. The resident file holds every tensor the
+    /// runtime schema requires; Q4_0 weights are 0x11 with scale 0.01, the
+    /// final norm is patterned `0xC0 | (i & 0x3F)`, other BF16 tensors are 1.
+    /// Each expert blob starts with the tag bytes (layer, expert, 0xC1, 0xC2).
+    static func writeToySynthetic(mutate: (inout FieldfareManifest) -> Void = { _ in }) throws -> URL {
         let toy = ArchConfig.gemma4Toy()
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-toy-\(UUID().uuidString)")
-        let exp = dir.appendingPathComponent("packed_experts")
-        try FileManager.default.createDirectory(at: exp, withIntermediateDirectories: true)
+            .appendingPathComponent("fieldfare-toy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("experts"),
+                                                withIntermediateDirectories: true)
 
-        // 1. Resident region: embedding + final norm + runner-init tensors.
-        struct ResidentSpec {
-            let name: String
-            let dtype: UInt8
-            let shape: [UInt32]
-            let weightBytes: UInt64
-            let scaleBytes: UInt64
-            let biasBytes: UInt64
+        var resident = Data()
+        var tensors: [FieldfareTensor] = []
+        func region(_ bytes: Data) -> FieldfareRegion {
+            while resident.count % Int(FieldfareFormat.regionAlignment) != 0 { resident.append(0) }
+            let r = FieldfareRegion(offset: UInt64(resident.count), size: UInt64(bytes.count))
+            resident.append(bytes)
+            return r
         }
-
+        func half(_ value: Float, count: Int) -> Data {
+            var data = Data()
+            for _ in 0..<count { withUnsafeBytes(of: Float16(value).bitPattern.littleEndian) { unsafe data.append(contentsOf: $0) } }
+            return data
+        }
+        func q4(_ name: String, _ rows: Int, _ cols: Int) {
+            tensors.append(FieldfareTensor(
+                name: name, encoding: .q4_0, shape: [UInt64(rows), UInt64(cols)],
+                weights: region(Data(repeating: 0x11, count: rows * cols / 2)),
+                scales: region(half(0.01, count: rows * cols / 32))))
+        }
+        func bf16(_ name: String, _ count: Int, pattern: ((Int) -> UInt8)? = nil) {
+            var data = Data()
+            if let pattern {
+                data = Data((0..<(2 * count)).map(pattern))
+            } else {
+                for _ in 0..<count { withUnsafeBytes(of: Quantization.bf16Bits(1).littleEndian) { unsafe data.append(contentsOf: $0) } }
+            }
+            tensors.append(FieldfareTensor(name: name, encoding: .bf16, shape: [UInt64(count)], weights: region(data)))
+        }
         let d = toy.hiddenSize
-        let f = toy.intermediateSize
-
-        func affine(_ name: String, rows: Int, cols: Int, bits: Int = 4) -> ResidentSpec {
-            let groups = (cols + Quantization.groupSize - 1) / Quantization.groupSize
-            let auxBytes = UInt64(rows * groups * MemoryLayout<UInt16>.stride)
-            return ResidentSpec(name: name, dtype: 0,
-                                shape: [UInt32(rows), UInt32(cols), 0, 0],
-                                weightBytes: UInt64(rows * cols * bits / 8),
-                                scaleBytes: auxBytes, biasBytes: auxBytes)
+        q4("embed_tokens.weight", toy.vocabSize, d)
+        bf16("norm.weight", d) { UInt8(0xC0 | ($0 & 0x3F)) }
+        for layer in 0..<toy.numLayers {
+            let p = "layers.\(layer)."
+            let full = toy.fullAttentionLayerMask[layer] != 0
+            let hd = full ? toy.fullHeadDim : toy.headDim
+            let kv = (full ? toy.numFullKVHeads : toy.numKVHeads) * hd, q = toy.numHeads * hd
+            for name in ["input_layernorm.weight", "post_attention_layernorm.weight",
+                         "pre_feedforward_layernorm.weight", "pre_feedforward_layernorm_2.weight",
+                         "post_feedforward_layernorm_1.weight", "post_feedforward_layernorm_2.weight",
+                         "post_feedforward_layernorm.weight", "router.scale"] { bf16(p + name, d) }
+            bf16(p + "self_attn.q_norm.weight", hd)
+            bf16(p + "self_attn.k_norm.weight", hd)
+            bf16(p + "router.per_expert_scale", toy.numExperts)
+            bf16(p + "layer_scalar", 1)
+            q4(p + "self_attn.q_proj.weight", q, d)
+            q4(p + "self_attn.k_proj.weight", kv, d)
+            if !full { q4(p + "self_attn.v_proj.weight", kv, d) }
+            q4(p + "self_attn.o_proj.weight", d, q)
+            q4(p + "mlp.gate_proj.weight", toy.intermediateSize, d)
+            q4(p + "mlp.up_proj.weight", toy.intermediateSize, d)
+            q4(p + "mlp.down_proj.weight", d, toy.intermediateSize)
+            tensors.append(FieldfareTensor(
+                name: p + "router.proj.weight", encoding: .affine8, shape: [UInt64(toy.numExperts), UInt64(d)],
+                weights: region(Data(repeating: 0x80, count: toy.numExperts * d)),
+                scales: region(Data(count: toy.numExperts * d / 64 * 2)),
+                biases: region(Data(count: toy.numExperts * d / 64 * 2))))
         }
+        try resident.write(to: dir.appendingPathComponent("resident.bin"))
 
-        func bf16(_ name: String, count: Int) -> ResidentSpec {
-            ResidentSpec(name: name, dtype: 1, shape: [UInt32(count), 0, 0, 0],
-                         weightBytes: UInt64(count * MemoryLayout<UInt16>.stride),
-                         scaleBytes: 0, biasBytes: 0)
+        // Expert blob: gate, up, down, each Q4_0 weights then scales.
+        let stride: UInt64 = 16_384
+        var blob: UInt64 = 0
+        func expertTensor(_ name: String, _ rows: Int, _ cols: Int) -> FieldfareTensor {
+            let w = FieldfareRegion(offset: blob, size: UInt64(rows * cols / 2))
+            blob += (w.size + 63) / 64 * 64
+            let s = FieldfareRegion(offset: blob, size: UInt64(rows * cols / 32 * 2))
+            blob += (s.size + 63) / 64 * 64
+            return FieldfareTensor(name: name, encoding: .q4_0, shape: [UInt64(rows), UInt64(cols)],
+                                   weights: w, scales: s)
         }
-
-        func appendU16(_ values: [UInt16], to bytes: inout [UInt8]) {
-            for value in values {
-                bytes.append(UInt8(truncatingIfNeeded: value))
-                bytes.append(UInt8(truncatingIfNeeded: value >> 8))
+        let f = toy.moeIntermediateSize
+        let expertTensors = [expertTensor("gate", f, d), expertTensor("up", f, d), expertTensor("down", d, f)]
+        precondition(blob <= stride, "toy expert blob exceeds stride")
+        var expertFiles: [String] = []
+        for layer in 0..<toy.numLayers {
+            var payload = Data(count: Int(stride) * toy.numExperts)
+            for e in 0..<toy.numExperts {
+                let base = e * Int(stride)
+                payload[base] = UInt8(layer)
+                payload[base + 1] = UInt8(e)
+                payload[base + 2] = 0xC1
+                payload[base + 3] = 0xC2
             }
+            let path = "experts/layer_0\(layer).bin"
+            try payload.write(to: dir.appendingPathComponent(path))
+            expertFiles.append(path)
         }
 
-        func toyExpertBlob(expert: Int) -> (bytes: [UInt8], tensors: [String: [String: Any]]) {
-            var bytes: [UInt8] = []
-            var tensors: [String: [String: Any]] = [:]
-
-            func addProjection(prefix: String, rows: Int, cols: Int, role: Int) {
-                let quantized = (0..<rows).map { row in
-                    Quantization.quantizeInt4Affine((0..<cols).map { col -> Float in
-                        Float(expert + 1) * 0.001
-                            + Float(role + 1) * 0.003
-                            + Float((row % 7) - 3) * 0.0004
-                            + Float((col % 11) - 5) * 0.0002
-                    })
-                }
-                var offset = bytes.count
-                for row in quantized { bytes.append(contentsOf: row.packed) }
-                tensors[prefix] = [
-                    "offset": offset, "size": bytes.count - offset,
-                    "dtype": "U32", "shape": [rows, cols], "bits": 4,
-                ]
-                for (suffix, values) in [("scales", quantized.map(\.scales)),
-                                         ("biases", quantized.map(\.biases))] {
-                    offset = bytes.count
-                    for row in values { appendU16(row, to: &bytes) }
-                    tensors["\(prefix)_\(suffix)"] = [
-                        "offset": offset, "size": bytes.count - offset,
-                        "dtype": "BF16", "shape": [rows, cols / Quantization.groupSize],
-                    ]
-                }
-            }
-
-            addProjection(prefix: "gate", rows: toy.moeIntermediateSize, cols: d, role: 0)
-            addProjection(prefix: "up", rows: toy.moeIntermediateSize, cols: d, role: 1)
-            addProjection(prefix: "down", rows: d, cols: toy.moeIntermediateSize, role: 2)
-            return (bytes, tensors)
+        var files: [String: FieldfareFile] = [:]
+        for path in ["resident.bin"] + expertFiles {
+            let data = try Data(contentsOf: dir.appendingPathComponent(path))
+            files[path] = FieldfareFile(size: UInt64(data.count),
+                                        sha256: SHA256.hash(data: data).map { unsafe String(format: "%02x", $0) }.joined())
         }
-
-        var specs: [ResidentSpec] = [
-            affine("language_model.model.embed_tokens.weight", rows: toy.vocabSize, cols: d),
-            bf16("language_model.model.norm.weight", count: d),
-        ]
-        for L in 0..<toy.numLayers {
-            let isFull = toy.fullAttentionLayerMask[L] != 0
-            let headDim = isFull ? toy.fullHeadDim : toy.headDim
-            let numKVHeads = isFull ? toy.numFullKVHeads : toy.numKVHeads
-            let qDim = toy.numHeads * headDim
-            let kvDim = numKVHeads * headDim
-            let p = "language_model.model.layers.\(L)."
-            specs += [
-                bf16("\(p)input_layernorm.weight", count: d),
-                affine("\(p)self_attn.q_proj.weight", rows: qDim, cols: d),
-                affine("\(p)self_attn.k_proj.weight", rows: kvDim, cols: d),
-                affine("\(p)self_attn.v_proj.weight", rows: kvDim, cols: d),
-                affine("\(p)self_attn.o_proj.weight", rows: d, cols: qDim),
-                bf16("\(p)post_attention_layernorm.weight", count: d),
-                bf16("\(p)pre_feedforward_layernorm.weight", count: d),
-                bf16("\(p)pre_feedforward_layernorm_2.weight", count: d),
-                bf16("\(p)self_attn.q_norm.weight", count: headDim),
-                bf16("\(p)self_attn.k_norm.weight", count: headDim),
-                affine("\(p)mlp.gate_proj.weight", rows: f, cols: d),
-                affine("\(p)mlp.up_proj.weight", rows: f, cols: d),
-                affine("\(p)mlp.down_proj.weight", rows: d, cols: f),
-                bf16("\(p)post_feedforward_layernorm_1.weight", count: d),
-                bf16("\(p)post_feedforward_layernorm_2.weight", count: d),
-                bf16("\(p)post_feedforward_layernorm.weight", count: d),
-                bf16("\(p)layer_scalar", count: 1),
-                bf16("\(p)router.scale", count: d),
-                affine("\(p)router.proj.weight", rows: toy.numExperts, cols: d, bits: 8),
-                bf16("\(p)router.per_expert_scale", count: toy.numExperts),
-            ]
-        }
-
-        let names = specs.map(\.name)
-        let stringTable = Array(names.joined().utf8)
-        let entriesBase = GTurboBinary.indexHeaderBytes
-        let entryBytes = GTurboBinary.indexEntryBytes
-        let stringTableBase = entriesBase + names.count * entryBytes
-        var nameAbsOffsets: [UInt32] = []
-        var cursor = 0
-        for n in names {
-            nameAbsOffsets.append(UInt32(stringTableBase + cursor))
-            cursor += n.utf8.count
-        }
-        let rawIndexBytes = UInt64(stringTableBase + stringTable.count)
-        let alignment = GTurboFormatV1.alignmentBytes
-        let indexBytes = ((rawIndexBytes + alignment - 1) / alignment) * alignment
-
-        var entries: [ResidentEntry] = []
-        var payloadCursor = indexBytes
-        for spec in specs {
-            let payloadAlignment: UInt64 = spec.dtype == 0
-                ? UInt64(MemoryLayout<UInt32>.alignment)
-                : UInt64(MemoryLayout<UInt16>.alignment)
-            payloadCursor = ((payloadCursor + payloadAlignment - 1) / payloadAlignment)
-                * payloadAlignment
-            let weightOffset = payloadCursor
-            let scaleOffset = spec.scaleBytes > 0 ? weightOffset + spec.weightBytes : 0
-            let biasOffset = spec.biasBytes > 0 ? scaleOffset + spec.scaleBytes : 0
-            entries.append(ResidentEntry(
-                name: spec.name, dtype: spec.dtype, logicalShape4: spec.shape,
-                fileOffset: weightOffset, sizeBytes: spec.weightBytes,
-                scaleOffset: scaleOffset, scaleSize: spec.scaleBytes,
-                biasOffset: biasOffset, biasSize: spec.biasBytes))
-            payloadCursor += spec.weightBytes + spec.scaleBytes + spec.biasBytes
-        }
-        let residentSize = payloadCursor - indexBytes
-
-        let totalBytes = Int(indexBytes + residentSize)
-        var fileBuf = [UInt8](repeating: 0, count: totalBytes)
-        fileBuf.replaceSubrange(stringTableBase..<(stringTableBase + stringTable.count),
-                                with: stringTable)
-        fileBuf.withUnsafeMutableBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            unsafe GTurboBinary.writeIndexHeader(into: base,
-                                          indexSize: indexBytes,
-                                          residentSize: residentSize,
-                                          entryCount: UInt64(entries.count))
-            for (i, e) in entries.enumerated() {
-                let dst = unsafe base.advanced(by: entriesBase + i * entryBytes)
-                unsafe GTurboBinary.writeIndexEntry(into: dst, entry: e,
-                                             nameOffset: nameAbsOffsets[i])
-            }
-            // Recognizable resident payload pattern in the norm region only;
-            // other payload bytes stay zero except router.scale unit BF16s.
-            let normStart = Int(entries[1].fileOffset)
-            for i in 0..<Int(entries[1].sizeBytes) {
-                unsafe base.advanced(by: normStart + i)
-                    .assumingMemoryBound(to: UInt8.self)[0] = UInt8(0xC0 | (i & 0x3F))
-            }
-            for entry in entries where entry.dtype == 0 {
-                unsafe memset(base.advanced(by: Int(entry.fileOffset)), 0x11, Int(entry.sizeBytes))
-                if entry.scaleSize > 0 {
-                    let scales = unsafe base.advanced(by: Int(entry.scaleOffset))
-                        .assumingMemoryBound(to: UInt16.self)
-                    for i in 0..<(Int(entry.scaleSize) / MemoryLayout<UInt16>.stride) {
-                        unsafe scales[i] = Quantization.bf16Bits(0.01)
-                    }
-                }
-            }
-            for entry in entries where entry.dtype == 1 && entry.name != "language_model.model.norm.weight" {
-                let dst = unsafe base.advanced(by: Int(entry.fileOffset))
-                    .assumingMemoryBound(to: UInt16.self)
-                for i in 0..<(Int(entry.sizeBytes) / MemoryLayout<UInt16>.stride) {
-                    unsafe dst[i] = Quantization.bf16Bits(1.0)
-                }
-            }
-        }
-        try Data(fileBuf).write(to: dir.appendingPathComponent("model_weights.bin"))
-
-        // 2. packed_experts: 2 layer files, each `expertsPerLayer * expertStride`
-        // bytes. expertStride must be a multiple of getpagesize() (16 KB).
-        let expertStride: UInt64 = 16384
-        let layerBytes = Int(expertStride) * toy.numExperts
-        let blobs = (0..<toy.numExperts).map { toyExpertBlob(expert: $0) }
-        for L in 0..<toy.numLayers {
-            var payload = Data(count: layerBytes)
-            for (E, blob) in blobs.enumerated() {
-                let baseB = E * Int(expertStride)
-                precondition(blob.bytes.count <= Int(expertStride),
-                             "toy expert blob exceeds stride")
-                payload.replaceSubrange(baseB..<(baseB + blob.bytes.count), with: blob.bytes)
-                // Tag bytes so tests can identify which blob is being read.
-                payload[baseB + 0] = UInt8(L)
-                payload[baseB + 1] = UInt8(E)
-                payload[baseB + 2] = 0xC1
-                payload[baseB + 3] = 0xC2
-            }
-            try payload.write(to: exp.appendingPathComponent(unsafe String(format: "layer_%02d.bin", L)))
-        }
-
-        // 3. layout.json
-        let layersArr: [[String: Any]] = (0..<toy.numLayers).map { L in
-            [
-                "layer": L,
-                "file": unsafe String(format: "layer_%02d.bin", L),
-                "experts": blobs.enumerated().map { E, blob -> [String: Any] in
-                    ["expert": E, "offset": UInt64(E) * expertStride,
-                     "size": expertStride, "tensors": blob.tensors]
-                },
-            ]
-        }
-        let layoutRoot: [String: Any] = [
-            "expertStride": expertStride,
-            "numLayers": toy.numLayers,
-            "expertsPerLayer": toy.numExperts,
-            "layers": layersArr,
-        ]
-        let layoutData = try JSONSerialization.data(
-            withJSONObject: layoutRoot, options: [.sortedKeys])
-        try layoutData.write(to: exp.appendingPathComponent("layout.json"))
-
-        // 4. manifest.json
-        var files: [String: [String: Any]] = [
-            "model_weights.bin": ["size": totalBytes],
-            "packed_experts/layout.json": ["size": layoutData.count],
-        ]
-        for L in 0..<toy.numLayers {
-            files[unsafe String(format: "packed_experts/layer_%02d.bin", L)] = ["size": layerBytes]
-        }
-
-        let archDict: [String: Any] = [
-            "hiddenSize": toy.hiddenSize, "ffnIntermediate": toy.intermediateSize,
-            "moeIntermediateSize": toy.moeIntermediateSize,
-            "numHeads": toy.numHeads, "numKVHeads": toy.numKVHeads,
-            "numFullKVHeads": toy.numFullKVHeads,
-            "headDim": toy.headDim, "fullHeadDim": toy.fullHeadDim,
-            "vocabSize": toy.vocabSize, "slidingWindow": toy.slidingWindow,
-            "finalLogitSoftcap": toy.finalLogitSoftcap,
-            "ropeTheta": toy.ropeTheta, "fullRopeTheta": toy.fullRopeTheta,
-            "partialRotaryFactor": toy.partialRotaryFactor,
-            "numLayers": toy.numLayers, "numExperts": toy.numExperts,
-            "topKExperts": toy.topKExperts,
-            "tieWordEmbeddings": toy.tieWordEmbeddings,
-            "attentionKEqV": toy.attentionKEqV,
-            "hiddenActivation": toy.hiddenActivation,
-            "fullAttentionLayerMask": toy.fullAttentionLayerMask.map { Int($0) },
-        ]
-        func quantSlot(_ weightBits: Int) -> [String: Any] {
-            ["weightBits": weightBits, "scheme": "affine", "scaleType": "BF16",
-             "biasType": "BF16", "groupSize": Quantization.groupSize]
-        }
-        let manifestRoot: [String: Any] = [
-            "magic": "GTURBO",
-            "versionMajor": 1,
-            "versionMinor": 0,
-            "flags": ["streamingPresent": true, "turboQuantKV": false, "aneSharedExpert": false],
-            "modelID": "toy",
-            "arch": archDict,
-            "files": files,
-            "expertsPerLayer": toy.numExperts,
-            "numLayers": toy.numLayers,
-            "expertStride": expertStride,
-            "quant": [
-                "embedding": quantSlot(4),
-                "attention": quantSlot(4),
-                "router": quantSlot(8),
-                "sharedExpert": quantSlot(4),
-                "routedExpert": quantSlot(4),
-            ],
-        ]
-        let manifestData = try JSONSerialization.data(withJSONObject: manifestRoot,
-            options: [.sortedKeys, .withoutEscapingSlashes])
-        try manifestData.write(to: dir.appendingPathComponent("manifest.json"))
+        var manifest = FieldfareManifest(
+            modelID: "toy",
+            source: FieldfareSource(files: []),
+            arch: FieldfareArch(
+                hiddenSize: toy.hiddenSize, intermediateSize: toy.intermediateSize,
+                moeIntermediateSize: toy.moeIntermediateSize, numHeads: toy.numHeads,
+                numKVHeads: toy.numKVHeads, numFullKVHeads: toy.numFullKVHeads,
+                headDim: toy.headDim, fullHeadDim: toy.fullHeadDim, vocabSize: toy.vocabSize,
+                slidingWindow: toy.slidingWindow, finalLogitSoftcap: toy.finalLogitSoftcap,
+                ropeTheta: toy.ropeTheta, fullRopeTheta: toy.fullRopeTheta,
+                partialRotaryFactor: toy.partialRotaryFactor, numLayers: toy.numLayers,
+                numExperts: toy.numExperts, topKExperts: toy.topKExperts,
+                tieWordEmbeddings: toy.tieWordEmbeddings, attentionKEqV: toy.attentionKEqV,
+                hiddenActivation: toy.hiddenActivation,
+                fullAttentionLayers: toy.fullAttentionLayerMask.indices.filter { toy.fullAttentionLayerMask[$0] != 0 }),
+            files: files,
+            resident: FieldfareTensorFile(file: "resident.bin", tensors: tensors),
+            experts: FieldfareExperts(stride: stride, perLayer: toy.numExperts, files: expertFiles,
+                                      tensors: expertTensors),
+            vision: nil)
+        mutate(&manifest)
+        // Written without the codec's validation, so tests can build invalid manifests.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(manifest).write(to: dir.appendingPathComponent("manifest.json"))
         return dir
+    }
+}
+
+extension ArchConfig {
+    /// Tiny baseline used across the loader tests: 2 layers (the second full
+    /// attention), hidden 64, vocab 1024, 8 experts. Numbers are intentionally toy.
+    static func gemma4Toy() -> ArchConfig {
+        ArchConfig(
+            hiddenSize: 64,
+            intermediateSize: 256,
+            moeIntermediateSize: 128,
+            numHeads: 4,
+            numKVHeads: 2,
+            numFullKVHeads: 1,
+            headDim: 16,
+            fullHeadDim: 32,
+            vocabSize: 1024,
+            slidingWindow: 256,
+            finalLogitSoftcap: 30.0,
+            ropeTheta: 10_000.0,
+            fullRopeTheta: 1_000_000.0,
+            partialRotaryFactor: 0.25,
+            numLayers: 2,
+            numExperts: 8,
+            topKExperts: 2,
+            tieWordEmbeddings: true,
+            attentionKEqV: true,
+            fullAttentionLayerMask: [0, 1],
+            hiddenActivation: "gelu_pytorch_tanh"
+        )
     }
 }

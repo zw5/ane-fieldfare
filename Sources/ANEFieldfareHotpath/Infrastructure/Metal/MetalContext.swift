@@ -131,7 +131,6 @@ public final class MetalContext: Sendable {
     /// Production shader modules compiled into the shared runtime library.
     private static let shaderModules: [String] = [
         "dequant_int4",
-        "dequant_int8",
         "rmsnorm",
         "attention",
         "moe",
@@ -149,7 +148,6 @@ public final class MetalContext: Sendable {
         "attention": "Metal/Attention",
         "dequant_int4": "Metal/Quant",
         "dflash": "Metal/DFlash",
-        "dequant_int8": "Metal/Quant",
         "fused": "Metal/Fusions",
         "logit": "Metal/Sampling",
         "moe": "Metal/MoE",

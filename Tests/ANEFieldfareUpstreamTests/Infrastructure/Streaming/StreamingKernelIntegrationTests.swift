@@ -5,53 +5,47 @@ import Metal
 @testable import ANEFieldfareHotpath
 import ANEFieldfareValidationSupport
 
-/// End-to-end: write one synthetic affine-quantized expert blob (packed
-/// nibbles + BF16 scales + BF16 biases), open it through `MappedExpertLayer`,
+/// End-to-end: write one synthetic Q4_0 expert blob (packed nibbles + FP16
+/// scales), open it through `MappedExpertLayer`,
 /// read it into the page cache, run `dequant_int4_gemv`, and compare against
 /// an FP32 CPU reference. Covers the streaming -> kernel data path.
 @Suite struct StreamingKernelIntegrationTests {
 
     /// Layout for a single "expert blob" used in this test.
     ///   M = 64  output rows
-    ///   N = 128 input columns          (2 groups of 64 per row)
+    ///   N = 128 input columns          (4 groups of 32 per row)
     /// Packed:   M * N/2                 = 4096 bytes
-    /// Scales:   M * N/groupSize * 2 B   =  256 bytes BF16
-    /// Biases:   M * N/groupSize * 2 B   =  256 bytes BF16
-    /// We page-align each of the three regions so MTLBuffer offsets are legal.
+    /// Scales:   M * N/32 * 2 B          =  512 bytes FP16
+    /// We page-align both regions so MTLBuffer offsets are legal.
     private struct Sizes {
         static let M = 64
         static let N = 128
-        static let groupsPerRow = N / Quantization.groupSize  // 2
-        static let packedBytes  = M * (N / 2)                 // 4096
-        static let scalesBytes  = M * groupsPerRow * MemoryLayout<UInt16>.size  // 256
-        static let biasesBytes  = M * groupsPerRow * MemoryLayout<UInt16>.size  // 256
+        static let groupsPerRow = N / Quantization.q4GroupSize  // 4
+        static let packedBytes  = M * (N / 2)                   // 4096
+        static let scalesBytes  = M * groupsPerRow * MemoryLayout<UInt16>.size  // 512
     }
 
-    /// Build the in-memory bytes that we'll write to the fake .gturbo.
+    /// Build the in-memory bytes that we'll write to the fake layer file.
     /// Layout inside one expert blob (page-aligned externally):
     ///   [0,        packedBytes)              packed nibbles, row-major
-    ///   [scalesOff, scalesOff + scalesBytes) BF16 scales, row-major
-    ///   [biasesOff, biasesOff + biasesBytes) BF16 biases, row-major
+    ///   [scalesOff, scalesOff + scalesBytes) FP16 scales, row-major
     private static func buildExpertBlob(weightsFp32: [[Float]],
                                         pageSize: Int)
-        -> (blob: [UInt8], scalesOffset: Int, biasesOffset: Int, blobSize: Int)
+        -> (blob: [UInt8], scalesOffset: Int, blobSize: Int)
     {
         precondition(weightsFp32.count == Sizes.M)
         precondition(weightsFp32[0].count == Sizes.N)
 
         var packed: [UInt8] = []
         var scales: [UInt16] = []
-        var biases: [UInt16] = []
         for row in weightsFp32 {
-            let q = Quantization.quantizeInt4Affine(row)
+            let q = Quantization.quantizeQ4_0(row)
             packed += q.packed
             scales += q.scales
-            biases += q.biases
         }
 
         let scalesOffset = roundUp(Sizes.packedBytes, to: pageSize)
-        let biasesOffset = roundUp(scalesOffset + Sizes.scalesBytes, to: pageSize)
-        let blobSize     = roundUp(biasesOffset + Sizes.biasesBytes, to: pageSize)
+        let blobSize     = roundUp(scalesOffset + Sizes.scalesBytes, to: pageSize)
 
         func littleEndian(_ values: [UInt16]) -> [UInt8] {
             values.flatMap { [UInt8(truncatingIfNeeded: $0), UInt8(truncatingIfNeeded: $0 >> 8)] }
@@ -60,9 +54,7 @@ import ANEFieldfareValidationSupport
         blob.replaceSubrange(0..<Sizes.packedBytes, with: packed)
         blob.replaceSubrange(scalesOffset..<(scalesOffset + Sizes.scalesBytes),
                              with: littleEndian(scales))
-        blob.replaceSubrange(biasesOffset..<(biasesOffset + Sizes.biasesBytes),
-                             with: littleEndian(biases))
-        return (blob, scalesOffset, biasesOffset, blobSize)
+        return (blob, scalesOffset, blobSize)
     }
 
     private static func roundUp(_ n: Int, to pageSize: Int) -> Int {
@@ -72,8 +64,8 @@ import ANEFieldfareValidationSupport
     private static func cpuReferenceGemv(weightsFp32: [[Float]], x: [Float]) -> [Float] {
         var y = [Float](repeating: 0, count: Sizes.M)
         for m in 0..<Sizes.M {
-            let q = Quantization.quantizeInt4Affine(weightsFp32[m])
-            let w = Quantization.dequantizeInt4Affine(q, n: Sizes.N)
+            let q = Quantization.quantizeQ4_0(weightsFp32[m])
+            let w = Quantization.dequantizeQ4_0(q, n: Sizes.N)
             var acc: Float = 0
             for n in 0..<Sizes.N { acc += w[n] * x[n] }
             y[m] = acc
@@ -91,7 +83,7 @@ import ANEFieldfareValidationSupport
         let xFp16: [Float16] = xFp32.map { Float16($0) }
 
         let pageSize = Int(getpagesize())
-        let (blob, scalesOffset, biasesOffset, blobSize) =
+        let (blob, scalesOffset, blobSize) =
             Self.buildExpertBlob(weightsFp32: weights, pageSize: pageSize)
 
         let headerSize = pageSize
@@ -136,7 +128,6 @@ import ANEFieldfareValidationSupport
         kernel.encode(commandBuffer: cmd,
                       weights: weightsBuf, weightsOffset: 0,
                       scales: weightsBuf, scalesOffset: scalesOffset,
-                      biases: weightsBuf, biasesOffset: biasesOffset,
                       x: xBuf, y: yBuf,
                       m: UInt32(Sizes.M), n: UInt32(Sizes.N))
         cmd.commit()

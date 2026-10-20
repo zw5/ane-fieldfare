@@ -18,14 +18,13 @@ import ANEFieldfareValidationSupport
                             matchSingleRow: Bool = false) throws {
         var rng = SeedTree(seed).key("int4-small-batch-m\(m)-n\(n)-r\(rows)-off\(weightByteOffset)")
         let weightRows = (0..<m).map { _ in
-            Quantization.quantizeInt4Affine((0..<n).map { _ in rng.uniform(-0.5, 0.5) })
+            Quantization.quantizeQ4_0((0..<n).map { _ in rng.uniform(-0.5, 0.5) })
         }
         var packed = [UInt8](repeating: 0, count: weightByteOffset)
-        var scales: [UInt16] = [], biases: [UInt16] = []
+        var scales: [UInt16] = []
         for row in weightRows {
             packed += row.packed
             scales += row.scales
-            biases += row.biases
         }
         let x = (0..<(rows * n)).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
 
@@ -33,15 +32,13 @@ import ANEFieldfareValidationSupport
         let kernel = try DequantInt4GEMV(context: ctx)
         guard let wBuf = unsafe ctx.device.makeBuffer(bytes: packed, length: packed.count, options: .storageModeShared),
               let sBuf = unsafe ctx.device.makeBuffer(bytes: scales, length: scales.count * 2, options: .storageModeShared),
-              let bBuf = unsafe ctx.device.makeBuffer(bytes: biases, length: biases.count * 2, options: .storageModeShared),
               let xBuf = Fp16Buffer.make(ctx.device, halves: x),
               let yBuf = Fp16Buffer.make(ctx.device, count: rows * m),
               let cmd = ctx.queue.makeCommandBuffer() else {
             Issue.record("allocation failed"); return
         }
         try kernel.encodeRows(commandBuffer: cmd, weights: wBuf, weightsOffset: weightByteOffset,
-                          scales: sBuf, scalesOffset: 0, biases: bBuf, biasesOffset: 0,
-                          x: xBuf, y: yBuf, m: UInt32(m), n: UInt32(n), rows: rows,
+                          scales: sBuf, scalesOffset: 0,                          x: xBuf, y: yBuf, m: UInt32(m), n: UInt32(n), rows: rows,
                           xStrideElements: n, yStrideElements: m)
         cmd.commit()
         cmd.waitUntilCompleted()
@@ -59,8 +56,7 @@ import ANEFieldfareValidationSupport
             guard let single = Fp16Buffer.make(ctx.device, count: m),
                   let cb = ctx.queue.makeCommandBuffer() else { Issue.record("allocation failed"); return }
             kernel.encode(commandBuffer: cb, weights: wBuf, weightsOffset: weightByteOffset,
-                          scales: sBuf, scalesOffset: 0, biases: bBuf, biasesOffset: 0,
-                          x: xBuf, xOffset: r * n * 2, y: single, m: UInt32(m), n: UInt32(n))
+                          scales: sBuf, scalesOffset: 0,                          x: xBuf, xOffset: r * n * 2, y: single, m: UInt32(m), n: UInt32(n))
             cb.commit()
             cb.waitUntilCompleted()
             let gemv = Fp16Buffer.read(single, count: m)
@@ -88,7 +84,7 @@ import ANEFieldfareValidationSupport
         let m = 384, n = 2816
         var rng = SeedTree(0xBF).key("int4-bf16-rows-\(rows)")
         let weightRows = (0..<m).map { _ in
-            Quantization.quantizeInt4Affine((0..<n).map { _ in rng.uniform(-0.5, 0.5) })
+            Quantization.quantizeQ4_0((0..<n).map { _ in rng.uniform(-0.5, 0.5) })
         }
         let x = (0..<(rows * n)).map { _ in Quantization.bf16Bits(rng.uniform(-1.0, 1.0)) }
         let ctx = try MetalContext()
@@ -100,11 +96,11 @@ import ANEFieldfareValidationSupport
             }
         }
         let w = buffer(weightRows.flatMap(\.packed)), sc = buffer(weightRows.flatMap(\.scales))
-        let bi = buffer(weightRows.flatMap(\.biases)), xb = buffer(x)
+        let xb = buffer(x)
         let y = device.makeBuffer(length: rows * m * 2, options: .storageModeShared)!
         let cb = ctx.queue.makeCommandBuffer()!
         try kernel.encodeRows(commandBuffer: cb, weights: w, weightsOffset: 0, scales: sc, scalesOffset: 0,
-                              biases: bi, biasesOffset: 0, x: xb, y: y, m: UInt32(m), n: UInt32(n), rows: rows,
+                              x: xb, y: y, m: UInt32(m), n: UInt32(n), rows: rows,
                               xStrideElements: n, yStrideElements: m, types: .bf16)
         cb.commit(); cb.waitUntilCompleted()
         let out = unsafe y.contents().assumingMemoryBound(to: UInt16.self)

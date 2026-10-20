@@ -3,15 +3,15 @@ import Metal
 @testable import ANEFieldfareHotpath
 
 final class ANEQuantizedCarrierTests: XCTestCase {
-    func testDistinctAffineWeightsPartialBatchAndRejectedOutput() throws {
+    func testDistinctQ4_0WeightsPartialBatchAndRejectedOutput() throws {
         let context = try MetalContext()
         let backend = try ANERoutedPrefillBackend(context: context, layers: 1)
         let d = 2816, f = 704, rows = 3
+        // The installed expert blob: each projection's weights, then its FP16 scales.
         let w = [0, 1_115_136, 2_230_272], s = [991_232, 2_106_368, 3_221_504]
-        let b = [1_053_184, 2_168_320, 3_283_456]
-        let offsets = MoEExpertOffsets(gateWOff: UInt32(w[0]), gateSOff: UInt32(s[0]), gateBOff: UInt32(b[0]),
-            upWOff: UInt32(w[1]), upSOff: UInt32(s[1]), upBOff: UInt32(b[1]),
-            downWOff: UInt32(w[2]), downSOff: UInt32(s[2]), downBOff: UInt32(b[2]))
+        let offsets = MoEExpertOffsets(gateWOff: UInt32(w[0]), gateSOff: UInt32(s[0]),
+            upWOff: UInt32(w[1]), upSOff: UInt32(s[1]),
+            downWOff: UInt32(w[2]), downSOff: UInt32(s[2]))
         var views: [TensorView] = []
         var referenceWeights: [[Double]] = []
         for slot in 0..<rows {
@@ -20,24 +20,21 @@ final class ANEQuantizedCarrierTests: XCTestCase {
             let bytes = unsafe blob.contents().advanced(by: 64).assumingMemoryBound(to: UInt8.self)
             var expanded = [Double](repeating: 0, count: 3 * d * f)
             for m in 0..<3 {
-                for g in 0..<(d * f / 64) {
-                    let scale = Float(1 + (g + slot) % 3) / 512
-                    let bias = scale * (-7 + Float((g + m) % 5) / 4)
-                    let sh = UInt16(scale.bitPattern >> 16), bh = UInt16(bias.bitPattern >> 16)
+                for g in 0..<(d * f / 32) {
+                    let scale = Float16(Float(1 + (g + slot) % 3) / 512 * (g % 2 == 0 ? 1 : -1))
+                    let sh = scale.bitPattern
                     unsafe bytes[s[m] + g * 2] = UInt8(truncatingIfNeeded: sh)
                     unsafe bytes[s[m] + g * 2 + 1] = UInt8(sh >> 8)
-                    unsafe bytes[b[m] + g * 2] = UInt8(truncatingIfNeeded: bh)
-                    unsafe bytes[b[m] + g * 2 + 1] = UInt8(bh >> 8)
-                    for k in 0..<64 {
-                        let i = g * 64 + k, code = (i / 17 + i * 7 + slot * 3 + m * 5) % 16
+                    for k in 0..<32 {
+                        let i = g * 32 + k, code = (i / 17 + i * 7 + slot * 3 + m * 5) % 16
                         unsafe bytes[w[m] + i / 2] |= UInt8(code << ((i % 2) * 4))
-                        expanded[m * d * f + i] = Double(Float16(Float(code) * scale + bias))
+                        expanded[m * d * f + i] = Double(Float16((Float(code) - 8) * Float(scale)))
                     }
                 }
             }
             referenceWeights.append(expanded)
             views.append(TensorView(buffer: blob, offset: 64, length: 3_358_720,
-                scaleOffset: 0, scaleLength: 0, biasOffset: 0, biasLength: 0, shape: (0,0,0,0), dtype: 0))
+                scaleOffset: 0, scaleLength: 0, shape: (0,0,0,0)))
         }
         let hidden = try XCTUnwrap(context.device.makeBuffer(length: rows * d * 2, options: .storageModeShared))
         let inputs = unsafe hidden.contents().assumingMemoryBound(to: Float16.self)
@@ -64,7 +61,7 @@ final class ANEQuantizedCarrierTests: XCTestCase {
                 if unsafe Double(packed[base + lane + middle]) != referenceWeights[slot][source] { packErrors += 1 }
             }
         } } }
-        XCTAssertEqual(packErrors, 0, "Metal expansion must exactly match all BF16-affine CPU weights")
+        XCTAssertEqual(packErrors, 0, "Metal expansion must exactly match all Q4_0 CPU weights")
         let consumer = try backend.submit(bank: 0, producer: producer, partials: partials, pairs: pairBuffer)
         let unrelatedConsumer = try XCTUnwrap(context.queue.makeCommandBuffer())
         XCTAssertThrowsError(try backend.finish(bank: 0, consumer: unrelatedConsumer))
@@ -95,12 +92,12 @@ final class ANEQuantizedCarrierTests: XCTestCase {
                 maxError = max(maxError, abs(error))
             }
         }
-        // Full FP64 affine/GELU oracle, independently indexed from compact
+        // Full FP64 Q4_0/GELU oracle, independently indexed from compact
         // checkpoint layout. ANE's FP16 intermediates are explicitly tolerated.
         XCTAssertLessThan(maxError, 0.0002)
         XCTAssertLessThan(sqrt(errorSquared / referenceSquared), 0.02)
         XCTAssertEqual(backend.evaluatedRows, 3)
-        print("ANE affine oracle: 8448 outputs, max_abs=\(maxError), relative_l2=\(sqrt(errorSquared / referenceSquared))")
+        print("ANE Q4_0 oracle: 8448 outputs, max_abs=\(maxError), relative_l2=\(sqrt(errorSquared / referenceSquared))")
         unsafe inputs[0] = .nan
         let invalidProducer = try backend.prepareBatch(bank: 1, jobs: jobs, offsets: offsets, hidden: hidden, pairs: pairBuffer)
         let invalidConsumer = try backend.submit(bank: 1, producer: invalidProducer, partials: partials, pairs: pairBuffer)

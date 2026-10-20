@@ -1,6 +1,6 @@
 import Metal
 
-/// MLX-affine INT4 matrix-vector multiplication.
+/// Q4_0 matrix-vector multiplication.
 /// Eight SIMD groups process eight output rows per threadgroup.
 final class DequantInt4GEMV {
     private struct Shape: Hashable {
@@ -73,7 +73,6 @@ final class DequantInt4GEMV {
     func encodeRows(commandBuffer: any MTLCommandBuffer,
                     weights: any MTLBuffer, weightsOffset: Int,
                     scales: any MTLBuffer, scalesOffset: Int,
-                    biases: any MTLBuffer, biasesOffset: Int,
                     x: any MTLBuffer, xOffset: Int = 0,
                     y: any MTLBuffer, yOffset: Int = 0,
                     m: UInt32, n: UInt32, rows: Int,
@@ -85,7 +84,6 @@ final class DequantInt4GEMV {
             try encodeRowsMatrix(commandBuffer: commandBuffer,
                              weights: weights, weightsOffset: weightsOffset,
                              scales: scales, scalesOffset: scalesOffset,
-                             biases: biases, biasesOffset: biasesOffset,
                              x: x, xOffset: xOffset, y: y, yOffset: yOffset,
                              m: m, n: n, rows: rows,
                              xStrideElements: xStrideElements, yStrideElements: yStrideElements,
@@ -106,11 +104,10 @@ final class DequantInt4GEMV {
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
-        encoder.setBuffer(biases, offset: biasesOffset, index: 2)
-        encoder.setBuffer(x, offset: xOffset, index: 3)
-        encoder.setBuffer(y, offset: yOffset, index: 4)
+        encoder.setBuffer(x, offset: xOffset, index: 2)
+        encoder.setBuffer(y, offset: yOffset, index: 3)
         let values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
-        for i in values.indices { encoder.setValue(values[i], index: 5 + i) }
+        for i in values.indices { encoder.setValue(values[i], index: 4 + i) }
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(m) + 8 * weightRows - 1) / (8 * weightRows), height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -128,7 +125,6 @@ final class DequantInt4GEMV {
     func encodeRowsListed(commandBuffer: any MTLCommandBuffer,
                           weights: any MTLBuffer, weightsOffset: Int,
                           scales: any MTLBuffer, scalesOffset: Int,
-                          biases: any MTLBuffer, biasesOffset: Int,
                           ids: any MTLBuffer, x: any MTLBuffer, y: any MTLBuffer,
                           m: UInt32, n: UInt32, rows: Int,
                           xStrideElements: Int, yStrideElements: Int) throws {
@@ -137,7 +133,6 @@ final class DequantInt4GEMV {
         try encodeRowsMatrix(commandBuffer: commandBuffer,
                              weights: weights, weightsOffset: weightsOffset,
                              scales: scales, scalesOffset: scalesOffset,
-                             biases: biases, biasesOffset: biasesOffset,
                              x: x, xOffset: 0, y: y, yOffset: 0,
                              m: m, n: n, rows: rows,
                              xStrideElements: xStrideElements, yStrideElements: yStrideElements,
@@ -147,7 +142,6 @@ final class DequantInt4GEMV {
     private func encodeRowsMatrix(commandBuffer: any MTLCommandBuffer,
                                   weights: any MTLBuffer, weightsOffset: Int,
                                   scales: any MTLBuffer, scalesOffset: Int,
-                                  biases: any MTLBuffer, biasesOffset: Int,
                                   x: any MTLBuffer, xOffset: Int, y: any MTLBuffer, yOffset: Int,
                                   m: UInt32, n: UInt32, rows: Int,
                                   xStrideElements: Int, yStrideElements: Int, types: RowsTypes,
@@ -168,14 +162,13 @@ final class DequantInt4GEMV {
             maxTotalThreadsPerThreadgroup: 128)
         guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(pipeline)
-        if let ids { encoder.setBuffer(ids, offset: 0, index: 10) }
+        if let ids { encoder.setBuffer(ids, offset: 0, index: 9) }
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
-        encoder.setBuffer(biases, offset: biasesOffset, index: 2)
-        encoder.setBuffer(x, offset: xOffset, index: 3)
-        encoder.setBuffer(y, offset: yOffset, index: 4)
+        encoder.setBuffer(x, offset: xOffset, index: 2)
+        encoder.setBuffer(y, offset: yOffset, index: 3)
         let values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
-        for i in values.indices { encoder.setValue(values[i], index: 5 + i) }
+        for i in values.indices { encoder.setValue(values[i], index: 4 + i) }
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(m) + 31) / 32, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
@@ -187,8 +180,6 @@ final class DequantInt4GEMV {
                 weightsOffset: Int = 0,
                 scales: any MTLBuffer,
                 scalesOffset: Int = 0,
-                biases: any MTLBuffer,
-                biasesOffset: Int = 0,
                 x: any MTLBuffer,
                 xOffset: Int = 0,
                 y: any MTLBuffer,
@@ -197,8 +188,7 @@ final class DequantInt4GEMV {
                 n: UInt32) {
         precondition(n % UInt32(Quantization.groupSize) == 0,
                      "N must be a multiple of \(Quantization.groupSize)")
-        // The kernel reads packed weights through a `ushort*`; the repacker
-        // guarantees two-byte sub-tensor alignment but not four-byte alignment.
+        // The kernel reads packed weights through a `ushort*`.
         precondition(weightsOffset % 2 == 0,
                      "dequant_int4_gemv_simd needs a 2-aligned weightsOffset, got \(weightsOffset)")
         guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
@@ -206,13 +196,12 @@ final class DequantInt4GEMV {
             specializedPipelines[Shape(m: m, n: n)] ?? pipeline)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
-        encoder.setBuffer(biases, offset: biasesOffset, index: 2)
-        encoder.setBuffer(x, offset: xOffset, index: 3)
-        encoder.setBuffer(y, offset: yOffset, index: 4)
+        encoder.setBuffer(x, offset: xOffset, index: 2)
+        encoder.setBuffer(y, offset: yOffset, index: 3)
         let mValue = m
         let nValue = n
-        encoder.setValue(mValue, index: 5)
-        encoder.setValue(nValue, index: 6)
+        encoder.setValue(mValue, index: 4)
+        encoder.setValue(nValue, index: 5)
 
         let threadgroupSize = MTLSize(
             width: 32 * Self.rowsPerThreadgroup,

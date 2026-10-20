@@ -22,10 +22,7 @@ import ANEFieldfareValidationSupport
                        length: 64,
                        scaleOffset: 0,
                        scaleLength: 0,
-                       biasOffset: 0,
-                       biasLength: 0,
-                       shape: (0, UInt32(index), 0, 0),
-                       dtype: 0)
+                       shape: (0, UInt32(index), 0, 0))
         }
     }
 
@@ -50,10 +47,7 @@ import ANEFieldfareValidationSupport
                               length: UInt64(pool.stride),
                               scaleOffset: 0,
                               scaleLength: 0,
-                              biasOffset: 0,
-                              biasLength: 0,
-                              shape: (0, UInt32(expertID), 0, 0),
-                              dtype: 0)
+                              shape: (0, UInt32(expertID), 0, 0))
         }
     }
 
@@ -69,28 +63,26 @@ import ANEFieldfareValidationSupport
         var stride = 0
         for expert in 0..<numExperts {
             var bytes: [UInt8] = []
-            // Packed weights, scales, then biases for gate, up and down.
+            // Packed weights, then scales, for gate, up and down.
             var o: [UInt32] = []
             for (role, shape) in [(rows: f, cols: d), (rows: f, cols: d), (rows: d, cols: f)].enumerated() {
                 let rows = Self.syntheticRows(rows: shape.rows, cols: shape.cols, expert: expert, role: role)
-                    .map { Quantization.quantizeInt4Affine($0) }
+                    .map { Quantization.quantizeQ4_0($0) }
                 o.append(UInt32(bytes.count))
                 for row in rows { bytes.append(contentsOf: row.packed) }
                 o.append(UInt32(bytes.count))
                 for row in rows { Self.appendU16(row.scales, to: &bytes) }
-                o.append(UInt32(bytes.count))
-                for row in rows { Self.appendU16(row.biases, to: &bytes) }
             }
-            let currentOffsets = MoEExpertOffsets(gateWOff: o[0], gateSOff: o[1], gateBOff: o[2],
-                                                  upWOff: o[3], upSOff: o[4], upBOff: o[5],
-                                                  downWOff: o[6], downSOff: o[7], downBOff: o[8])
+            let currentOffsets = MoEExpertOffsets(gateWOff: o[0], gateSOff: o[1],
+                                                  upWOff: o[2], upSOff: o[3],
+                                                  downWOff: o[4], downSOff: o[5])
             if offsets == nil {
                 offsets = currentOffsets
                 stride = bytes.count
             } else {
                 #expect(stride == bytes.count)
                 #expect(offsets!.gateWOff == currentOffsets.gateWOff)
-                #expect(offsets!.downBOff == currentOffsets.downBOff)
+                #expect(offsets!.downSOff == currentOffsets.downSOff)
             }
             allBytes.append(contentsOf: bytes)
         }
@@ -131,20 +123,20 @@ import ANEFieldfareValidationSupport
         let o = pool.offsets
         for pair in routes.sortedPairs {
             let expertBase = Int(pair.expert) * pool.stride
-            func dot(_ w: UInt32, _ s: UInt32, _ b: UInt32, row: Int, n: Int, x: [Float]) -> Float {
+            func dot(_ w: UInt32, _ s: UInt32, row: Int, n: Int, x: [Float]) -> Float {
                 Self.cpuInt4Dot(bytes: pool.bytes, base: expertBase,
-                                wOff: Int(w), sOff: Int(s), bOff: Int(b), row: row, n: n, x: x)
+                                wOff: Int(w), sOff: Int(s), row: row, n: n, x: x)
             }
             let xBase = Int(pair.token) * hiddenStride
             let x = (0..<d).map { Float(hidden[xBase + $0]) }
             let act = (0..<f).map { row -> Float in
-                let gate = dot(o.gateWOff, o.gateSOff, o.gateBOff, row: row, n: d, x: x)
-                let up = dot(o.upWOff, o.upSOff, o.upBOff, row: row, n: d, x: x)
+                let gate = dot(o.gateWOff, o.gateSOff, row: row, n: d, x: x)
+                let up = dot(o.upWOff, o.upSOff, row: row, n: d, x: x)
                 return Float(Float16(MoeRef.geluTanh([gate])[0] * up))
             }
             let outBase = (Int(pair.token) * topK + Int(pair.rank)) * d
             for row in 0..<d {
-                out[outBase + row] = Float16(dot(o.downWOff, o.downSOff, o.downBOff, row: row, n: f, x: act))
+                out[outBase + row] = Float16(dot(o.downWOff, o.downSOff, row: row, n: f, x: act))
             }
         }
         return out
@@ -154,24 +146,22 @@ import ANEFieldfareValidationSupport
                                    base: Int,
                                    wOff: Int,
                                    sOff: Int,
-                                   bOff: Int,
                                    row: Int,
                                    n: Int,
                                    x: [Float]) -> Float {
-        let groups = n / Quantization.groupSize
+        let group = Quantization.q4GroupSize
+        let groups = n / group
         let rowBytes = n / 2
         let wRow = base + wOff + row * rowBytes
         let sRow = base + sOff + row * groups * MemoryLayout<UInt16>.stride
-        let bRow = base + bOff + row * groups * MemoryLayout<UInt16>.stride
         var acc: Float = 0
-        for group in 0..<groups {
-            let scale = Quantization.bf16ToFloat(Self.readU16(bytes, sRow + group * 2))
-            let bias = Quantization.bf16ToFloat(Self.readU16(bytes, bRow + group * 2))
-            for k in 0..<Quantization.groupSize {
-                let col = group * Quantization.groupSize + k
+        for g in 0..<groups {
+            let scale = Float(Float16(bitPattern: Self.readU16(bytes, sRow + g * 2)))
+            for k in 0..<group {
+                let col = g * group + k
                 let packed = bytes[wRow + col / 2]
                 let q = (k & 1) == 0 ? Float(packed & 0x0F) : Float(packed >> 4)
-                acc += (q * scale + bias) * x[col]
+                acc += (q - 8) * scale * x[col]
             }
         }
         return acc

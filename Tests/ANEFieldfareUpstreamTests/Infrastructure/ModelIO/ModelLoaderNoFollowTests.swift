@@ -8,9 +8,9 @@ extension ModelLoaderTests {
     @Test func acceptsRootSymlinkAndRetainsOpenedDirectory() throws {
         let target = try Self.writeToySynthetic()
         let alias = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-root-\(UUID().uuidString)")
+            .appendingPathComponent("fieldfare-root-\(UUID().uuidString)")
         let replacement = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-replacement-\(UUID().uuidString)")
+            .appendingPathComponent("fieldfare-replacement-\(UUID().uuidString)")
         defer {
             try? FileManager.default.removeItem(at: alias)
             try? FileManager.default.removeItem(at: target)
@@ -28,11 +28,14 @@ extension ModelLoaderTests {
         _ = try model.routedExpertViews(layer: 0, experts: [0])[0]
     }
 
-    @Test(arguments: ["manifest.json", "packed_experts"])
+    /// A symlinked file or directory inside the model is refused when it is
+    /// opened: the manifest and resident file at load, an expert layer on
+    /// its first use.
+    @Test(arguments: ["manifest.json", "resident.bin", "experts"])
     func rejectsSymlinkedInstallEntry(_ entry: String) throws {
         let dir = try Self.writeToySynthetic()
         let outside = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-outside-\(UUID().uuidString)")
+            .appendingPathComponent("fieldfare-outside-\(UUID().uuidString)")
         defer {
             try? FileManager.default.removeItem(at: dir)
             try? FileManager.default.removeItem(at: outside)
@@ -43,19 +46,20 @@ extension ModelLoaderTests {
         let device = try #require(MTLCreateSystemDefaultDevice())
 
         #expect(throws: ModelError.self) {
-            try Model.load(directoryURL: dir, device: device, expecting: .gemma4Toy())
+            let model = try Model.load(directoryURL: dir, device: device, expecting: .gemma4Toy())
+            _ = try model.routedExpertViews(layer: 0, experts: [0])
         }
     }
 
     @Test func rejectsRoutedLayerLeafSymlinkOnLazyOpen() throws {
         let dir = try Self.writeToySynthetic()
         let outside = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-layer-\(UUID().uuidString).bin")
+            .appendingPathComponent("fieldfare-layer-\(UUID().uuidString).bin")
         defer {
             try? FileManager.default.removeItem(at: dir)
             try? FileManager.default.removeItem(at: outside)
         }
-        let layer = dir.appendingPathComponent("packed_experts/layer_00.bin")
+        let layer = dir.appendingPathComponent("experts/layer_00.bin")
         let device = try #require(MTLCreateSystemDefaultDevice())
         let model = try Model.load(directoryURL: dir, device: device, expecting: .gemma4Toy())
         try FileManager.default.moveItem(at: layer, to: outside)

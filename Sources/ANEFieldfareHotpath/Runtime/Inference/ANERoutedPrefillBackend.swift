@@ -221,9 +221,9 @@ final class ANERoutedPrefillBackend {
               !jobs.isEmpty, jobs.count <= batchExperts else {
             throw ANEExecutionError.rejected("routed bank busy or batch invalid")
         }
-        let offsetsArray = [offsets.gateWOff, offsets.gateSOff, offsets.gateBOff,
-                            offsets.upWOff, offsets.upSOff, offsets.upBOff,
-                            offsets.downWOff, offsets.downSOff, offsets.downBOff]
+        let offsetsArray = [offsets.gateWOff, offsets.gateSOff,
+                            offsets.upWOff, offsets.upSOff,
+                            offsets.downWOff, offsets.downSOff]
         let pairValues = unsafe pairs.contents().assumingMemoryBound(to: PrefillTokenExpertPair.self)
         var destinations = Set<UInt64>()
         for job in jobs {
@@ -231,7 +231,7 @@ final class ANERoutedPrefillBackend {
                   job.start <= pairs.length / MemoryLayout<PrefillTokenExpertPair>.stride - job.count,
                   job.view.offset <= UInt64(job.view.buffer.length), job.view.length >= 3_358_720,
                   job.view.length <= UInt64(job.view.buffer.length) - job.view.offset,
-                  offsetsArray.enumerated().allSatisfy({ UInt64($0.element) + ($0.offset % 3 == 0 ? 991232 : 61952) <= job.view.length }) else {
+                  offsetsArray.enumerated().allSatisfy({ UInt64($0.element) + ($0.offset % 2 == 0 ? 991232 : 123904) <= job.view.length }) else {
                 throw ANEExecutionError.rejected("invalid routed carrier spans")
             }
             for p in job.start..<(job.start + job.count) {

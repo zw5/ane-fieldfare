@@ -23,20 +23,17 @@ struct PrefillSharedExpertBatchedTests {
         return Errors(relativeL2: (num / den).squareRoot(), maxAbs: maxAbs)
     }
 
-    static func rows(_ view: TensorView, rows: Int, cols: Int) -> [Quantization.Int4AffineRow] {
+    static func rows(_ view: TensorView, rows: Int, cols: Int) -> [Quantization.Q4Row] {
         let base = unsafe view.buffer.contents()
-        let groups = cols / Quantization.groupSize
+        let groups = cols / Quantization.q4GroupSize
         return (0..<rows).map { row in
             let packed = unsafe base.advanced(by: Int(view.offset) + row * cols / 2)
                 .bindMemory(to: UInt8.self, capacity: cols / 2)
             let scales = unsafe base.advanced(by: Int(view.scaleOffset) + row * groups * 2)
                 .bindMemory(to: UInt16.self, capacity: groups)
-            let biases = unsafe base.advanced(by: Int(view.biasOffset) + row * groups * 2)
-                .bindMemory(to: UInt16.self, capacity: groups)
-            return unsafe Quantization.Int4AffineRow(
+            return unsafe Quantization.Q4Row(
                 packed: Array(UnsafeBufferPointer(start: packed, count: cols / 2)),
-                scales: Array(UnsafeBufferPointer(start: scales, count: groups)),
-                biases: Array(UnsafeBufferPointer(start: biases, count: groups)))
+                scales: Array(UnsafeBufferPointer(start: scales, count: groups)))
         }
     }
 
@@ -48,16 +45,15 @@ struct PrefillSharedExpertBatchedTests {
         let views = (gate: try model.sharedExpertGate(layer: layer), up: try model.sharedExpertUp(layer: layer),
                      down: try model.sharedExpertDown(layer: layer))
         func projection(_ view: TensorView, rows: Int, cols: Int) -> SharedExpertProjection {
-            SharedExpertProjection(weights: view.buffer, scales: view.buffer, biases: view.buffer,
+            SharedExpertProjection(weights: view.buffer, scales: view.buffer,
                                    weightsOffset: Int(view.offset), scalesOffset: Int(view.scaleOffset),
-                                   biasesOffset: Int(view.biasOffset), rows: UInt32(rows), cols: UInt32(cols))
+                                   rows: UInt32(rows), cols: UInt32(cols))
         }
         var rng = SeedTree(0x5EED).key("shared-ffn-layer-\(layer)")
         let x: [Float16] = (0..<(t * d)).map { _ in Float16(rng.uniform(-2, 2)) }
 
         func run(batched: Bool) throws -> [Float] {
-            let kernel = try PrefillSharedExpert(context: context, weightBits: model.sharedExpertWeightBits,
-                                                 batched: batched)
+            let kernel = try PrefillSharedExpert(context: context, batched: batched)
             let madeX = unsafe context.device.makeBuffer(bytes: x, length: x.count * 2, options: .storageModeShared)
             let xBuffer = try #require(madeX)
             let y = try #require(context.device.makeBuffer(length: t * d * 2, options: .storageModeShared))

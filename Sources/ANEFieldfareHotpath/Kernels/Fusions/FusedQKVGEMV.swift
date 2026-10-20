@@ -38,13 +38,10 @@ final class FusedQKVGEMV {
     func encode(commandBuffer: any MTLCommandBuffer,
                        qWeights: any MTLBuffer, qWeightsOffset: Int = 0,
                        qScales: any MTLBuffer, qScalesOffset: Int = 0,
-                       qBiases: any MTLBuffer, qBiasesOffset: Int = 0,
                        kWeights: any MTLBuffer, kWeightsOffset: Int = 0,
                        kScales: any MTLBuffer, kScalesOffset: Int = 0,
-                       kBiases: any MTLBuffer, kBiasesOffset: Int = 0,
                        vWeights: any MTLBuffer, vWeightsOffset: Int = 0,
                        vScales: any MTLBuffer, vScalesOffset: Int = 0,
-                       vBiases: any MTLBuffer, vBiasesOffset: Int = 0,
                        x: any MTLBuffer,
                        qOut: any MTLBuffer, qOutOffset: Int = 0,
                        kOut: any MTLBuffer, kOutOffset: Int = 0,
@@ -63,23 +60,20 @@ final class FusedQKVGEMV {
         enc.setComputePipelineState(specializedPSOs[shape] ?? pso)
         enc.setBuffer(qWeights, offset: qWeightsOffset, index: 0)
         enc.setBuffer(qScales, offset: qScalesOffset, index: 1)
-        enc.setBuffer(qBiases, offset: qBiasesOffset, index: 2)
-        enc.setBuffer(kWeights, offset: kWeightsOffset, index: 3)
-        enc.setBuffer(kScales, offset: kScalesOffset, index: 4)
-        enc.setBuffer(kBiases, offset: kBiasesOffset, index: 5)
-        enc.setBuffer(vWeights, offset: vWeightsOffset, index: 6)
-        enc.setBuffer(vScales, offset: vScalesOffset, index: 7)
-        enc.setBuffer(vBiases, offset: vBiasesOffset, index: 8)
-        enc.setBuffer(x, offset: 0, index: 9)
-        enc.setBuffer(qOut, offset: qOutOffset, index: 10)
-        enc.setBuffer(kOut, offset: kOutOffset, index: 11)
-        enc.setBuffer(vOut, offset: vOutOffset, index: 12)
+        enc.setBuffer(kWeights, offset: kWeightsOffset, index: 2)
+        enc.setBuffer(kScales, offset: kScalesOffset, index: 3)
+        enc.setBuffer(vWeights, offset: vWeightsOffset, index: 4)
+        enc.setBuffer(vScales, offset: vScalesOffset, index: 5)
+        enc.setBuffer(x, offset: 0, index: 6)
+        enc.setBuffer(qOut, offset: qOutOffset, index: 7)
+        enc.setBuffer(kOut, offset: kOutOffset, index: 8)
+        enc.setBuffer(vOut, offset: vOutOffset, index: 9)
         let qVar = qRows
         let kvVar = kvRows
         let nVar = n
-        enc.setValue(qVar, index: 13)
-        enc.setValue(kvVar, index: 14)
-        enc.setValue(nVar, index: 15)
+        enc.setValue(qVar, index: 10)
+        enc.setValue(kvVar, index: 11)
+        enc.setValue(nVar, index: 12)
         let totalRows = Int(qRows + 2 * kvRows)
         enc.dispatchThreadgroups(MTLSize(width: (totalRows + 7) / 8,
                                          height: 1,

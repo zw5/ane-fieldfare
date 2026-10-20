@@ -2,21 +2,21 @@
 using namespace metal;
 
 // ============================================================================
-// dequant_int4 — MLX `affine` 4-bit dequant.
+// dequant_int4 — Q4_0 4-bit dequant.
 //
 // Layout (per row of length N):
 //   W       : N/2 bytes. Low nibble of byte k = component 2k (unsigned 0..15),
 //             high nibble = component 2k+1.
-//   scales  : N/64 BF16, one per group of 64.
-//   biases  : N/64 BF16, one per group of 64.
-//   value   : w[i] = float(nibble[i]) * scale[i/64] + bias[i/64].
+//   scales  : N/32 FP16, one per group of 32.
+//   value   : w[i] = scale[i/32] * (float(nibble[i]) - 8).
 //
-// Affine factoring for GEMV (sum over a group of 64):
+// Written as an affine map with bias b = -8 s, the GEMV factors per group:
 //   sum_k (q_k * s + b) * x_k = s * sum_k(q_k * x_k) + b * sum_k x_k
 // so scale and bias each cost one FMA per group instead of per element.
+// Every 8 consecutive components a lane handles lie in one group.
 // ============================================================================
 
-constant constexpr uint kGroupSize = 64;
+constant constexpr uint kGroupSize = 32;
 constant uint FC_INT4_M [[function_constant(20)]];
 constant uint FC_INT4_N [[function_constant(21)]];
 constant bool FC_INT4_USE_FC [[function_constant(22)]];
@@ -63,24 +63,21 @@ static inline uint int4_qkv_fc_n(constant uint& N) {
 
 kernel void embed_lookup_int4(
     device const uint8_t* table     [[buffer(0)]],   // [V, D/2] nibbles
-    device const bfloat*  scales    [[buffer(1)]],   // [V, D/64] BF16
-    device const bfloat*  biases    [[buffer(2)]],   // [V, D/64] BF16
-    device half*          out       [[buffer(3)]],   // [D] FP16
-    constant uint&        token_id  [[buffer(4)]],
-    constant uint&        D         [[buffer(5)]],
-    constant float&       out_scale [[buffer(6)]],   // pass 1.0 to disable
+    device const half*    scales    [[buffer(1)]],   // [V, D/32] FP16
+    device half*          out       [[buffer(2)]],   // [D] FP16
+    constant uint&        token_id  [[buffer(3)]],
+    constant uint&        D         [[buffer(4)]],
+    constant float&       out_scale [[buffer(5)]],   // pass 1.0 to disable
     uint                  gid       [[thread_position_in_grid]]
 ) {
     if (gid >= D) return;
     const uint groups_per_row = D / kGroupSize;
     device const uint8_t* row_q = table  + uint(token_id) * (D / 2u);
-    device const bfloat*  row_s = scales + uint(token_id) * groups_per_row;
-    device const bfloat*  row_b = biases + uint(token_id) * groups_per_row;
+    device const half*    row_s = scales + uint(token_id) * groups_per_row;
     uint8_t byte = row_q[gid >> 1];
     uint    q    = (gid & 1u) ? uint(byte >> 4) : uint(byte & 0xFu);
     float   s    = float(row_s[gid / kGroupSize]);
-    float   b    = float(row_b[gid / kGroupSize]);
-    out[gid] = half((float(q) * s + b) * out_scale);
+    out[gid] = half((float(q) - 8.0f) * s * out_scale);
 }
 
 // y[m] = sum_{n} W[m, n] * x[n]: one SIMD group per output row, reduced with
@@ -88,8 +85,7 @@ kernel void embed_lookup_int4(
 // Eight consecutive rows per threadgroup share the L1-cached input reads.
 static inline void dequant_int4_gemv_simd_body(
     device const uint8_t* W,
-    device const bfloat*  scales,
-    device const bfloat*  biases,
+    device const half*    scales,
     device const half*    x,
     device half*          y,
     uint                  M,
@@ -104,26 +100,24 @@ static inline void dequant_int4_gemv_simd_body(
     const uint n_groups  = N / kGroupSize;
     const uint row_bytes = N / 2;
     device const uint8_t* W_row = W      + uint(row) * row_bytes;
-    device const bfloat*  s_row = scales + uint(row) * n_groups;
-    device const bfloat*  b_row = biases + uint(row) * n_groups;
+    device const half*    s_row = scales + uint(row) * n_groups;
 
     float acc = 0.0f;
-    // Weights are read 4 bytes (8 nibbles) and x as half4 in 4-group
-    // (128-byte) blocks, with a byte-per-lane remainder for a group count that
-    // is not a multiple of 4. Within a block the 32 lanes split 8 per group,
+    // Weights are read 4 bytes (8 nibbles) and x as half4 in 256-element
+    // (128-byte) blocks, with a byte-per-lane remainder for a width that is
+    // not a multiple of 256. Within a block the 32 lanes split 4 per group,
     // each handling 8 contiguous elements of one group, so the affine
     // factoring s·Σqx + b·Σx holds (s/b are constant within a group).
-    const uint full_blocks = n_groups / 4;
+    const uint full_blocks = N / 256u;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
-        // Two ushort loads: resident weight tensors are 2-byte but not
-        // 4-byte aligned (BF16 scale/bias regions leave a 2-aligned
-        // weightsOffset), so a `uint*` load would be misaligned.
+        // Two ushort loads keep the kernel correct for any 2-aligned
+        // weightsOffset, which is all the wrapper requires.
         device const ushort* wp = (device const ushort*)(W_row + byte_base);
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
-        const uint g  = blk * 4u + (lane >> 3);
+        const uint g  = blk * 8u + (lane >> 2);
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = -8.0f * s;
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -142,12 +136,14 @@ static inline void dequant_int4_gemv_simd_body(
         acc = fma(s, dot, acc);
         acc = fma(b, sum, acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
-        const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
-        const uint8_t byte = W_row[g * (kGroupSize / 2) + lane];
-        const float x0 = float(x[g * kGroupSize + lane * 2u]);
-        const float x1 = float(x[g * kGroupSize + lane * 2u + 1u]);
+    // Remainder in 64-element steps, one byte per lane: lanes 0-15 hold the
+    // step's first group, lanes 16-31 its second.
+    for (uint c = full_blocks * 4u; c < N / 64u; ++c) {
+        const float s = float(s_row[c * 2u + (lane >> 4)]);
+        const float b = -8.0f * s;
+        const uint8_t byte = W_row[c * 32u + lane];
+        const float x0 = float(x[c * 64u + lane * 2u]);
+        const float x1 = float(x[c * 64u + lane * 2u + 1u]);
         float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
         dot = fma(float(uint(byte >> 4)), x1, dot);
         const float sum = x0 + x1;
@@ -162,12 +158,11 @@ static inline void dequant_int4_gemv_simd_body(
 
 kernel void dequant_int4_gemv_simd(
     device const uint8_t* W      [[buffer(0)]],
-    device const bfloat*  scales [[buffer(1)]],
-    device const bfloat*  biases [[buffer(2)]],
-    device const half*    x      [[buffer(3)]],
-    device half*          y      [[buffer(4)]],
-    constant uint&        M      [[buffer(5)]],
-    constant uint&        N      [[buffer(6)]],
+    device const half*    scales [[buffer(1)]],
+    device const half*    x      [[buffer(2)]],
+    device half*          y      [[buffer(3)]],
+    constant uint&        M      [[buffer(4)]],
+    constant uint&        N      [[buffer(5)]],
     uint                  tg_idx [[threadgroup_position_in_grid]],
     uint                  sg_idx [[simdgroup_index_in_threadgroup]],
     uint                  lane   [[thread_index_in_simdgroup]]
@@ -175,27 +170,24 @@ kernel void dequant_int4_gemv_simd(
     constexpr uint rows_per_tg = 8;
     const uint MM = int4_fc_m(M);
     const uint NN = int4_fc_n(N);
-    dequant_int4_gemv_simd_body(W, scales, biases, x, y, MM, NN,
+    dequant_int4_gemv_simd_body(W, scales, x, y, MM, NN,
                                 rows_per_tg, tg_idx, sg_idx, lane);
 }
 
 kernel void dequant_int4_qkv_gemv_simd(
     device const uint8_t* qW      [[buffer(0)]],
-    device const bfloat*  qScales [[buffer(1)]],
-    device const bfloat*  qBiases [[buffer(2)]],
-    device const uint8_t* kW      [[buffer(3)]],
-    device const bfloat*  kScales [[buffer(4)]],
-    device const bfloat*  kBiases [[buffer(5)]],
-    device const uint8_t* vW      [[buffer(6)]],
-    device const bfloat*  vScales [[buffer(7)]],
-    device const bfloat*  vBiases [[buffer(8)]],
-    device const half*    x       [[buffer(9)]],
-    device half*          qY      [[buffer(10)]],
-    device half*          kY      [[buffer(11)]],
-    device half*          vY      [[buffer(12)]],
-    constant uint&        Mq      [[buffer(13)]],
-    constant uint&        Mkv     [[buffer(14)]],
-    constant uint&        N       [[buffer(15)]],
+    device const half*    qScales [[buffer(1)]],
+    device const uint8_t* kW      [[buffer(2)]],
+    device const half*    kScales [[buffer(3)]],
+    device const uint8_t* vW      [[buffer(4)]],
+    device const half*    vScales [[buffer(5)]],
+    device const half*    x       [[buffer(6)]],
+    device half*          qY      [[buffer(7)]],
+    device half*          kY      [[buffer(8)]],
+    device half*          vY      [[buffer(9)]],
+    constant uint&        Mq      [[buffer(10)]],
+    constant uint&        Mkv     [[buffer(11)]],
+    constant uint&        N       [[buffer(12)]],
     uint                  tg_idx  [[threadgroup_position_in_grid]],
     uint                  sg_idx  [[simdgroup_index_in_threadgroup]],
     uint                  lane    [[thread_index_in_simdgroup]]
@@ -209,25 +201,24 @@ kernel void dequant_int4_qkv_gemv_simd(
     if (global_row >= total_rows) { return; }
 
     device const uint8_t* W;
-    device const bfloat* scales;
-    device const bfloat* biases;
+    device const half* scales;
     device half* y;
     uint local_row;
     uint M;
     if (global_row < QQ) {
-        W = qW; scales = qScales; biases = qBiases; y = qY;
+        W = qW; scales = qScales; y = qY;
         local_row = global_row;
         M = QQ;
     } else if (global_row < QQ + KK) {
-        W = kW; scales = kScales; biases = kBiases; y = kY;
+        W = kW; scales = kScales; y = kY;
         local_row = global_row - QQ;
         M = KK;
     } else {
-        W = vW; scales = vScales; biases = vBiases; y = vY;
+        W = vW; scales = vScales; y = vY;
         local_row = global_row - QQ - KK;
         M = KK;
     }
-    dequant_int4_gemv_simd_body(W, scales, biases, x, y, M, NN,
+    dequant_int4_gemv_simd_body(W, scales, x, y, M, NN,
                                 1u, local_row, 0u, lane);
 }
 
@@ -240,15 +231,14 @@ kernel void dequant_int4_qkv_gemv_simd(
 template <typename T, typename TY>
 kernel void dequant_int4_gemv_rows(
     device const uint8_t* W        [[buffer(0)]],
-    device const bfloat*  scales   [[buffer(1)]],
-    device const bfloat*  biases   [[buffer(2)]],
-    device const T*       x        [[buffer(3)]],
-    device TY*            y        [[buffer(4)]],
-    constant uint&        O        [[buffer(5)]],   // output columns (weight rows)
-    constant uint&        K        [[buffer(6)]],   // input width
-    constant uint&        R        [[buffer(7)]],   // input rows, 1..16
-    constant uint&        xStride  [[buffer(8)]],
-    constant uint&        yStride  [[buffer(9)]],
+    device const half*    scales   [[buffer(1)]],
+    device const T*       x        [[buffer(2)]],
+    device TY*            y        [[buffer(3)]],
+    constant uint&        O        [[buffer(4)]],   // output columns (weight rows)
+    constant uint&        K        [[buffer(5)]],   // input width
+    constant uint&        R        [[buffer(6)]],   // input rows, 1..16
+    constant uint&        xStride  [[buffer(7)]],
+    constant uint&        yStride  [[buffer(8)]],
     uint                  tg_idx   [[threadgroup_position_in_grid]],
     uint                  sg_idx   [[simdgroup_index_in_threadgroup]],
     uint                  lane     [[thread_index_in_simdgroup]]
@@ -274,10 +264,10 @@ kernel void dequant_int4_gemv_rows(
         for (uint r = 0; r < 16; ++r) acc[w][r] = 0.0f;
     }
 
-    const uint full_blocks = n_groups / 4;
+    const uint full_blocks = KK / 256u;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
-        const uint g  = blk * 4u + (lane >> 3);
+        const uint g  = blk * 8u + (lane >> 2);
         const uint elem = byte_base * 2u;
         float q[4][8], s[4], b[4];
         #pragma unroll
@@ -287,7 +277,7 @@ kernel void dequant_int4_gemv_rows(
                 device const ushort* wp = (device const ushort*)(W + row * (KK / 2) + byte_base);
                 const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
                 s[w] = float(scales[row * n_groups + g]);
-                b[w] = float(biases[row * n_groups + g]);
+                b[w] = -8.0f * s[w];
                 #pragma unroll
                 for (uint j = 0; j < 8; ++j) q[w][j] = float((w4 >> (4u * j)) & 0xFu);
             }
@@ -316,23 +306,24 @@ kernel void dequant_int4_gemv_rows(
             }
         }
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    // Remainder in 64-element steps, one byte per lane (see the GEMV).
+    for (uint c = full_blocks * 4u; c < KK / 64u; ++c) {
         float q0[4], q1[4], s[4], b[4];
         #pragma unroll
         for (uint w = 0; w < 4; ++w) {
             if (w < WPS) {
                 const uint row = min(row0 + w, O - 1);
-                const uint8_t byte = W[row * (KK / 2) + g * (kGroupSize / 2) + lane];
+                const uint8_t byte = W[row * (KK / 2) + c * 32u + lane];
                 q0[w] = float(uint(byte & 0x0Fu));
                 q1[w] = float(uint(byte >> 4));
-                s[w] = float(scales[row * n_groups + g]);
-                b[w] = float(biases[row * n_groups + g]);
+                s[w] = float(scales[row * n_groups + c * 2u + (lane >> 4)]);
+                b[w] = -8.0f * s[w];
             }
         }
         #pragma unroll
         for (uint r = 0; r < 16; ++r) {
             if (r < RR) {
-                device const T* xr = x + r * xStride + g * kGroupSize + lane * 2u;
+                device const T* xr = x + r * xStride + c * 64u + lane * 2u;
                 const float x0 = float(xr[0]), x1 = float(xr[1]);
                 #pragma unroll
                 for (uint w = 0; w < 4; ++w) {
@@ -361,20 +352,20 @@ kernel void dequant_int4_gemv_rows(
 }
 
 template [[host_name("dequant_int4_gemv_rows")]] kernel void dequant_int4_gemv_rows<half, half>(
-    device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device half*,
+    device const uint8_t*, device const half*, device const half*, device half*,
     constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint);
 template [[host_name("dequant_int4_gemv_rows_bf16")]] kernel void dequant_int4_gemv_rows<bfloat, bfloat>(
-    device const uint8_t*, device const bfloat*, device const bfloat*, device const bfloat*, device bfloat*,
+    device const uint8_t*, device const half*, device const bfloat*, device bfloat*,
     constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint);
 template [[host_name("dequant_int4_gemv_rows_f32")]] kernel void dequant_int4_gemv_rows<half, float>(
-    device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device float*,
+    device const uint8_t*, device const half*, device const half*, device float*,
     constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint);
 
 // y[r][o] = sum_k W[o, k] * x[r][k] for 5..16 input rows on the SIMD-group
 // matrix units. dequant_int4_gemv_rows converts and multiplies each weight
 // once per input row, so past four rows it is ALU-bound (8 rows cost 2x, 16
 // rows 4x, measured on M5). Here each SIMD group owns 8 weight rows and
-// dequantizes each weight once, as q * s + b in FP32, into an 8x8 fragment;
+// dequantizes each weight once, as q * s - 8 s in FP32, into an 8x8 fragment;
 // one multiply covers 8 input rows. Results match the ALU kernel to FP32
 // rounding but not bitwise. K % 128 may be 64: the last group runs as a
 // half step.
@@ -384,7 +375,7 @@ template [[host_name("dequant_int4_gemv_rows_f32")]] kernel void dequant_int4_ge
 // fn = 4*((l>>3)&1) + 2*(l&1). Per 128-wide step, tile t (0..15) column c is
 // k = 16c + t. The 4 lanes of a weight row read 64 contiguous bytes, lane
 // j = fn/2 bytes [16j, 16j + 16): its first 8 bytes are column fn, the next 8
-// column fn + 1, all in one quant group. Each lane's B values, x[r][16fm + t],
+// column fn + 1, all in quant group 4 * step + j. Each lane's B values, x[r][16fm + t],
 // are 16 contiguous halves per input row, so no x load is wasted; the x loads,
 // not the weights, bound this kernel.
 template <typename TX>
@@ -399,19 +390,18 @@ static inline void int4_mma_load_x16(device const TX* p, bool live, thread float
 template <typename TX, typename TY>
 kernel void dequant_int4_gemv_rows_mma(
     device const uint8_t* W        [[buffer(0)]],
-    device const bfloat*  scales   [[buffer(1)]],
-    device const bfloat*  biases   [[buffer(2)]],
-    device const TX*      x        [[buffer(3)]],
-    device TY*            y        [[buffer(4)]],
-    constant uint&        O        [[buffer(5)]],
-    constant uint&        K        [[buffer(6)]],
-    constant uint&        R        [[buffer(7)]],
-    constant uint&        xStride  [[buffer(8)]],
-    constant uint&        yStride  [[buffer(9)]],
+    device const half*    scales   [[buffer(1)]],
+    device const TX*      x        [[buffer(2)]],
+    device TY*            y        [[buffer(3)]],
+    constant uint&        O        [[buffer(4)]],
+    constant uint&        K        [[buffer(5)]],
+    constant uint&        R        [[buffer(6)]],
+    constant uint&        xStride  [[buffer(7)]],
+    constant uint&        yStride  [[buffer(8)]],
     uint                  tg_idx   [[threadgroup_position_in_grid]],
     uint                  sg_idx   [[simdgroup_index_in_threadgroup]],
     uint                  lane     [[thread_index_in_simdgroup]],
-    device const uint*    ids      [[buffer(10), function_constant(FC_INT4_ROWS_LISTED)]]
+    device const uint*    ids      [[buffer(9), function_constant(FC_INT4_ROWS_LISTED)]]
 ) {
     constexpr uint simds_per_tg = 4;
     const bool fc = is_function_constant_defined(FC_INT4_ROWS_USE_FC) && FC_INT4_ROWS_USE_FC;
@@ -427,8 +417,7 @@ kernel void dequant_int4_gemv_rows_mma(
     const bool listed = is_function_constant_defined(FC_INT4_ROWS_LISTED) && FC_INT4_ROWS_LISTED;
     const uint row = listed ? ids[min(o0 + fm, O - 1u)] : min(o0 + fm, O - 1u);
     device const uint8_t* w_row = W + row * row_bytes + (fn >> 1) * 16u;
-    device const bfloat* s_row = scales + row * n_groups + (fn >> 2);
-    device const bfloat* b_row = biases + row * n_groups + (fn >> 2);
+    device const half* s_row = scales + row * n_groups + (fn >> 1);
     const uint frags = RR > 8u ? 2u : 1u;
     device const TX* xr[4];
     for (uint f = 0; f < 2; ++f) {
@@ -447,8 +436,8 @@ kernel void dequant_int4_gemv_rows_mma(
         device const ushort* wp = (device const ushort*)(w_row + step * 64u - (live_a ? 0u : 32u));
         uint wv[4];
         for (uint i = 0; i < 4; ++i) wv[i] = uint(wp[2 * i]) | (uint(wp[2 * i + 1]) << 16);
-        const float s = live_a ? float(s_row[step * 2u]) : 0.0f;
-        const float b = live_a ? float(b_row[step * 2u]) : 0.0f;
+        const float s = live_a ? float(s_row[step * 4u]) : 0.0f;
+        const float b = -8.0f * s;
         float v[4][16];
         for (uint i = 0; i < 2 * frags; ++i) int4_mma_load_x16(xr[i] + step * 128u, live_b, v[i]);
         for (uint t = 0; t < 16; ++t) {
@@ -476,14 +465,14 @@ kernel void dequant_int4_gemv_rows_mma(
 }
 
 template [[host_name("dequant_int4_gemv_rows_mma")]] kernel void dequant_int4_gemv_rows_mma<half, half>(
-    device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device half*,
+    device const uint8_t*, device const half*, device const half*, device half*,
     constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
     device const uint*);
 template [[host_name("dequant_int4_gemv_rows_mma_f32")]] kernel void dequant_int4_gemv_rows_mma<half, float>(
-    device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device float*,
+    device const uint8_t*, device const half*, device const half*, device float*,
     constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
     device const uint*);
 template [[host_name("dequant_int4_gemv_rows_mma_bf16")]] kernel void dequant_int4_gemv_rows_mma<bfloat, bfloat>(
-    device const uint8_t*, device const bfloat*, device const bfloat*, device const bfloat*, device bfloat*,
+    device const uint8_t*, device const half*, device const bfloat*, device bfloat*,
     constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
     device const uint*);

@@ -16,7 +16,7 @@ import Metal
 /// fixed context, rewinding after each.
 @main private enum Bench {
     struct Options {
-        var model = "checkpoints/gturbo/gemma4.gturbo"
+        var model = "checkpoints/gemma-4-26b-a4b-it-qat.fieldfare"
         var drafter: String?
         var tokens = 192
         var reps = 2

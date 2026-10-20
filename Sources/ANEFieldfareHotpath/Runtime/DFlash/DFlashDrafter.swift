@@ -284,11 +284,10 @@ public final class DFlashDrafter {
             enc.setComputePipelineState(embedPSO)
             enc.setBuffer(emb.buffer, offset: Int(emb.offset), index: 0)
             enc.setBuffer(emb.buffer, offset: Int(emb.scaleOffset), index: 1)
-            enc.setBuffer(emb.buffer, offset: Int(emb.biasOffset), index: 2)
-            enc.setBuffer(block, offset: 0, index: 3)
-            enc.setBuffer(residual, offset: 0, index: 4)
-            enc.setValue(UInt32(D), index: 5)
-            enc.setValue(Float(D).squareRoot(), index: 6)
+            enc.setBuffer(block, offset: 0, index: 2)
+            enc.setBuffer(residual, offset: 0, index: 3)
+            enc.setValue(UInt32(D), index: 4)
+            enc.setValue(Float(D).squareRoot(), index: 5)
             enc.dispatchThreads(MTLSize(width: D, height: R, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             enc.endEncoding()
@@ -343,7 +342,6 @@ public final class DFlashDrafter {
                                          normWeight: weights.buffer, normOffset: weights.norm, table: hot,
                                          weights: emb.buffer, weightsOffset: Int(emb.offset),
                                          scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
-                                         biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
                                          outIndices: picks, d: UInt32(D), rmsEps: config.rmsEps,
                                          softcap: Float(model.config.finalLogitSoftcap),
                                          sampling: sampling.map { .init(rule: $0, keyBase: 1, keyOffset: state) })
@@ -352,7 +350,6 @@ public final class DFlashDrafter {
                                       normWeight: weights.buffer, normOffset: weights.norm,
                                       weights: emb.buffer, weightsOffset: Int(emb.offset),
                                       scales: emb.buffer, scalesOffset: Int(emb.scaleOffset),
-                                      biases: emb.buffer, biasesOffset: Int(emb.biasOffset),
                                       outTokens: picks, d: UInt32(D), vocab: UInt32(model.config.vocabSize),
                                       rmsEps: config.rmsEps, softcap: Float(model.config.finalLogitSoftcap),
                                       sampling: sampling.map { .init(rule: $0, keyBase: 1, keyOffset: state) })
@@ -386,7 +383,6 @@ public final class DFlashDrafter {
         try int4.encodeRows(commandBuffer: cb,
                             weights: weights.buffer, weightsOffset: m.weights,
                             scales: weights.buffer, scalesOffset: m.scales,
-                            biases: weights.buffer, biasesOffset: m.biases,
                             x: x, y: y, m: UInt32(m.rows), n: UInt32(m.columns), rows: rows,
                             xStrideElements: m.columns, yStrideElements: m.rows, types: .bf16)
     }

@@ -48,7 +48,7 @@ final class NextLayerExpertPrefetcher {
         let config = model.config
         guessWeights = guess == .fitted
             ? try NextLayerGuessWeights.bundled(
-                sourceSnapshotHash: model.sourceSnapshotHash, numLayers: config.numLayers,
+                sourceSnapshotHash: model.sourceDigest, numLayers: config.numLayers,
                 numExperts: config.numExperts, hiddenSize: config.hiddenSize, device: device)
             : nil
     }

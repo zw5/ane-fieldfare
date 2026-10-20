@@ -1,6 +1,6 @@
 public import Foundation
 public import Metal
-import ANEFieldfareImportedFormat
+import ANEFieldfareModelFormat
 
 public enum VisionRuntimeError: Error, CustomStringConvertible {
     case invalidInput(String)
@@ -27,7 +27,6 @@ public final class VisionRuntime {
 
     private let context: MetalContext
     private let store: VisionWeightStore
-    private let useLease: VisionPackUseLease
     private let linear: VisionLinearBF16
     private let primitives: VisionPrimitives
     private let attention: VisionAttention
@@ -40,38 +39,18 @@ public final class VisionRuntime {
     /// and evictable, like the routed expert pool.
     private var cachedRegions: [String: VisionMappedWeightRegion] = [:]
 
+    /// Opens the vision weights of the model at `textModelURL`; throws
+    /// `VisionPackError.notInstalled` for a model installed without them.
     public static func open(
         textModelURL: URL,
-        context: MetalContext,
-        visionPackURL: URL?
+        context: MetalContext
     ) throws -> VisionRuntime {
         try requireSupportedDevice(context.device)
-        let manifest = try ManifestReader.load(
-            directoryURL: textModelURL,
-            expecting: .gemma4_26B_A4B)
-        guard let source = manifest.sourceSnapshotHash else {
-            throw VisionRuntimeError.invalidInput("text model has no source identity")
-        }
-        let companion = try visionPackURL
-            ?? VisionPackLocation.companionURL(forTextModel: textModelURL)
-        // The lease creates its lock file beside the pack (O_CREAT), so the
-        // pack and its manifest must be confirmed first: a missing pack or a
-        // stray directory must not get a lock file, and a missing pack is
-        // `packNotFound`, not invalid metadata.
-        guard FileManager.default.fileExists(atPath: companion.path) else {
-            throw VisionPackError.packNotFound(companion.path)
-        }
-        let manifestPath = companion
-            .appendingPathComponent(GTurboVisionFormatV1.manifestFile).path
-        guard FileManager.default.fileExists(atPath: manifestPath) else {
-            throw VisionPackError.invalidMetadata(
-                "no \(GTurboVisionFormatV1.manifestFile) in \(companion.path)")
-        }
-        let useLease = try VisionPackUseLease.acquireShared(companionURL: companion)
-        let store = try VisionWeightStore.open(
-            directoryURL: companion,
-            compatibleTextSourceSnapshotHash: source)
-        return try VisionRuntime(context: context, store: store, useLease: useLease)
+        let directory = try ModelDirectory(rootURL: textModelURL)
+        let manifest = try ModelManifest.load(directory, path: textModelURL.path, expecting: .gemma4_26B_A4B)
+        let store = try VisionWeightStore.open(directory: directory, directoryURL: textModelURL,
+                                               manifest: manifest)
+        return try VisionRuntime(context: context, store: store)
     }
 
     public static func requireSupportedDevice(_ device: any MTLDevice) throws {
@@ -81,11 +60,9 @@ public final class VisionRuntime {
         }
     }
 
-    private init(context: MetalContext, store: VisionWeightStore,
-                 useLease: consuming VisionPackUseLease) throws {
+    private init(context: MetalContext, store: VisionWeightStore) throws {
         self.context = context
         self.store = store
-        self.useLease = useLease
         self.linear = try VisionLinearBF16(context: context)
         self.primitives = try VisionPrimitives(context: context)
         self.attention = try VisionAttention(context: context)
@@ -318,8 +295,6 @@ public final class VisionRuntime {
             "vision_tower.std_bias",
             "vision_tower.std_scale",
             "embed_vision.embedding_projection.weight",
-            "embed_vision.embedding_projection.scales",
-            "embed_vision.embedding_projection.biases",
         ])
         guard let features = context.device.makeBuffer(
             length: outputRows * config.textHiddenSize * MemoryLayout<Float16>.stride,
@@ -351,11 +326,8 @@ public final class VisionRuntime {
             weightsOffset: try projector.offset(
                 of: "embed_vision.embedding_projection.weight"),
             scales: projector.buffer,
-            scalesOffset: try projector.offset(
-                of: "embed_vision.embedding_projection.scales"),
-            biases: projector.buffer,
-            biasesOffset: try projector.offset(
-                of: "embed_vision.embedding_projection.biases"),
+            scalesOffset: try projector.scalesOffset(
+                of: "embed_vision.embedding_projection.weight"),
             x: usesBF16Projector ? scratch.attention : scratch.hiddenB,
             y: features,
             m: outputRows, n: config.textHiddenSize, k: config.hiddenSize)

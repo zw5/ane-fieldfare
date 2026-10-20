@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import Metal
 import Synchronization
-import ANEFieldfareImportedFormat
+import ANEFieldfareModelFormat
 
 /// Per-layer routed-expert mappings, opened on first touch.
 ///
@@ -12,21 +12,18 @@ import ANEFieldfareImportedFormat
 final class RoutedExpertLayers: Sendable {
     private let table: Mutex<[MappedExpertLayer?]>
     private let device: any MTLDevice
-    private let layout: PackedExpertsLayout
-    private let manifest: Manifest
-    private let directoryURL: URL
-    private let modelDirectory: GTurboModelDirectory
+    private let experts: FieldfareExperts
+    private let files: [String: FieldfareFile]
+    private let modelDirectory: ModelDirectory
 
     init(device: any MTLDevice,
-         layout: PackedExpertsLayout,
-         manifest: Manifest,
-         directoryURL: URL,
-         modelDirectory: GTurboModelDirectory) {
-        self.table = Mutex(Array(repeating: nil, count: layout.numLayers))
+         experts: FieldfareExperts,
+         files: [String: FieldfareFile],
+         modelDirectory: ModelDirectory) {
+        self.table = Mutex(Array(repeating: nil, count: experts.files.count))
         self.device = device
-        self.layout = layout
-        self.manifest = manifest
-        self.directoryURL = directoryURL
+        self.experts = experts
+        self.files = files
         self.modelDirectory = modelDirectory
     }
 
@@ -57,29 +54,23 @@ final class RoutedExpertLayers: Sendable {
     }
 
     private func open(layer: Int) throws -> MappedExpertLayer {
-        let basename = layout.layers[layer].file
-        let url = directoryURL
-            .appendingPathComponent("packed_experts")
-            .appendingPathComponent(basename)
-        let manifestRel = "packed_experts/\(basename)"
-        let layerFD = try modelDirectory.openFile(manifestRel)
+        let path = experts.files[layer]
+        let layerFD = try modelDirectory.openFile(path)
         defer { close(layerFD) }
         // A short file would fault when a mapped expert past its end is read.
-        guard let entry = manifest.files[manifestRel] else {
-            throw ModelError.missingFile(name: manifestRel)
+        guard let entry = files[path] else {
+            throw ModelError.missingFile(name: path)
         }
-        let actualSize = try modelDirectory.fileSize(
-            fileDescriptor: layerFD, relativePath: manifestRel)
+        let actualSize = try modelDirectory.fileSize(fileDescriptor: layerFD, relativePath: path)
         guard actualSize == entry.size else {
-            throw ModelError.tensorSizeMismatch(
-                name: manifestRel, expected: entry.size, actual: actualSize)
+            throw ModelError.tensorSizeMismatch(name: path, expected: entry.size, actual: actualSize)
         }
         return try MappedExpertLayer(
             fileDescriptor: layerFD,
-            path: url.path,
+            path: path,
             device: device,
-            expertCount: layout.expertsPerLayer,
-            expertBytes: Int(layout.expertStride),
-            expertOffsets: layout.layers[layer].experts.map(\.offset))
+            expertCount: experts.perLayer,
+            expertBytes: Int(experts.stride),
+            expertOffsets: (0..<UInt64(experts.perLayer)).map { $0 * experts.stride })
     }
 }

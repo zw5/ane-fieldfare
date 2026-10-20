@@ -2,57 +2,67 @@ import Foundation
 import Metal
 import Testing
 @testable import ANEFieldfareHotpath
-@testable import ANEFieldfareImportedFormat
+import ANEFieldfareModelFormat
 
 @Suite struct VisionWeightStoreTests {
-    @Test func opensBoundedCompanion() throws {
-        let fixture = try makeFixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-
-        let store = try VisionWeightStore.open(
-            directoryURL: fixture.root,
-            compatibleTextSourceSnapshotHash: "text-snapshot")
-        #expect(store.manifest.modelID == "fixture/model")
-        #expect(store.manifest.tensors.map(\.name) == ["vision.weight"])
-        let mapped = try store.mapRegion(
-            tensorNames: ["vision.weight"],
-            device: try #require(MTLCreateSystemDefaultDevice()))
-        #expect(mapped.buffer.length == 2)
+    private func open(_ dir: URL) throws -> VisionWeightStore {
+        let directory = try ModelDirectory(rootURL: dir)
+        let manifest = try ModelManifest.load(directory, path: dir.path, expecting: .gemma4Toy())
+        return try VisionWeightStore.open(directory: directory, directoryURL: dir, manifest: manifest)
     }
 
-    @Test func rejectsWrongTextModel() throws {
-        let fixture = try makeFixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        #expect(throws: VisionPackError.self) {
-            try VisionWeightStore.open(
-                directoryURL: fixture.root,
-                compatibleTextSourceSnapshotHash: "other")
+    @Test func mapsTheVisionSectionOfTheModel() throws {
+        let dir = try ModelLoaderTests.writeToySynthetic { manifest in
+            manifest = Self.withVision(manifest, fileSize: 256)
+        }
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data((0..<256).map { UInt8($0) }).write(to: dir.appendingPathComponent("vision.bin"))
+
+        let store = try open(dir)
+        #expect(store.tensorNames(withPrefix: "vision_tower.") == ["vision_tower.a", "vision_tower.b"])
+        let mapped = try store.mapRegion(tensorNames: ["vision_tower.b"],
+                                         device: try #require(MTLCreateSystemDefaultDevice()))
+        // From b's weights at 64 through the end of its scales at 132.
+        #expect(mapped.buffer.length == 68)
+        #expect(try mapped.offset(of: "vision_tower.b") == 0)
+        #expect(try mapped.scalesOffset(of: "vision_tower.b") == 64)
+        #expect(unsafe mapped.buffer.contents().load(fromByteOffset: 0, as: UInt8.self) == 64)
+    }
+
+    @Test func reportsAModelInstalledWithoutVision() throws {
+        let dir = try ModelLoaderTests.writeToySynthetic()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect {
+            _ = try open(dir)
+        } throws: { error in
+            if case VisionPackError.notInstalled = error { return true }
+            return false
         }
     }
 
-    private func makeFixture() throws -> (root: URL, manifest: GTurboVisionManifestV1) {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vision-weight-store-\(UUID().uuidString).vision.gturbo")
-        try FileManager.default.createDirectory(at: root,
-                                                withIntermediateDirectories: false)
+    @Test func rejectsAVisionFileOfTheWrongSize() throws {
+        let dir = try ModelLoaderTests.writeToySynthetic { manifest in
+            manifest = Self.withVision(manifest, fileSize: 256)
+        }
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(count: 128).write(to: dir.appendingPathComponent("vision.bin"))
+        #expect(throws: VisionPackError.self) { _ = try open(dir) }
+    }
 
-        let weights = Data(repeating: 0, count: Int(GTurboVisionFormatV1.alignmentBytes))
-        let processor = Data("{}".utf8)
-        let manifest = GTurboVisionManifestV1(
-            modelID: "fixture/model", sourceRevision: "fixture-revision",
-            compatibleTextSourceSnapshotHash: "text-snapshot",
-            files: [
-                GTurboVisionFormatV1.weightsFile: .init(size: UInt64(weights.count)),
-                GTurboVisionFormatV1.processorFile: .init(size: UInt64(processor.count)),
-            ],
-            tensors: [.init(
-                name: "vision.weight", executionPosition: 0,
-                offset: 0, size: 2, shape: [1], dtype: .bf16)])
-
-        try weights.write(to: root.appendingPathComponent(GTurboVisionFormatV1.weightsFile))
-        try processor.write(to: root.appendingPathComponent(GTurboVisionFormatV1.processorFile))
-        try GTurboVisionManifestCodec.encode(manifest).write(
-            to: root.appendingPathComponent(GTurboVisionFormatV1.manifestFile))
-        return (root, manifest)
+    /// `vision.bin`: a 32-value BF16 tensor at 0 and a Q4_0 `[2, 32]` tensor
+    /// at 64 with its scales at 128.
+    private static func withVision(_ manifest: FieldfareManifest, fileSize: UInt64) -> FieldfareManifest {
+        var files = manifest.files
+        files["vision.bin"] = FieldfareFile(size: fileSize, sha256: "")
+        let vision = FieldfareTensorFile(file: "vision.bin", tensors: [
+            FieldfareTensor(name: "vision_tower.a", encoding: .bf16, shape: [32],
+                            weights: FieldfareRegion(offset: 0, size: 64)),
+            FieldfareTensor(name: "vision_tower.b", encoding: .q4_0, shape: [2, 32],
+                            weights: FieldfareRegion(offset: 64, size: 32),
+                            scales: FieldfareRegion(offset: 128, size: 4)),
+        ])
+        return FieldfareManifest(modelID: manifest.modelID, source: manifest.source, arch: manifest.arch,
+                                 files: files, resident: manifest.resident, experts: manifest.experts,
+                                 vision: vision)
     }
 }

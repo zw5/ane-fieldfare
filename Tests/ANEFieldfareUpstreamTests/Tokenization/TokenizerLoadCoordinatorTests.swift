@@ -30,7 +30,7 @@ struct TokenizerLoadCoordinatorTests {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("gf-tokenizer-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = root.appendingPathComponent("model.gturbo", isDirectory: true)
+        let model = root.appendingPathComponent("model.fieldfare", isDirectory: true)
         let modelTokenizer = model.appendingPathComponent("tokenizer", isDirectory: true)
         try FileManager.default.createDirectory(at: modelTokenizer, withIntermediateDirectories: true)
         #expect(GFTokenizer.tokenizerFolder(forModelDirectory: model, environment: [:]) == nil)

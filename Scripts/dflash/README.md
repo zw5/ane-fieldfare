@@ -6,7 +6,7 @@ empty output directory:
 
 ```bash
 python3 Scripts/dflash/gen.py 256 <dir> [slots]      # greedy target continuations with token IDs
-B=.build/swift-hotpath/release/ANEFieldfareDFlashCapture CK=checkpoints/gturbo/gemma4.gturbo
+B=.build/swift-hotpath/release/ANEFieldfareDFlashCapture CK=checkpoints/gemma-4-26b-a4b-it-qat.fieldfare
 $B embedding $CK <dir>/embed                        # tied INT4 embedding for the drafter
 for n in code math explain chat; do $B capture $CK <dir>/$n.gen.json <dir>/$n; done
 (cd <dir> && python3 .../dflash_ref.py . 53.0660 16,8,4)   # acceptance lengths

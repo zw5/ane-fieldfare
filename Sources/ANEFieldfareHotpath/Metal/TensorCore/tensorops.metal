@@ -5,7 +5,8 @@ using namespace metal;
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
 
-constant constexpr uint kW4A8GroupSize = 64;
+// Q4_0 weights: groups of 32 with one FP16 scale d, w = d * (q - 8).
+constant constexpr uint kQ4GroupSize = 32;
 
 constant constexpr int kMPPAffineTileM = 64;
 constant constexpr int kMPPAffineTileN = 32;
@@ -13,13 +14,12 @@ constant constexpr int kMPPAffineTileK = 64;
 
 kernel void mpp_prefill_affine_threadgroup_f16(
     device const uint8_t* packedWeights [[buffer(0)]],
-    device const bfloat* scales         [[buffer(1)]],
-    device const bfloat* biases         [[buffer(2)]],
-    device half* activations            [[buffer(3)]],
-    device half* output                 [[buffer(4)]],
-    constant uint& M                    [[buffer(5)]],
-    constant uint& N                    [[buffer(6)]],
-    constant uint& K                    [[buffer(7)]],
+    device const half* scales           [[buffer(1)]],
+    device half* activations            [[buffer(2)]],
+    device half* output                 [[buffer(3)]],
+    constant uint& M                    [[buffer(4)]],
+    constant uint& N                    [[buffer(5)]],
+    constant uint& K                    [[buffer(6)]],
     uint3 tgid                          [[threadgroup_position_in_grid]],
     uint3 lid3                          [[thread_position_in_threadgroup]],
     uint3 threads3                      [[threads_per_threadgroup]]) {
@@ -52,10 +52,10 @@ kernel void mpp_prefill_affine_threadgroup_f16(
     }
 
     const uint rowBytes = K / 2u;
-    const uint groupsPerRow = K / kW4A8GroupSize;
+    const uint groupsPerRow = K / kQ4GroupSize;
     const uint lid = lid3.x;
     const uint threads = threads3.x;
-    for (uint group = 0; group < groupsPerRow; ++group) {
+    for (uint group = 0; group < K / uint(kMPPAffineTileK); ++group) {
         for (int element = 0; element < groupProduct.get_capacity(); ++element) {
             groupProduct[element] = 0.0f;
         }
@@ -71,9 +71,8 @@ kernel void mpp_prefill_affine_threadgroup_f16(
                 const uint q = (globalK & 1u) == 0u
                     ? uint(packed & 0x0fu)
                     : uint(packed >> 4);
-                const float scale = float(scales[globalN * groupsPerRow + group]);
-                const float bias = float(biases[globalN * groupsPerRow + group]);
-                weightTile[linear] = half(fma(float(q), scale, bias));
+                const float scale = float(scales[globalN * groupsPerRow + globalK / kQ4GroupSize]);
+                weightTile[linear] = half(fma(float(q), scale, -8.0f * scale));
             } else {
                 weightTile[linear] = half(0.0f);
             }
@@ -114,13 +113,12 @@ constant constexpr int kMPPAffineApple10TileK = 128;
 
 kernel void mpp_prefill_affine_threadgroup_bf16_apple10_v1(
     device const uint8_t* packedWeights [[buffer(0)]],
-    device const bfloat* scales         [[buffer(1)]],
-    device const bfloat* biases         [[buffer(2)]],
-    device bfloat* activations          [[buffer(3)]],
-    device half* output                 [[buffer(4)]],
-    constant uint& M                    [[buffer(5)]],
-    constant uint& N                    [[buffer(6)]],
-    constant uint& K                    [[buffer(7)]],
+    device const half* scales           [[buffer(1)]],
+    device bfloat* activations          [[buffer(2)]],
+    device half* output                 [[buffer(3)]],
+    constant uint& M                    [[buffer(4)]],
+    constant uint& N                    [[buffer(5)]],
+    constant uint& K                    [[buffer(6)]],
     uint3 tgid                          [[threadgroup_position_in_grid]],
     uint3 lid3                          [[thread_position_in_threadgroup]],
     uint3 threads3                      [[threads_per_threadgroup]]) {
@@ -155,7 +153,7 @@ kernel void mpp_prefill_affine_threadgroup_bf16_apple10_v1(
     }
 
     const uint rowBytes = K / 2u;
-    const uint groupsPerRow = K / kW4A8GroupSize;
+    const uint groupsPerRow = K / kQ4GroupSize;
     const uint lid = lid3.x;
     const uint threads = threads3.x;
     for (uint tileKStart = 0; tileKStart < K;
@@ -176,12 +174,9 @@ kernel void mpp_prefill_affine_threadgroup_bf16_apple10_v1(
                 const uint q = (globalK & 1u) == 0u
                     ? uint(packed & 0x0fu)
                     : uint(packed >> 4);
-                const uint affineGroup = globalK / uint(kW4A8GroupSize);
                 const float scale = float(scales[
-                    globalN * groupsPerRow + affineGroup]);
-                const float bias = float(biases[
-                    globalN * groupsPerRow + affineGroup]);
-                weightTile[linear] = bfloat(fma(float(q), scale, bias));
+                    globalN * groupsPerRow + globalK / kQ4GroupSize]);
+                weightTile[linear] = bfloat(fma(float(q), scale, -8.0f * scale));
             } else {
                 weightTile[linear] = bfloat(0.0f);
             }

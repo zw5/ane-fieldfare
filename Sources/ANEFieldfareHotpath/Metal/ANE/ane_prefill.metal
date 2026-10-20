@@ -6,11 +6,11 @@ struct ANEBlobs { const device uchar *blob[4]; };
 // Activation lanes per expert; the carrier row is [lanes | gate | up | down].
 constant uint kLanes [[function_constant(80)]];
 constant uint kStride = kLanes + 3 * 704;
-static inline half ane_affine(const device uchar *blob, uint index, uint w, uint s, uint b) {
+// Q4_0: one FP16 scale per 32 weights, w = d * (q - 8).
+static inline half ane_q4_0(const device uchar *blob, uint index, uint w, uint s) {
     uint code = (blob[w + index / 2] >> ((index & 1) * 4)) & 15;
-    float scale = as_type<float>(uint(*reinterpret_cast<const device ushort *>(blob + s + (index / 64) * 2)) << 16);
-    float bias = as_type<float>(uint(*reinterpret_cast<const device ushort *>(blob + b + (index / 64) * 2)) << 16);
-    return half(float(code) * scale + bias);
+    float scale = float(*reinterpret_cast<const device half *>(blob + s + (index / 32) * 2));
+    return half((float(code) - 8.0f) * scale);
 }
 // Coalesced compact reads followed by a tile transpose into ANE's
 // [D, kStride] runtime-input carrier. Every weight is rewritten before reuse of a bank.
@@ -31,15 +31,15 @@ kernel void ane_expert_weights(constant ANEBlobs &blobs [[buffer(0)]], device ha
     threadgroup half gate[32][32], up[32][32];
     for (uint row = lane / 32; row < 32; row += 8) {
         uint f = group.y * 32 + row, d = group.x * 32 + lane % 32;
-        gate[row][lane % 32] = ane_affine(blob, f * 2816 + d, off[0], off[1], off[2]);
-        up[row][lane % 32] = ane_affine(blob, f * 2816 + d, off[3], off[4], off[5]);
+        gate[row][lane % 32] = ane_q4_0(blob, f * 2816 + d, off[0], off[1]);
+        up[row][lane % 32] = ane_q4_0(blob, f * 2816 + d, off[2], off[3]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint row = lane / 32; row < 32; row += 8) {
         uint d = group.x * 32 + row, f = group.y * 32 + lane % 32;
         carrier[d * kStride + kLanes + f] = gate[lane % 32][row];
         carrier[d * kStride + kLanes + 704 + f] = up[lane % 32][row];
-        carrier[d * kStride + kLanes + 1408 + f] = ane_affine(blob, d * 704 + f, off[6], off[7], off[8]);
+        carrier[d * kStride + kLanes + 1408 + f] = ane_q4_0(blob, d * 704 + f, off[4], off[5]);
     }
 }
 kernel void ane_expert_inputs(const device half *hidden [[buffer(0)]], device half *carrier [[buffer(1)]],

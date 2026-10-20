@@ -46,10 +46,8 @@ import ANEFieldfareValidationSupport
         }
         let qWeights = try buffer(qProjection.weights)
         let qScales = try buffer(qProjection.scales)
-        let qBiases = try buffer(qProjection.biases)
         let kvWeights = try buffer(kvProjection.weights)
         let kvScales = try buffer(kvProjection.scales)
-        let kvBiases = try buffer(kvProjection.biases)
         let xBuffer = try buffer(x)
         let qNormBuffer = try buffer(qNorm)
         let kNormBuffer = try buffer(kNorm)
@@ -58,17 +56,17 @@ import ANEFieldfareValidationSupport
         let commandBuffer = try #require(ctx.queue.makeCommandBuffer())
 
         gemv.encode(commandBuffer: commandBuffer,
-                    weights: qWeights, scales: qScales, biases: qBiases,
+                    weights: qWeights, scales: qScales,
                     x: xBuffer, y: qProjected,
                     m: UInt32(qRows), n: UInt32(n))
         gemv.encode(commandBuffer: commandBuffer,
-                    weights: kvWeights, scales: kvScales, biases: kvBiases,
+                    weights: kvWeights, scales: kvScales,
                     x: xBuffer, y: kvProjected,
                     m: UInt32(kvRows), n: UInt32(n))
         fusedGEMV.encode(commandBuffer: commandBuffer,
-                         qWeights: qWeights, qScales: qScales, qBiases: qBiases,
-                         kWeights: kvWeights, kScales: kvScales, kBiases: kvBiases,
-                         vWeights: kvWeights, vScales: kvScales, vBiases: kvBiases,
+                         qWeights: qWeights, qScales: qScales,
+                         kWeights: kvWeights, kScales: kvScales,
+                         vWeights: kvWeights, vScales: kvScales,
                          x: xBuffer,
                          qOut: qFused, kOut: kFused, vOut: vFused,
                          qRows: UInt32(qRows), kvRows: UInt32(kvRows), n: UInt32(n))
@@ -110,20 +108,16 @@ import ANEFieldfareValidationSupport
     private static func makeProjection(rows: Int,
                                        n: Int,
                                        seed: UInt64) -> (weights: [UInt8],
-                                                        scales: [UInt16],
-                                                        biases: [UInt16]) {
+                                                        scales: [UInt16]) {
         let packedCount = rows * n / 2
-        let groupCount = rows * n / Quantization.groupSize
+        let groupCount = rows * n / Quantization.q4GroupSize
         let weights = (0..<packedCount).map { index in
             UInt8(truncatingIfNeeded: (UInt64(index) &* 0x9E37_79B9) &+ seed)
         }
         let scales = (0..<groupCount).map { index in
-            Quantization.bf16Bits(0.015625 + Float(index % 7) * 0.001953125)
+            Float16((0.015625 + Float(index % 7) * 0.001953125) * (index % 3 == 0 ? -1 : 1)).bitPattern
         }
-        let biases = (0..<groupCount).map { index in
-            Quantization.bf16Bits(-0.125 + Float(index % 5) * 0.03125)
-        }
-        return (weights, scales, biases)
+        return (weights, scales)
     }
 }
 

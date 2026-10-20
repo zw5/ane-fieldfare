@@ -7,7 +7,7 @@ import Metal
     @Test func unalignedFileOffsetStillExposesPayloadAtOffsetZero() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-resident-unaligned-\(UUID().uuidString).bin")
+            .appendingPathComponent("fieldfare-resident-unaligned-\(UUID().uuidString).bin")
         defer { try? FileManager.default.removeItem(at: url) }
 
         // Offset that is not a multiple of getpagesize() — say 137.

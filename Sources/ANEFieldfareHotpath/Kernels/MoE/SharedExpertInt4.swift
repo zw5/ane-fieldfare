@@ -2,14 +2,11 @@ import Foundation
 public import Metal
 
 public enum SharedExpertError: Error, CustomStringConvertible {
-    case unsupportedWeightBits(Int)
     case dimensionMismatch(String)
     case scratchTooSmall(String)
 
     public var description: String {
         switch self {
-        case .unsupportedWeightBits(let bits):
-            return "SharedExpert unsupported weight bits: \(bits)"
         case .dimensionMismatch(let detail):
             return "SharedExpert dimension mismatch: \(detail)"
         case .scratchTooSmall(let detail):
@@ -18,7 +15,31 @@ public enum SharedExpertError: Error, CustomStringConvertible {
     }
 }
 
-/// INT4 shared MLP: gate, up and GELU in one dispatch
+/// One Q4_0 projection of the shared MLP: its weights and scales, which
+/// usually live in the resident buffer, and its `[rows, cols]` shape.
+public struct SharedExpertProjection {
+    public let weights: any MTLBuffer
+    public let scales:  any MTLBuffer
+    public let weightsOffset: Int
+    public let scalesOffset:  Int
+    public let rows: UInt32
+    public let cols: UInt32
+
+    public init(weights: any MTLBuffer, scales: any MTLBuffer,
+                weightsOffset: Int = 0, scalesOffset: Int = 0,
+                rows: UInt32, cols: UInt32) {
+        self.weights       = weights
+        self.scales        = scales
+        self.weightsOffset = weightsOffset
+        self.scalesOffset  = scalesOffset
+        self.rows          = rows
+        self.cols          = cols
+    }
+}
+
+/// Gemma 4's shared expert, the dense branch beside the routed experts:
+/// `y = down(gelu_pytorch_tanh(gate(x)) * up(x))`. Gate, up and GELU run in
+/// one dispatch (`shared_gate_up_act_int4`), then the down GEMV.
 /// (`shared_gate_up_act_int4`), then the down GEMV.
 public final class SharedExpertInt4 {
     private let int4: DequantInt4GEMV
@@ -68,59 +89,20 @@ public final class SharedExpertInt4 {
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(gate.weights, offset: gate.weightsOffset, index: 0)
         encoder.setBuffer(gate.scales, offset: gate.scalesOffset, index: 1)
-        encoder.setBuffer(gate.biases, offset: gate.biasesOffset, index: 2)
-        encoder.setBuffer(up.weights, offset: up.weightsOffset, index: 3)
-        encoder.setBuffer(up.scales, offset: up.scalesOffset, index: 4)
-        encoder.setBuffer(up.biases, offset: up.biasesOffset, index: 5)
-        encoder.setBuffer(x, offset: xOffset, index: 6)
-        encoder.setBuffer(scratchAct, offset: scratchActOffset, index: 7)
-        encoder.setValue(d, index: 8)
-        encoder.setValue(f, index: 9)
+        encoder.setBuffer(up.weights, offset: up.weightsOffset, index: 2)
+        encoder.setBuffer(up.scales, offset: up.scalesOffset, index: 3)
+        encoder.setBuffer(x, offset: xOffset, index: 4)
+        encoder.setBuffer(scratchAct, offset: scratchActOffset, index: 5)
+        encoder.setValue(d, index: 6)
+        encoder.setValue(f, index: 7)
         encoder.dispatchThreadgroups(MTLSize(width: (intermediate + 7) / 8, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         encoder.endEncoding()
         int4.encode(commandBuffer: cb,
                     weights: down.weights, weightsOffset: down.weightsOffset,
                     scales: down.scales, scalesOffset: down.scalesOffset,
-                    biases: down.biases, biasesOffset: down.biasesOffset,
                     x: scratchAct, xOffset: scratchActOffset,
                     y: y, yOffset: yOffset,
                     m: down.rows, n: down.cols)
-    }
-}
-
-public final class SharedExpertRuntime {
-    private enum Implementation {
-        case int4(SharedExpertInt4)
-        case int8(SharedExpertInt8)
-    }
-
-    private let implementation: Implementation
-
-    public init(context: MetalContext, weightBits: Int) throws {
-        switch weightBits {
-        case 4: self.implementation = .int4(try SharedExpertInt4(context: context))
-        case 8: self.implementation = .int8(try SharedExpertInt8(context: context))
-        default: throw SharedExpertError.unsupportedWeightBits(weightBits)
-        }
-    }
-
-    public func encode(commandBuffer: any MTLCommandBuffer,
-                       x: any MTLBuffer, xOffset: Int = 0,
-                       gate: SharedExpertProjection,
-                       up: SharedExpertProjection,
-                       down: SharedExpertProjection,
-                       y: any MTLBuffer, yOffset: Int = 0,
-                       scratchAct: any MTLBuffer, scratchActOffset: Int = 0) throws {
-        switch implementation {
-        case .int4(let runtime):
-            try runtime.encode(commandBuffer: commandBuffer, x: x, xOffset: xOffset,
-                               gate: gate, up: up, down: down, y: y, yOffset: yOffset,
-                               scratchAct: scratchAct, scratchActOffset: scratchActOffset)
-        case .int8(let runtime):
-            try runtime.encode(commandBuffer: commandBuffer, x: x, xOffset: xOffset,
-                               gate: gate, up: up, down: down, y: y, yOffset: yOffset,
-                               scratchAct: scratchAct, scratchActOffset: scratchActOffset)
-        }
     }
 }

@@ -598,7 +598,9 @@ void sample_topk64_final(
 // Fused greedy lm-head path. Eight SIMD groups each evaluate one INT4 row;
 // a second dispatch reduces the per-threadgroup argmax summaries.
 constant constexpr uint kLMHeadRowsPerTG = 8;
-constant constexpr uint kLMHeadGroupSize = 64;
+// The tied head is Q4_0: groups of 32, one FP16 scale d, w = d * (q - 8),
+// computed as the affine map q * s + b with b = -8 s.
+constant constexpr uint kLMHeadGroupSize = 32;
 constant constexpr uint kLMHeadRowSummaryStride = 2;
 constant uint FC_HEAD_D [[function_constant(10)]];
 constant uint FC_HEAD_V [[function_constant(11)]];
@@ -617,8 +619,7 @@ static inline uint lmhead_fc_v(constant uint& V) {
 }
 
 inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,
-                                           device const bfloat*     scales,
-                                           device const bfloat*     biases,
+                                           device const half*       scales,
                                            device const half*       x,
                                            uint row,
                                            uint D,
@@ -626,18 +627,17 @@ inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,
     const uint n_groups  = D / kLMHeadGroupSize;
     const uint row_bytes = D / 2u;
     device const uint8_t* W_row = W      + uint(row) * row_bytes;
-    device const bfloat*  s_row = scales + uint(row) * n_groups;
-    device const bfloat*  b_row = biases + uint(row) * n_groups;
+    device const half*    s_row = scales + uint(row) * n_groups;
 
     float acc = 0.0f;
-    const uint full_blocks = n_groups / 4u;
+    const uint full_blocks = D / 256u;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         device const ushort* wp = (device const ushort*)(W_row + byte_base);
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
-        const uint g  = blk * 4u + (lane >> 3);
+        const uint g  = blk * 8u + (lane >> 2);
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = -8.0f * s;
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -656,12 +656,13 @@ inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,
         acc = fma(s, dot, acc);
         acc = fma(b, sum, acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
-        const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
-        const uint8_t byte = W_row[g * (kLMHeadGroupSize / 2) + lane];
-        const float x0 = float(x[g * kLMHeadGroupSize + lane * 2u]);
-        const float x1 = float(x[g * kLMHeadGroupSize + lane * 2u + 1u]);
+    // 64-element steps: lanes 0-15 hold the step's first group, 16-31 its second.
+    for (uint c = full_blocks * 4u; c < D / 64u; ++c) {
+        const float s = float(s_row[c * 2u + (lane >> 4)]);
+        const float b = -8.0f * s;
+        const uint8_t byte = W_row[c * 32u + lane];
+        const float x0 = float(x[c * 64u + lane * 2u]);
+        const float x1 = float(x[c * 64u + lane * 2u + 1u]);
         float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
         dot = fma(float(uint(byte >> 4)), x1, dot);
         const float sum = x0 + x1;
@@ -675,11 +676,10 @@ inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,
 void lm_head_greedy_int4_rows_chunk_raw(
     device const half*    x_normed     [[buffer(0)]],
     device const uint8_t* W            [[buffer(1)]],
-    device const bfloat*  scales       [[buffer(2)]],
-    device const bfloat*  biases       [[buffer(3)]],
-    device       float*   summaries    [[buffer(4)]],
-    constant     uint&    D            [[buffer(5)]],
-    constant     uint&    V            [[buffer(6)]],
+    device const half*    scales       [[buffer(2)]],
+    device       float*   summaries    [[buffer(3)]],
+    constant     uint&    D            [[buffer(4)]],
+    constant     uint&    V            [[buffer(5)]],
     uint  tg_idx         [[threadgroup_position_in_grid]],
     uint  simd_lane_id   [[thread_index_in_simdgroup]],
     uint  simd_group_id  [[simdgroup_index_in_threadgroup]],
@@ -695,7 +695,7 @@ void lm_head_greedy_int4_rows_chunk_raw(
     uint best_i = 0xFFFFFFFFu;
 
     if (row < VV) {
-        float z = lmhead_int4_gemv_row_simd_dev(W, scales, biases,
+        float z = lmhead_int4_gemv_row_simd_dev(W, scales,
                                                 x_normed, row, DD, simd_lane_id);
         if (simd_lane_id == 0 && isfinite(z)) {
             best_v = z;
@@ -731,12 +731,11 @@ void lm_head_greedy_int4_rows_chunk_raw(
 void lm_head_greedy_int4_listed_chunk_raw(
     device const half*    x_normed     [[buffer(0)]],
     device const uint8_t* W            [[buffer(1)]],
-    device const bfloat*  scales       [[buffer(2)]],
-    device const bfloat*  biases       [[buffer(3)]],
-    device       float*   summaries    [[buffer(4)]],
-    constant     uint&    D            [[buffer(5)]],
-    constant     uint&    count        [[buffer(6)]],
-    device const uint*    ids          [[buffer(7)]],
+    device const half*    scales       [[buffer(2)]],
+    device       float*   summaries    [[buffer(3)]],
+    constant     uint&    D            [[buffer(4)]],
+    constant     uint&    count        [[buffer(5)]],
+    device const uint*    ids          [[buffer(6)]],
     uint  tg_idx         [[threadgroup_position_in_grid]],
     uint  simd_lane_id   [[thread_index_in_simdgroup]],
     uint  simd_group_id  [[simdgroup_index_in_threadgroup]],
@@ -750,7 +749,7 @@ void lm_head_greedy_int4_listed_chunk_raw(
     uint best_i = 0xFFFFFFFFu;
     if (k < count) {
         const uint row = ids[k];
-        float z = lmhead_int4_gemv_row_simd_dev(W, scales, biases, x_normed, row, DD, simd_lane_id);
+        float z = lmhead_int4_gemv_row_simd_dev(W, scales, x_normed, row, DD, simd_lane_id);
         if (simd_lane_id == 0 && isfinite(z)) {
             best_v = z;
             best_i = row;
@@ -839,11 +838,10 @@ constant constexpr uint kLMHeadCheckRowsPerSimd = 2;
 void lm_head_greedy_int4_check_chunk_raw(
     device const half*    x_rows       [[buffer(0)]],
     device const uint8_t* W            [[buffer(1)]],
-    device const bfloat*  scales       [[buffer(2)]],
-    device const bfloat*  biases       [[buffer(3)]],
-    device       float*   summaries    [[buffer(4)]],
-    constant     uint&    D            [[buffer(5)]],
-    constant     uint&    V            [[buffer(6)]],
+    device const half*    scales       [[buffer(2)]],
+    device       float*   summaries    [[buffer(3)]],
+    constant     uint&    D            [[buffer(4)]],
+    constant     uint&    V            [[buffer(5)]],
     uint  tg_idx         [[threadgroup_position_in_grid]],
     uint  tg_count       [[threadgroups_per_grid]],
     uint  lane           [[thread_index_in_simdgroup]],
@@ -865,10 +863,10 @@ void lm_head_greedy_int4_check_chunk_raw(
     // A row past the vocabulary rereads the last one; its result is dropped.
     uint rows[R];
     for (uint r = 0; r < R; ++r) rows[r] = min(row0 + r, VV - 1u);
-    const uint full_blocks = n_groups / 4u;
+    const uint full_blocks = DD / 256u;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
-        const uint g  = blk * 4u + (lane >> 3);
+        const uint g  = blk * 8u + (lane >> 2);
         const uint elem = byte_base * 2u;
         uint w4[R];
         float s[R], b[R];
@@ -876,7 +874,7 @@ void lm_head_greedy_int4_check_chunk_raw(
             device const ushort* wp = (device const ushort*)(W + rows[r] * row_bytes + byte_base);
             w4[r] = uint(wp[0]) | (uint(wp[1]) << 16);
             s[r] = float(scales[rows[r] * n_groups + g]);
-            b[r] = float(biases[rows[r] * n_groups + g]);
+            b[r] = -8.0f * s[r];
         }
         for (uint n = 0; n < N; ++n) {
             device const half* x = x_rows + n * DD;
@@ -900,16 +898,16 @@ void lm_head_greedy_int4_check_chunk_raw(
             }
         }
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    for (uint c = full_blocks * 4u; c < DD / 64u; ++c) {
         for (uint n = 0; n < N; ++n) {
             device const half* x = x_rows + n * DD;
-            const float x0 = float(x[g * kLMHeadGroupSize + lane * 2u]);
-            const float x1 = float(x[g * kLMHeadGroupSize + lane * 2u + 1u]);
+            const float x0 = float(x[c * 64u + lane * 2u]);
+            const float x1 = float(x[c * 64u + lane * 2u + 1u]);
             const float sum = x0 + x1;
             for (uint r = 0; r < R; ++r) {
-                const float s = float(scales[rows[r] * n_groups + g]);
-                const float b = float(biases[rows[r] * n_groups + g]);
-                const uint8_t byte = W[rows[r] * row_bytes + g * (kLMHeadGroupSize / 2) + lane];
+                const float s = float(scales[rows[r] * n_groups + c * 2u + (lane >> 4)]);
+                const float b = -8.0f * s;
+                const uint8_t byte = W[rows[r] * row_bytes + c * 32u + lane];
                 float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
                 dot = fma(float(uint(byte >> 4)), x1, dot);
                 acc[r][n] = fma(s, dot, acc[r][n]);

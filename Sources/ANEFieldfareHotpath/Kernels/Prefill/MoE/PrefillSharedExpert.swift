@@ -6,20 +6,20 @@ final class PrefillSharedExpert {
     /// keep the per-token GEMV loop.
     static let batchedMinimumTokens = 32
 
-    private let shared: SharedExpertRuntime
+    private let shared: SharedExpertInt4
     private let context: MetalContext
     private let batched: MPPPrefillInt4QMM?
     private let geluMulPSO: any MTLComputePipelineState?
-    /// Multi-row GEMV for small INT4 batches such as speculative verification.
+    /// Multi-row GEMV for small batches such as speculative verification.
     private let multiRow: DequantInt4GEMV?
     private var batchScratch: (gate: any MTLBuffer, up: any MTLBuffer, act: any MTLBuffer, tokens: Int, intermediate: Int)?
 
-    /// `batched` selects the INT4 tensor-op GEMM path for 4-bit weights. It
-    /// changes accumulation order relative to the per-token GEMV reference.
-    init(context: MetalContext, weightBits: Int = 8, batched: Bool = false) throws {
-        self.shared = try SharedExpertRuntime(context: context, weightBits: weightBits)
+    /// `batched` selects the tensor-op GEMM path. It changes accumulation
+    /// order relative to the per-token GEMV reference.
+    init(context: MetalContext, batched: Bool = false) throws {
+        self.shared = try SharedExpertInt4(context: context)
         self.context = context
-        if batched && weightBits == 4 {
+        if batched {
             let qmm = MPPPrefillInt4QMM(context: context)
             self.batched = qmm.isAvailable ? qmm : nil
             self.geluMulPSO = try context.pipeline("gelu_mul_fp16")
@@ -65,7 +65,6 @@ final class PrefillSharedExpert {
             if useMultiRow, let multiRow {
                 try multiRow.encodeRows(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                                     scales: p.scales, scalesOffset: p.scalesOffset,
-                                    biases: p.biases, biasesOffset: p.biasesOffset,
                                     x: x, y: y,
                                     m: p.rows, n: p.cols, rows: queryCount,
                                     xStrideElements: Int(p.cols), yStrideElements: Int(p.rows))
@@ -73,7 +72,6 @@ final class PrefillSharedExpert {
             }
             return batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                            scales: p.scales, scalesOffset: p.scalesOffset,
-                           biases: p.biases, biasesOffset: p.biasesOffset,
                            x: x, y: y,
                            m: queryCount, n: Int(p.rows), k: Int(p.cols)) != .fallback
         }

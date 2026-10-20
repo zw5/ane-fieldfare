@@ -1,30 +1,26 @@
 import Foundation
 import Metal
 
+/// Offsets of a routed expert's Q4_0 regions inside its blob; the same
+/// layout as the Metal `ExpertOffsets`.
 @frozen
 public struct MoEExpertOffsets {
     public var gateWOff: UInt32
     public var gateSOff: UInt32
-    public var gateBOff: UInt32
     public var upWOff: UInt32
     public var upSOff: UInt32
-    public var upBOff: UInt32
     public var downWOff: UInt32
     public var downSOff: UInt32
-    public var downBOff: UInt32
 
-    public init(gateWOff: UInt32, gateSOff: UInt32, gateBOff: UInt32,
-                upWOff: UInt32, upSOff: UInt32, upBOff: UInt32,
-                downWOff: UInt32, downSOff: UInt32, downBOff: UInt32) {
+    public init(gateWOff: UInt32, gateSOff: UInt32,
+                upWOff: UInt32, upSOff: UInt32,
+                downWOff: UInt32, downSOff: UInt32) {
         self.gateWOff = gateWOff
         self.gateSOff = gateSOff
-        self.gateBOff = gateBOff
         self.upWOff = upWOff
         self.upSOff = upSOff
-        self.upBOff = upBOff
         self.downWOff = downWOff
         self.downSOff = downSOff
-        self.downBOff = downBOff
     }
 }
 

@@ -196,10 +196,7 @@ public func run(args: Args,
                                                vocab: model.config.vocabSize)
         let multimodalInput: MultimodalPrefillInput?
         if let multimodalMessages {
-            let vision = try VisionRuntime.open(
-                textModelURL: modelURL,
-                context: context,
-                visionPackURL: args.visionPack.map { URL(fileURLWithPath: $0) })
+            let vision = try VisionRuntime.open(textModelURL: modelURL, context: context)
             var features: [UUID: VisionFeatures] = [:]
             features.reserveCapacity(imageURLs.count)
             let visionStarted = ContinuousClock.now

@@ -29,7 +29,7 @@ import ANEFieldfareValidationSupport
         }
         func view(_ b: any MTLBuffer) -> TensorView {
             TensorView(buffer: b, offset: 0, length: UInt64(b.length), scaleOffset: 0, scaleLength: 0,
-                       biasOffset: 0, biasLength: 0, shape: (UInt32(Self.d), 1, 1, 1), dtype: 1)
+                       shape: (UInt32(Self.d), 1, 1, 1))
         }
         func halves(of b: any MTLBuffer) -> [UInt16] {
             (0..<Self.d).map { unsafe b.contents().load(fromByteOffset: $0 * 2, as: UInt16.self) }

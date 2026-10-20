@@ -33,8 +33,8 @@ import ANEFieldfareValidationSupport
         let x = (0..<Self.dimension).map { _ in Float(Float16(rng.uniform(-0.5, 0.5))) }
         let residual = (0..<Self.dimension).map { _ in Float(Float16(rng.uniform(-0.5, 0.5))) }
         let routingWeights = (0..<Self.topK).map { Float(Float16(0.04 + Float($0) * 0.015)) }
-        func quantized(_ experts: [[[Float]]]) -> [[Quantization.Int4AffineRow]] {
-            experts.map { rows in rows.map { Quantization.quantizeInt4Affine($0) } }
+        func quantized(_ experts: [[[Float]]]) -> [[Quantization.Q4Row]] {
+            experts.map { rows in rows.map { Quantization.quantizeQ4_0($0) } }
         }
         let expected = MoeRef.applyStreamedRouted(
             x: x,
@@ -74,7 +74,7 @@ import ANEFieldfareValidationSupport
         // argument buffer.
         let views = routedBuffers.map {
             TensorView(buffer: $0, offset: 0, length: UInt64($0.length), scaleOffset: 0, scaleLength: 0,
-                       biasOffset: 0, biasLength: 0, shape: (0, 0, 0, 0), dtype: 0)
+                       shape: (0, 0, 0, 0))
         }
         let argumentBuffer = kernel.makeReusedRoutedArgumentBuffer(routedViews: views, topK: UInt32(Self.topK))
 
@@ -149,11 +149,9 @@ import ANEFieldfareValidationSupport
                                  up: [[Float]],
                                  down: [[Float]]) -> RoutedBlob {
         func packed(_ rows: [[Float]])
-            -> (weights: [UInt8], scales: [UInt16], biases: [UInt16]) {
-            let quantized = rows.map { Quantization.quantizeInt4Affine($0) }
-            return (quantized.flatMap(\.packed),
-                    quantized.flatMap(\.scales),
-                    quantized.flatMap(\.biases))
+            -> (weights: [UInt8], scales: [UInt16]) {
+            let quantized = rows.map { Quantization.quantizeQ4_0($0) }
+            return (quantized.flatMap(\.packed), quantized.flatMap(\.scales))
         }
         var bytes = [UInt8]()
         func append(_ values: [UInt8]) { bytes.append(contentsOf: values) }
@@ -168,18 +166,15 @@ import ANEFieldfareValidationSupport
         let downValues = packed(down)
         let gateW = UInt32(bytes.count); append(gateValues.weights)
         let gateS = UInt32(bytes.count); append(gateValues.scales)
-        let gateB = UInt32(bytes.count); append(gateValues.biases)
         let upW = UInt32(bytes.count); append(upValues.weights)
         let upS = UInt32(bytes.count); append(upValues.scales)
-        let upB = UInt32(bytes.count); append(upValues.biases)
         let downW = UInt32(bytes.count); append(downValues.weights)
         let downS = UInt32(bytes.count); append(downValues.scales)
-        let downB = UInt32(bytes.count); append(downValues.biases)
         return RoutedBlob(
             bytes: bytes,
             offsets: MoEExpertOffsets(
-                gateWOff: gateW, gateSOff: gateS, gateBOff: gateB,
-                upWOff: upW, upSOff: upS, upBOff: upB,
-                downWOff: downW, downSOff: downS, downBOff: downB))
+                gateWOff: gateW, gateSOff: gateS,
+                upWOff: upW, upSOff: upS,
+                downWOff: downW, downSOff: downS))
     }
 }

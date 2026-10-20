@@ -20,27 +20,25 @@ struct DFlashState {
     uint pad1;
 };
 
-/// Tied INT4 embedding rows of the block's tokens, scaled:
+/// Tied Q4_0 embedding rows of the block's tokens, scaled:
 /// out[r][i] = E[block[r]][i] * scale (FP32).
 kernel void dflash_embed_block(
     device const uint8_t* table    [[buffer(0)]],
-    device const bfloat*  scales   [[buffer(1)]],
-    device const bfloat*  biases   [[buffer(2)]],
-    device const uint*    block    [[buffer(3)]],
-    device float*         out      [[buffer(4)]],
-    constant uint&        D        [[buffer(5)]],
-    constant float&       scale    [[buffer(6)]],
+    device const half*    scales   [[buffer(1)]],
+    device const uint*    block    [[buffer(2)]],
+    device float*         out      [[buffer(3)]],
+    constant uint&        D        [[buffer(4)]],
+    constant float&       scale    [[buffer(5)]],
     uint2                 gid      [[thread_position_in_grid]]
 ) {
     const uint i = gid.x, r = gid.y;
     if (i >= D) return;
     const uint token = block[r];
-    const uint groups = D / 64u;
+    const uint groups = D / 32u;
     const uint8_t byte = table[token * (D / 2u) + (i >> 1)];
     const uint q = (i & 1u) ? uint(byte >> 4) : uint(byte & 0xFu);
-    const float s = float(scales[token * groups + i / 64u]);
-    const float b = float(biases[token * groups + i / 64u]);
-    out[r * D + i] = (float(q) * s + b) * scale;
+    const float s = float(scales[token * groups + i / 32u]);
+    out[r * D + i] = (float(q) - 8.0f) * s * scale;
 }
 
 /// 1/rms of row `xr` (D elements), with `partial` as threadgroup scratch.

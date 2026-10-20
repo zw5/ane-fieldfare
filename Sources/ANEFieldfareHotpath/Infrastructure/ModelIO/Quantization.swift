@@ -1,5 +1,9 @@
 public enum Quantization {
+    /// The affine INT8 router's group size, and the width every 4-bit kernel
+    /// requires a row to be a multiple of.
     public static let groupSize: Int = 64
+    /// Q4_0: values per FP16 scale.
+    public static let q4GroupSize: Int = 32
 
     // BF16 = top 16 bits of FP32 (8-bit exponent, 7-bit mantissa). Stored on
     // disk and on the GPU as the native `bfloat` type; in Swift we carry the
