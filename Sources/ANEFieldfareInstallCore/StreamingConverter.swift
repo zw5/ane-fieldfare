@@ -129,6 +129,12 @@ package struct StreamingConverter: Sendable {
             RowCodec.f32ToBF16(rows, out: &weights)
         case let .f32ToAffine8(cols):
             RowCodec.f32ToAffine8(rows, cols: cols, weights: &weights, scales: &scales, biases: &biases)
+        case .copy:
+            weights.append(contentsOf: rows)
+        case let .bf16ToQ4_0(cols):
+            RowCodec.bf16ToQ4_0(rows, cols: cols, weights: &weights, scales: &scales)
+        case let .f32PatchToBF16(channels, size):
+            RowCodec.f32PatchToBF16(rows, channels: channels, size: size, out: &weights)
         case let .expect(bytes):
             guard rows.elementsEqual(bytes) else { throw ConversionError.unexpectedContent(at: segment.source) }
         }

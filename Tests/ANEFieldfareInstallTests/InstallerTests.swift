@@ -14,6 +14,10 @@ private struct Fixture {
     let tokenizerPins: [PinnedFile]
     var destination: URL { root.appendingPathComponent("model.fieldfare") }
 
+    let mmprojPath: String
+    let mmprojBytes: [UInt8]
+    let mmprojPin: PinnedFile
+
     init(seed: UInt64 = 1) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("fieldfare-install-\(UUID().uuidString)", isDirectory: true)
@@ -23,6 +27,11 @@ private struct Fixture {
         try Data(bytes).write(to: URL(fileURLWithPath: ggufPath))
         pin = PinnedFile(repo: "fixture/gguf", revision: "r", path: "model.gguf",
                          size: UInt64(bytes.count), sha256: Installer.digest(bytes[...]))
+        mmprojBytes = GGUFFixture.mmproj(GGUFFixture.visionTensors())
+        mmprojPath = root.appendingPathComponent("mmproj.gguf").path
+        try Data(mmprojBytes).write(to: URL(fileURLWithPath: mmprojPath))
+        mmprojPin = PinnedFile(repo: "fixture/gguf", revision: "r", path: "mmproj.gguf",
+                               size: UInt64(mmprojBytes.count), sha256: Installer.digest(mmprojBytes[...]))
         tokenizerDirectory = root.appendingPathComponent("tok", isDirectory: true)
         try FileManager.default.createDirectory(at: tokenizerDirectory, withIntermediateDirectories: true)
         var pins: [PinnedFile] = []
@@ -35,7 +44,7 @@ private struct Fixture {
         tokenizerPins = pins
     }
 
-    func options(source: (any ByteSource)? = nil) throws -> InstallOptions {
+    func options(source: (any ByteSource)? = nil, vision: Bool = false) throws -> InstallOptions {
         var options = InstallOptions(
             destination: destination,
             source: try source ?? LocalFileSource(path: ggufPath),
@@ -46,6 +55,7 @@ private struct Fixture {
         options.chunkBytes = 8 * 1024
         options.checkpointBytes = 16 * 1024
         options.headerPrefixBytes = 16 * 1024
+        if vision { options.vision = (try LocalFileSource(path: mmprojPath), mmprojPin) }
         return options
     }
 
@@ -211,6 +221,62 @@ private enum Decode {
         #expect(verified == manifest)
     }
 
+    @Test func installsTheVisionTower() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let manifest = try await Installer.install(try fixture.options(vision: true))
+        let vision = try #require(manifest.vision)
+        #expect(vision.file == "vision.bin" && manifest.files["vision.bin"] != nil)
+        #expect(manifest.source.files.map(\.path).contains("mmproj.gguf"))
+        let byName = Dictionary(uniqueKeysWithValues: vision.tensors.map { ($0.name, $0) })
+        #expect(vision.tensors.count == 5 + 13)
+        #expect(byName.keys.filter { $0.hasPrefix("vision_tower.encoder.layers.0.") }.count == 13)
+        let bytes = try read(fixture.destination.appendingPathComponent("vision.bin"))
+        let header = try GGUFReader.parse(Data(fixture.mmprojBytes), fileSize: UInt64(fixture.mmprojBytes.count))
+        func source(_ name: String) throws -> ArraySlice<UInt8> {
+            let t = try #require(header.tensor(name))
+            return fixture.mmprojBytes[Int(t.offset)..<Int(t.offset + t.size)]
+        }
+
+        // BF16 weights are copied; F32 norms are BF16-exact.
+        let q = try #require(byName["vision_tower.encoder.layers.0.self_attn.q_proj.linear.weight"])
+        #expect(q.encoding == .bf16 && q.shape == [64, 64])
+        #expect(slice(bytes, q.weights) == (try source("v.blk.0.attn_q.weight")))
+        let norm = try #require(byName["vision_tower.encoder.layers.0.post_feedforward_layernorm.weight"])
+        #expect(Decode.bf16(slice(bytes, norm.weights)) == Decode.f32(try source("v.blk.0.ffn_post_norm.weight")))
+
+        // The conv kernel [out][c][y][x] becomes the linear row [out][y][x][c].
+        let patch = try #require(byName["vision_tower.patch_embedder.input_proj.weight"])
+        #expect(patch.shape == [64, 48])
+        let kernel = Decode.f32(try source("v.patch_embd.weight"))
+        let linear = Decode.bf16(slice(bytes, patch.weights))
+        let size = GGUFFixture.patch
+        for out in [0, 63] {
+            for c in 0..<3 {
+                for y in 0..<size {
+                    for x in 0..<size {
+                        #expect(linear[out * 48 + (y * size + x) * 3 + c] == kernel[((out * 3 + c) * size + y) * size + x])
+                    }
+                }
+            }
+        }
+
+        // The projector is Q4_0 of its BF16 rows.
+        let projector = try #require(byName["embed_vision.embedding_projection.weight"])
+        #expect(projector.encoding == .q4_0 && projector.shape == [UInt64(GGUFFixture.hidden), 64])
+        let exact = Decode.bf16(try source("mm.input_projection.weight"))
+        let projectorScales = try #require(projector.scales)
+        let values = Decode.q4_0(weights: slice(bytes, projector.weights), scales: slice(bytes, projectorScales))
+        // At most one step of the group's scale (amax / 8), and an absolute
+        // floor of 8 FP16 subnormal steps for groups whose scale underflows,
+        // as in ggml.
+        for g in 0..<(exact.count / 32) {
+            let step = (exact[(32 * g)..<(32 * g + 32)].map(abs).max() ?? 0) / 8
+            for j in (32 * g)..<(32 * g + 32) { #expect(abs(values[j] - exact[j]) <= step * 1.01 + 5e-7, "g=\(g) j=\(j) got=\(values[j]) want=\(exact[j]) step=\(step)") }
+        }
+        #expect(try await Installer.verify(fixture.destination) == manifest)
+    }
+
     @Test func resumesAfterAnInterruption() async throws {
         let clean = try Fixture()
         defer { clean.remove() }
@@ -223,8 +289,8 @@ private enum Decode {
         await #expect(throws: FailingSource.Interrupted.self) {
             try await Installer.install(try fixture.options(source: interrupted))
         }
-        let checkpoint = fixture.destination.path + ".partial/" + Installer.checkpointFile
-        #expect(FileManager.default.fileExists(atPath: checkpoint))
+        let partial = URL(fileURLWithPath: fixture.destination.path + ".partial")
+        #expect(FileManager.default.fileExists(atPath: Installer.checkpointURL("text", partial: partial).path))
         let resumed = try await Installer.install(try fixture.options())
         #expect(resumed == expected)
         for path in expected.files.keys {

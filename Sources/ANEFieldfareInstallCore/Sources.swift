@@ -30,6 +30,11 @@ package enum SupportedModel {
         size: 14_439_363_584,
         sha256: "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d")
 
+    package static let mmproj = PinnedFile(
+        repo: ggufRepo, revision: ggufRevision, path: "gemma-4-26B-it-mmproj.gguf",
+        size: 1_194_828_160,
+        sha256: "a359953a076b877db30c31dbbb4c6d93b4a6e017ee5db5784247e4d4c0dd4f3b")
+
     package static let tokenizer: [PinnedFile] = [
         PinnedFile(repo: tokenizerRepo, revision: tokenizerRevision, path: "tokenizer.json",
                    size: 32_169_626,

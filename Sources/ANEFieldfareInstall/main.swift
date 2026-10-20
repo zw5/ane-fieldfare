@@ -7,14 +7,17 @@ Usage: ANEFieldfareInstall [options]
        ANEFieldfareInstall --verify <model.fieldfare>
 
 Builds the model directory from Google's QAT Q4_0 release of Gemma 4
-26B-A4B. The GGUF is streamed from Hugging Face, checked against its pinned
-SHA-256 and converted as it arrives; nothing but the output is written to
-disk. An interrupted install resumes where it stopped.
+26B-A4B: the text model (14.4 GB) and the vision tower (1.2 GB). Each GGUF
+is streamed from Hugging Face, checked against its pinned SHA-256 and
+converted as it arrives; nothing but the output is written to disk. An
+interrupted install resumes where it stopped.
 
 Options:
   --output <dir>        Model directory to create
                         (default: checkpoints/\(SupportedModel.directoryName))
-  --from-gguf <file>    Convert a local copy of the pinned GGUF instead
+  --from-gguf <file>    Convert a local copy of the pinned text GGUF instead
+  --from-mmproj <file>  Convert a local copy of the pinned vision GGUF instead
+  --no-vision           Install the text model only
   --tokenizer <dir>     Take the pinned tokenizer files from a local directory
   --connections <n>     Parallel range requests (default 8)
   --overwrite           Replace an existing model directory
@@ -65,6 +68,8 @@ if let directory = arguments.value("--verify") {
 
 let output = arguments.value("--output") ?? "checkpoints/\(SupportedModel.directoryName)"
 let localGGUF = arguments.value("--from-gguf")
+let localMMProj = arguments.value("--from-mmproj")
+let noVision = arguments.flag("--no-vision")
 let tokenizer = arguments.value("--tokenizer")
 let connections = arguments.value("--connections").map { Int($0) ?? 0 } ?? 8
 let overwrite = arguments.flag("--overwrite")
@@ -82,6 +87,11 @@ do {
         tokenizer: tokenizer.map { .directory(URL(fileURLWithPath: $0)) } ?? .huggingFace,
         tokenizerFiles: SupportedModel.tokenizer,
         modelID: SupportedModel.modelID)
+    if !noVision {
+        let visionSource: any ByteSource = try localMMProj.map { try LocalFileSource(path: $0) }
+            ?? HuggingFaceSource(file: SupportedModel.mmproj, concurrency: connections)
+        options.vision = (visionSource, SupportedModel.mmproj)
+    }
     options.overwrite = overwrite
     options.restart = restart
     options.log = log

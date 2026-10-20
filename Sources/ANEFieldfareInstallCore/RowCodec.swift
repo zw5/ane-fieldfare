@@ -142,4 +142,43 @@ package enum RowCodec {
             }
         }
     }
+
+    /// Little-endian BF16 rows → Q4_0 with ggml's reference rounding.
+    package static func bf16ToQ4_0(_ src: ArraySlice<UInt8>, cols: Int,
+                                   weights: inout [UInt8], scales: inout [UInt8]) {
+        precondition(cols % 32 == 0 && src.count % (cols * 2) == 0)
+        var values = [Float](repeating: 0, count: cols)
+        var row = src.startIndex
+        while row < src.endIndex {
+            for j in 0..<cols {
+                let i = row + 2 * j
+                values[j] = Float(bitPattern: (UInt32(src[i]) | UInt32(src[i + 1]) << 8) << 16)
+            }
+            quantizeQ4_0(values, weights: &weights, scales: &scales)
+            row += cols * 2
+        }
+    }
+
+    /// Conv kernel rows `[channels][size][size]` of little-endian F32 →
+    /// linear rows `[size][size][channels]` of BF16, rounding to nearest even.
+    package static func f32PatchToBF16(_ src: ArraySlice<UInt8>, channels: Int, size: Int,
+                                       out: inout [UInt8]) {
+        let width = channels * size * size
+        precondition(src.count % (width * 4) == 0)
+        var permuted = [UInt8](repeating: 0, count: width * 4)
+        var row = src.startIndex
+        while row < src.endIndex {
+            for c in 0..<channels {
+                for y in 0..<size {
+                    for x in 0..<size {
+                        let from = row + 4 * ((c * size + y) * size + x)
+                        let to = 4 * ((y * size + x) * channels + c)
+                        for b in 0..<4 { permuted[to + b] = src[from + b] }
+                    }
+                }
+            }
+            f32ToBF16(permuted[...], out: &out)
+            row += width * 4
+        }
+    }
 }

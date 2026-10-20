@@ -15,6 +15,12 @@ package struct Segment: Sendable, Equatable {
         case q6KToQ4_0(cols: Int)
         case f32ToBF16
         case f32ToAffine8(cols: Int)
+        /// BF16 copied unchanged.
+        case copy
+        case bf16ToQ4_0(cols: Int)
+        /// A conv kernel row `[channels][size][size]` (F32) as the linear
+        /// patch projection's row `[size][size][channels]` (BF16).
+        case f32PatchToBF16(channels: Int, size: Int)
         /// Writes nothing: the rows must equal these bytes exactly.
         case expect([UInt8])
     }
@@ -345,5 +351,144 @@ extension FieldfareTensor {
     /// The segment outputs of an expert tensor in the blob at `base`.
     func outputs(file: Int, base: UInt64) -> [Segment.Output] {
         [weights, scales, biases].compactMap { $0 }.map { Segment.Output(file: file, offset: base + $0.offset) }
+    }
+}
+
+
+/// The vision tower and projector of Gemma 4 26B-A4B from Google's QAT
+/// release's `mmproj` GGUF. The tower stays BF16 (the GGUF's F32 norms and
+/// tables are BF16 values widened) and the projector is quantized to Q4_0.
+package enum Gemma4VisionPlan {
+    package static let file = "vision.bin"
+
+    package struct Plan: Sendable {
+        package let files: [PlannedFile]
+        package let vision: FieldfareTensorFile
+        package let segments: [Segment]
+    }
+
+    static let layerTensors: [(gguf: String, name: String)] = [
+        ("ln1.weight", "input_layernorm.weight"),
+        ("attn_q.weight", "self_attn.q_proj.linear.weight"),
+        ("attn_k.weight", "self_attn.k_proj.linear.weight"),
+        ("attn_v.weight", "self_attn.v_proj.linear.weight"),
+        ("attn_out.weight", "self_attn.o_proj.linear.weight"),
+        ("attn_q_norm.weight", "self_attn.q_norm.weight"),
+        ("attn_k_norm.weight", "self_attn.k_norm.weight"),
+        ("attn_post_norm.weight", "post_attention_layernorm.weight"),
+        ("ln2.weight", "pre_feedforward_layernorm.weight"),
+        ("ffn_gate.weight", "mlp.gate_proj.linear.weight"),
+        ("ffn_up.weight", "mlp.up_proj.linear.weight"),
+        ("ffn_down.weight", "mlp.down_proj.linear.weight"),
+        ("ffn_post_norm.weight", "post_feedforward_layernorm.weight"),
+    ]
+
+    package static func plan(_ header: GGUFHeader, textHiddenSize: Int) throws -> Plan {
+        let m = header.metadata
+        func int(_ key: String) throws -> Int {
+            guard let v = m[key]?.intValue else { throw ConversionPlanError.unsupported("missing \(key)") }
+            return v
+        }
+        guard case .string("gemma4v")? = m["clip.vision.projector_type"] else {
+            throw ConversionPlanError.unsupported("projector is not gemma4v")
+        }
+        let hidden = try int("clip.vision.embedding_length"), layers = try int("clip.vision.block_count")
+        let patch = try int("clip.vision.patch_size")
+        guard try int("clip.vision.projection_dim") == textHiddenSize else {
+            throw ConversionPlanError.unsupported("projector width does not match the text model")
+        }
+
+        var builder = Gemma4Plan.Builder()
+        let file = builder.addFile(Self.file)
+        var tensors: [FieldfareTensor] = []
+        var consumed: Set<String> = []
+        func source(_ name: String) throws -> GGUFHeader.Tensor {
+            guard let tensor = header.tensor(name) else { throw ConversionPlanError.unsupported("missing \(name)") }
+            consumed.insert(name)
+            return tensor
+        }
+        func add(_ gguf: GGUFHeader.Tensor, as name: String, operation: Segment.Operation? = nil) throws {
+            tensors.append(try builder.addVision(gguf, name: name, file: file, operation: operation))
+        }
+
+        let patchKernel = try source("v.patch_embd.weight")
+        guard patchKernel.type == .f32, patchKernel.dims == [UInt64(patch), UInt64(patch), 3, UInt64(hidden)] else {
+            throw ConversionPlanError.unsupported("patch embedding shape \(patchKernel.dims)")
+        }
+        try add(patchKernel, as: "vision_tower.patch_embedder.input_proj.weight",
+                operation: .f32PatchToBF16(channels: 3, size: patch))
+        try add(try source("v.position_embd.weight"), as: "vision_tower.patch_embedder.position_embedding_table")
+        for layer in 0..<layers {
+            for (ggufName, name) in layerTensors {
+                try add(try source("v.blk.\(layer).\(ggufName)"), as: "vision_tower.encoder.layers.\(layer).\(name)")
+            }
+        }
+        try add(try source("v.std_bias"), as: "vision_tower.std_bias")
+        try add(try source("v.std_scale"), as: "vision_tower.std_scale")
+        let projector = try source("mm.input_projection.weight")
+        guard projector.type == .bf16, projector.dims == [UInt64(hidden), UInt64(textHiddenSize)] else {
+            throw ConversionPlanError.unsupported("projector shape \(projector.dims)")
+        }
+        try add(projector, as: "embed_vision.embedding_projection.weight",
+                operation: .bf16ToQ4_0(cols: hidden))
+        builder.files[file] = PlannedFile(path: Self.file, size: builder.cursor)
+
+        let unknown = header.tensors.map(\.name).filter { !consumed.contains($0) }
+        guard unknown.isEmpty else {
+            throw ConversionPlanError.unsupported("unexpected vision tensors \(unknown.prefix(5))")
+        }
+        builder.segments.sort { $0.source < $1.source }
+        return Plan(files: builder.files, vision: FieldfareTensorFile(file: Self.file, tensors: tensors),
+                    segments: builder.segments)
+    }
+}
+
+extension Gemma4Plan.Builder {
+    /// Lays out one vision tensor: BF16 unless `operation` quantizes it.
+    mutating func addVision(_ gguf: GGUFHeader.Tensor, name: String, file: Int,
+                            operation explicit: Segment.Operation?) throws -> FieldfareTensor {
+        let operation: Segment.Operation
+        switch (explicit, gguf.type) {
+        case let (op?, _): operation = op
+        case (nil, .f32): operation = .f32ToBF16
+        case (nil, .bf16): operation = .copy
+        default: throw ConversionPlanError.unsupported("\(gguf.name): \(gguf.type)")
+        }
+        let encoding: FieldfareEncoding
+        let shape: [UInt64]
+        switch operation {
+        case .bf16ToQ4_0:
+            encoding = .q4_0
+            shape = [gguf.rows, gguf.cols]
+        case let .f32PatchToBF16(channels, size):
+            encoding = .bf16
+            shape = [gguf.dims[3], UInt64(channels * size * size)]
+        default:
+            encoding = .bf16
+            shape = Array(gguf.dims.reversed())
+        }
+        let sizes = try FieldfareTensor.regionSizes(encoding: encoding, shape: shape, field: name)
+        let weights = reserve(sizes.weights)
+        let scales = sizes.scales > 0 ? reserve(sizes.scales) : nil
+        let regions = [weights, scales].compactMap { $0 }
+        // One kernel row of the patch embedding is all its input channels.
+        let rows = Int(gguf.rows)
+        let rowBytes = Int(gguf.rowBytes)
+        let (unitRows, unitBytes): (Int, Int) = if case .f32PatchToBF16 = operation {
+            (Int(gguf.dims[3]), Int(gguf.size) / Int(gguf.dims[3]))
+        } else {
+            (rows, rowBytes)
+        }
+        let perSegment = Swift.max(1, Gemma4Plan.segmentBytes / unitBytes)
+        var row = 0
+        while row < unitRows {
+            let n = Swift.min(perSegment, unitRows - row)
+            segments.append(Segment(
+                source: gguf.offset + UInt64(row * unitBytes), rows: n, rowBytes: unitBytes,
+                operation: operation,
+                outputs: regions.map { Segment.Output(file: file, offset: $0.offset + $0.size / UInt64(unitRows) * UInt64(row)) }))
+            row += n
+        }
+        return FieldfareTensor(name: name, encoding: encoding, shape: shape, weights: weights, scales: scales)
     }
 }

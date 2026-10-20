@@ -99,6 +99,80 @@ enum GGUFFixture {
         return t
     }
 
+    /// The vision `mmproj`: one layer, hidden 64, patch 4, projecting to
+    /// the text fixture's hidden size.
+    static let visionHidden = 64, visionFF = 96, patch = 4
+
+    static func visionTensors(seed: UInt64 = 7) -> [Tensor] {
+        var b = Bytes(state: seed)
+        func bf16(_ name: String, dims: [Int]) -> Tensor {
+            var data: [UInt8] = []
+            for _ in 0..<dims.reduce(1, *) { data.append(b.next()); data.append(b.next() & 0x3F) }
+            return Tensor(name: name, dims: dims.map(UInt64.init), type: .bf16, data: data)
+        }
+        let h = visionHidden
+        var t = [bf16("mm.input_projection.weight", dims: [h, hidden]),
+                 f32("v.patch_embd.weight", dims: [patch, patch, 3, h], bytes: &b),
+                 f32("v.position_embd.weight", dims: [h, 16, 2], bytes: &b),
+                 f32("v.std_bias", dims: [h], bytes: &b),
+                 f32("v.std_scale", dims: [h], bytes: &b)]
+        let p = "v.blk.0."
+        for name in ["ln1", "ln2", "attn_post_norm", "ffn_post_norm"] { t.append(f32(p + name + ".weight", dims: [h], bytes: &b)) }
+        for name in ["attn_q_norm", "attn_k_norm"] { t.append(f32(p + name + ".weight", dims: [16], bytes: &b)) }
+        for name in ["attn_q", "attn_k", "attn_v", "attn_out"] { t.append(bf16(p + name + ".weight", dims: [h, h])) }
+        t.append(bf16(p + "ffn_gate.weight", dims: [h, visionFF]))
+        t.append(bf16(p + "ffn_up.weight", dims: [h, visionFF]))
+        t.append(bf16(p + "ffn_down.weight", dims: [visionFF, h]))
+        return t
+    }
+
+    static func mmproj(_ tensors: [Tensor]) -> [UInt8] {
+        gguf(tensors, metadata: [
+            ("clip.vision.projector_type", { w in w.u32(8); w.string("gemma4v") }),
+            ("clip.vision.embedding_length", { w in w.u32(4); w.u32(UInt32(visionHidden)) }),
+            ("clip.vision.block_count", { w in w.u32(4); w.u32(1) }),
+            ("clip.vision.patch_size", { w in w.u32(4); w.u32(UInt32(patch)) }),
+            ("clip.vision.projection_dim", { w in w.u32(4); w.u32(UInt32(hidden)) }),
+        ])
+    }
+
+    /// Little-endian GGUF writer.
+    struct Writer {
+        var out: [UInt8] = []
+        mutating func u32(_ v: UInt32) { for i in 0..<4 { out.append(UInt8(truncatingIfNeeded: v >> (8 * UInt32(i)))) } }
+        mutating func u64(_ v: UInt64) { for i in 0..<8 { out.append(UInt8(truncatingIfNeeded: v >> (8 * UInt64(i)))) } }
+        mutating func string(_ s: String) { u64(UInt64(s.utf8.count)); out += Array(s.utf8) }
+    }
+
+    static func gguf(_ tensors: [Tensor], metadata: [(String, (inout Writer) -> Void)]) -> [UInt8] {
+        var w = Writer()
+        w.out = Array("GGUF".utf8)
+        w.u32(3)
+        w.u64(UInt64(tensors.count))
+        w.u64(UInt64(metadata.count))
+        for (key, write) in metadata { w.string(key); write(&w) }
+        var offset: UInt64 = 0
+        var offsets: [UInt64] = []
+        for t in tensors {
+            offsets.append(offset)
+            offset = (offset + UInt64(t.data.count) + 31) / 32 * 32
+        }
+        for (t, o) in zip(tensors, offsets) {
+            w.string(t.name)
+            w.u32(UInt32(t.dims.count))
+            for d in t.dims { w.u64(d) }
+            w.u32(t.type.rawValue)
+            w.u64(o)
+        }
+        while w.out.count % 32 != 0 { w.out.append(0) }
+        let dataStart = w.out.count
+        for (t, o) in zip(tensors, offsets) {
+            while w.out.count < dataStart + Int(o) { w.out.append(0) }
+            w.out += t.data
+        }
+        return w.out
+    }
+
     static func gguf(_ tensors: [Tensor]) -> [UInt8] {
         var out: [UInt8] = Array("GGUF".utf8)
         func u32(_ v: UInt32) { for i in 0..<4 { out.append(UInt8(truncatingIfNeeded: v >> (8 * UInt32(i)))) } }

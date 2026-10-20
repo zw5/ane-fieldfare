@@ -14,6 +14,8 @@ package struct InstallOptions: Sendable {
     package var source: any ByteSource
     /// What the source must hash to, and its provenance.
     package var sourceFile: PinnedFile
+    /// The vision tower's GGUF; nil installs the text model alone.
+    package var vision: (source: any ByteSource, file: PinnedFile)?
     package var tokenizer: Tokenizer
     package var tokenizerFiles: [PinnedFile]
     package var modelID: String
@@ -44,8 +46,6 @@ package struct InstallOptions: Sendable {
 /// its last checkpoint: outputs are synced, then the checkpoint records the
 /// source offset and the running source hash.
 package enum Installer {
-    static let headerFile = ".source-header"
-    static let checkpointFile = ".checkpoint.json"
     static let headerMaxBytes: UInt64 = 256 * 1024 * 1024
 
     struct Checkpoint: Codable {
@@ -66,18 +66,74 @@ package enum Installer {
         if fm.fileExists(atPath: destination.path), !options.overwrite {
             throw InstallError.alreadyInstalled(destination.path)
         }
-        guard options.source.size == options.sourceFile.size else {
-            throw SourceError.sizeMismatch(path: options.sourceFile.path, expected: options.sourceFile.size,
-                                           actual: options.source.size)
-        }
         let partial = URL(fileURLWithPath: destination.path + ".partial", isDirectory: true)
         if options.restart, fm.fileExists(atPath: partial.path) { try fm.removeItem(at: partial) }
         try fm.createDirectory(at: partial, withIntermediateDirectories: true)
 
-        let (prefix, header) = try await sourceHeader(options, partial: partial)
+        let text = try await convert(Part(name: "text", source: options.source, file: options.sourceFile),
+                                     partial: partial, options: options) { try Gemma4Plan.plan($0) }
+        var files = text.files
+        var vision: FieldfareTensorFile?
+        var sources = [options.sourceFile]
+        if let visionSource = options.vision {
+            let plan = try await convert(Part(name: "vision", source: visionSource.source, file: visionSource.file),
+                                         partial: partial, options: options) {
+                try Gemma4VisionPlan.plan($0, textHiddenSize: text.arch.hiddenSize)
+            }
+            files += plan.files
+            vision = plan.vision
+            sources.append(visionSource.file)
+        }
+
+        try await installTokenizer(options, partial: partial)
+        let manifest = FieldfareManifest(
+            modelID: options.modelID,
+            source: FieldfareSource(files: (sources + options.tokenizerFiles).map {
+                .init(repo: $0.repo, revision: $0.revision, path: $0.path, size: $0.size, sha256: $0.sha256)
+            }),
+            arch: text.arch,
+            files: try await hashFiles(files.map(\.path)
+                + options.tokenizerFiles.map { "\(FieldfareFormat.tokenizerDirectory)/\($0.path)" },
+                root: partial),
+            resident: text.resident,
+            experts: text.experts,
+            vision: vision)
+        try POSIXFile.atomicWrite(try FieldfareManifestCodec.encode(manifest),
+                                  to: partial.appendingPathComponent(FieldfareFormat.manifestPath))
+        for name in try fm.contentsOfDirectory(atPath: partial.path) where name.hasPrefix(".") {
+            try? fm.removeItem(at: partial.appendingPathComponent(name))
+        }
+        try POSIXFile.syncDirectory(partial)
+        try commit(partial: partial, destination: destination)
+        options.log("installed \(destination.path)")
+        return manifest
+    }
+
+    struct Part {
+        let name: String
+        let source: any ByteSource
+        let file: PinnedFile
+    }
+
+    /// Converts one source into its planned files under `partial`, resuming
+    /// from its checkpoint, and returns the plan. A part that already
+    /// finished (its `.done-` marker holds the source digest) is only
+    /// re-planned from its saved header.
+    private static func convert<Plan: PlannedConversion>(
+        _ part: Part, partial: URL, options: InstallOptions, plan makePlan: (GGUFHeader) throws -> Plan
+    ) async throws -> Plan {
+        guard part.source.size == part.file.size else {
+            throw SourceError.sizeMismatch(path: part.file.path, expected: part.file.size, actual: part.source.size)
+        }
+        let (prefix, header) = try await sourceHeader(part, partial: partial, options: options)
+        let plan = try makePlan(header)
+        let done = partial.appendingPathComponent(".done-\(part.name)")
+        if let marker = try? String(contentsOf: done, encoding: .utf8), marker == part.file.sha256 {
+            options.log("\(part.file.path) already converted")
+            return plan
+        }
         let headerDigest = digest(prefix[...])
-        let plan = try Gemma4Plan.plan(header)
-        let checkpoint = try loadCheckpoint(partial: partial, options: options, headerDigest: headerDigest)
+        let checkpoint = try loadCheckpoint(part, partial: partial, headerDigest: headerDigest)
         let outputs = try OutputFiles(root: partial, files: plan.files, resuming: checkpoint != nil)
         defer { outputs.close() }
 
@@ -85,56 +141,35 @@ package enum Installer {
         if converter.offset == 0 {
             converter = try await consume(converter, prefix, at: 0, outputs: outputs)
         } else {
-            options.log("resuming at \(gigabytes(converter.offset)) of \(gigabytes(options.source.size))")
+            options.log("resuming \(part.file.path) at \(gigabytes(converter.offset)) of \(gigabytes(part.source.size))")
         }
 
         var saved = converter.checkpoint.offset
         let start = Date()
         let startOffset = converter.offset
         var lastLog = start
-        try await stream(options.source, from: converter.offset, chunk: options.chunkBytes) { bytes, offset in
+        try await stream(part.source, from: converter.offset, chunk: options.chunkBytes) { bytes, offset in
             converter = try await consume(converter, bytes, at: offset, outputs: outputs)
             if converter.checkpoint.offset - saved >= options.checkpointBytes {
                 try await outputs.sync()
-                try saveCheckpoint(converter.checkpoint, partial: partial, options: options, headerDigest: headerDigest)
+                try saveCheckpoint(converter.checkpoint, part: part, partial: partial, headerDigest: headerDigest)
                 saved = converter.checkpoint.offset
             }
             if Date().timeIntervalSince(lastLog) >= 15 {
                 lastLog = Date()
                 let rate = Double(converter.offset - startOffset) / max(1, lastLog.timeIntervalSince(start)) / 1e6
-                options.log("\(gigabytes(converter.offset)) of \(gigabytes(options.source.size)), \(rate.formatted(.number.precision(.fractionLength(1)))) MB/s")
+                options.log("\(part.file.path): \(gigabytes(converter.offset)) of \(gigabytes(part.source.size)), \(rate.formatted(.number.precision(.fractionLength(1)))) MB/s")
             }
         }
-        let sourceDigest = try converter.finish(sourceSize: options.source.size)
-        guard sourceDigest == options.sourceFile.sha256 else {
-            try? fm.removeItem(at: partial)
-            throw SourceError.digestMismatch(path: options.sourceFile.path, expected: options.sourceFile.sha256,
-                                             actual: sourceDigest)
+        let sourceDigest = try converter.finish(sourceSize: part.source.size)
+        guard sourceDigest == part.file.sha256 else {
+            try? FileManager.default.removeItem(at: partial)
+            throw SourceError.digestMismatch(path: part.file.path, expected: part.file.sha256, actual: sourceDigest)
         }
         try await outputs.sync()
-        options.log("source verified (sha256 \(sourceDigest.prefix(12))…)")
-
-        try await installTokenizer(options, partial: partial)
-        let manifest = FieldfareManifest(
-            modelID: options.modelID,
-            source: FieldfareSource(files: ([options.sourceFile] + options.tokenizerFiles).map {
-                .init(repo: $0.repo, revision: $0.revision, path: $0.path, size: $0.size, sha256: $0.sha256)
-            }),
-            arch: plan.arch,
-            files: try await hashFiles(plan.files.map(\.path)
-                + options.tokenizerFiles.map { "\(FieldfareFormat.tokenizerDirectory)/\($0.path)" },
-                root: partial),
-            resident: plan.resident,
-            experts: plan.experts,
-            vision: nil)
-        try POSIXFile.atomicWrite(try FieldfareManifestCodec.encode(manifest),
-                                  to: partial.appendingPathComponent(FieldfareFormat.manifestPath))
-        try? fm.removeItem(at: partial.appendingPathComponent(checkpointFile))
-        try? fm.removeItem(at: partial.appendingPathComponent(headerFile))
-        try POSIXFile.syncDirectory(partial)
-        try commit(partial: partial, destination: destination)
-        options.log("installed \(destination.path)")
-        return manifest
+        try POSIXFile.atomicWrite(Data(sourceDigest.utf8), to: done)
+        options.log("\(part.file.path) verified (sha256 \(sourceDigest.prefix(12))…)")
+        return plan
     }
 
     /// Re-hashes every file of an installed model against its manifest.
@@ -151,43 +186,46 @@ package enum Installer {
 
     // MARK: - Steps
 
-    private static func sourceHeader(_ options: InstallOptions, partial: URL) async throws
+    private static func sourceHeader(_ part: Part, partial: URL, options: InstallOptions) async throws
         -> (prefix: [UInt8], header: GGUFHeader) {
-        let url = partial.appendingPathComponent(headerFile)
+        let url = partial.appendingPathComponent(".source-header-\(part.name)")
         if let saved = try? Data(contentsOf: url),
-           let header = try? GGUFReader.parse(saved, fileSize: options.source.size) {
+           let header = try? GGUFReader.parse(saved, fileSize: part.source.size) {
             return ([UInt8](saved), header)
         }
-        var length = min(options.headerPrefixBytes, options.source.size)
+        var length = min(options.headerPrefixBytes, part.source.size)
         while true {
-            let prefix = try await options.source.read(0..<length)
+            let prefix = try await part.source.read(0..<length)
             do {
-                let header = try GGUFReader.parse(Data(prefix), fileSize: options.source.size)
+                let header = try GGUFReader.parse(Data(prefix), fileSize: part.source.size)
                 try POSIXFile.atomicWrite(Data(prefix), to: url)
                 return (prefix, header)
-            } catch let GGUFError.needMoreBytes(needed) where needed <= headerMaxBytes && length < options.source.size {
-                length = min(max(needed, length * 2), options.source.size)
+            } catch let GGUFError.needMoreBytes(needed) where needed <= headerMaxBytes && length < part.source.size {
+                length = min(max(needed, length * 2), part.source.size)
             }
         }
     }
 
-    private static func loadCheckpoint(partial: URL, options: InstallOptions,
+    static func checkpointURL(_ name: String, partial: URL) -> URL {
+        partial.appendingPathComponent(".checkpoint-\(name).json")
+    }
+
+    private static func loadCheckpoint(_ part: Part, partial: URL,
                                        headerDigest: String) throws -> ConversionCheckpoint? {
-        let url = partial.appendingPathComponent(checkpointFile)
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? Data(contentsOf: checkpointURL(part.name, partial: partial)) else { return nil }
         guard let saved = try? JSONDecoder().decode(Checkpoint.self, from: data),
-              saved.sourceSHA256 == options.sourceFile.sha256, saved.headerSHA256 == headerDigest,
-              saved.offset <= options.source.size, let hash = ResumableSHA256(state: saved.hash) else {
-            throw InstallError.invalidPartial("checkpoint does not match this source")
+              saved.sourceSHA256 == part.file.sha256, saved.headerSHA256 == headerDigest,
+              saved.offset <= part.source.size, let hash = ResumableSHA256(state: saved.hash) else {
+            throw InstallError.invalidPartial("checkpoint does not match \(part.file.path)")
         }
         return ConversionCheckpoint(offset: saved.offset, hash: hash)
     }
 
-    private static func saveCheckpoint(_ checkpoint: ConversionCheckpoint, partial: URL,
-                                       options: InstallOptions, headerDigest: String) throws {
-        let saved = Checkpoint(sourceSHA256: options.sourceFile.sha256, headerSHA256: headerDigest,
+    private static func saveCheckpoint(_ checkpoint: ConversionCheckpoint, part: Part, partial: URL,
+                                       headerDigest: String) throws {
+        let saved = Checkpoint(sourceSHA256: part.file.sha256, headerSHA256: headerDigest,
                                offset: checkpoint.offset, hash: checkpoint.hash.state)
-        try POSIXFile.atomicWrite(try JSONEncoder().encode(saved), to: partial.appendingPathComponent(checkpointFile))
+        try POSIXFile.atomicWrite(try JSONEncoder().encode(saved), to: checkpointURL(part.name, partial: partial))
     }
 
     private static func consume(_ converter: StreamingConverter, _ bytes: [UInt8], at offset: UInt64,
@@ -347,3 +385,12 @@ final class OutputFiles: Sendable {
         for fd in fds { Darwin.close(fd) }
     }
 }
+
+/// A plan the installer can run: output files and the segments that fill them.
+protocol PlannedConversion {
+    var files: [PlannedFile] { get }
+    var segments: [Segment] { get }
+}
+
+extension ConversionPlan: PlannedConversion {}
+extension Gemma4VisionPlan.Plan: PlannedConversion {}
