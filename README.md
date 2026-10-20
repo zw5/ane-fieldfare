@@ -152,9 +152,10 @@ string content or an array of `text` parts), `max_tokens` /
 `max_completion_tokens` (clamped to the context), `temperature`, `top_p`,
 `top_k` (0 or -1: off), `repetition_penalty`, `stop` (string or up to 16
 strings, matched on the decoded text, also across token boundaries while
-streaming), `seed`, `stream`, `stream_options.include_usage`, `n` (1 only),
-`user`. Other fields are ignored, among them `tools`, `response_format`,
-`frequency_penalty` and `presence_penalty`. Responses carry `usage`, and a
+streaming), `seed`, `stream`, `stream_options.include_usage`, `n` (1 only).
+Non-empty `tools`, a `response_format` other than `text`, and non-zero
+`frequency_penalty` or `presence_penalty` are refused with 400; other fields,
+`model` and `user` among them, are ignored. Responses carry `usage`, and a
 llama.cpp-style `timings` object with tokens per second and the decode path.
 Streams send a first chunk with `role`, content deltas, a chunk with
 `finish_reason` (`stop` or `length`), the usage chunk if asked, and

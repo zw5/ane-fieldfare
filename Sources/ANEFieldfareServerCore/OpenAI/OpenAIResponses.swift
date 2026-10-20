@@ -4,11 +4,16 @@ public import Foundation
 /// (`finish_reason` mid-stream, `logprobs`) are encoded as explicit nulls,
 /// since some clients validate the chunk shape.
 enum OpenAIJSON {
+    /// The bodies hold strings, integers and finite doubles, and JSONEncoder
+    /// fails only on non-finite floats, so a failure is a bug in this file.
     static func encode(_ value: some Encodable) -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
-        // Every value here is plain strings and numbers; encoding cannot fail.
-        return (try? encoder.encode(value)) ?? Data("{}".utf8)
+        do {
+            return try encoder.encode(value)
+        } catch {
+            preconditionFailure("encoding \(type(of: value)) failed: \(error)")
+        }
     }
 }
 

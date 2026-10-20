@@ -212,9 +212,14 @@ public struct OpenAIService: Sendable {
         ]
     }
 
+    /// `object` holds only strings, numbers and booleans, which always serialize.
     private func json(_ object: [String: any Sendable]) -> HTTPResponse {
-        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]))
-            ?? Data("{}".utf8)
+        let data: Data
+        do {
+            data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+        } catch {
+            preconditionFailure("serializing \(object.keys.sorted()) failed: \(error)")
+        }
         var headers = HTTPHeaders()
         headers.add("Content-Type", "application/json")
         return HTTPResponse(status: 200, headers: headers, body: data)
