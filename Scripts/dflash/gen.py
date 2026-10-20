@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Greedy target continuations with token IDs, for the offline DFlash acceptance gate."""
 import json, os, subprocess, sys
-root = "<repo>"
+root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 here = os.path.abspath(sys.argv[2] if len(sys.argv) > 2 else ".")
 prompts = {
     "code": "Write a Python function that merges overlapping intervals in a list, with a docstring and a short example.",

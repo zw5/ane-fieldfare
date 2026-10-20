@@ -8,16 +8,18 @@
 #        Scripts/bench/snapshot.sh try    # after it
 #        Scripts/bench/ab.sh base try 2 --drafter checkpoints/dflash/gemma-4-26B-A4B-it-DFlash
 # Bench flags default to the quick suite (3 prompts, 192 tokens, 2 reps).
+# MODEL overrides the checkpoint path. Each run takes the benchmark lock.
 set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 a="${1:?}"; b="${2:?}"; rounds="${3:-2}"; shift $(( $# >= 3 ? 3 : $# ))
+model="${MODEL:-$root/checkpoints/gturbo/gemma4.gturbo}"
 out="$root/.build/bench-runs/$(date +%Y%m%d-%H%M%S)-$a-vs-$b"
 mkdir -p "$out"
 run() {  # snapshot round [bench flags...]
   local name="$1" round="$2"; shift 2
   local bin="$root/.build/bench-bins/$name"
-  ANE_FIELDFARE_BENCH_GIT="$(cat "$bin/GIT")" "$bin/ANEFieldfareBench" \
-    --model "$root/checkpoints/gturbo/gemma4.gturbo" --label "$name" --out "$out/$name-r$round.json" "$@"
+  "$root/Scripts/with_benchmark_lock.sh" env ANE_FIELDFARE_BENCH_GIT="$(cat "$bin/GIT")" "$bin/ANEFieldfareBench" \
+    --model "$model" --label "$name" --out "$out/$name-r$round.json" "$@"
 }
 for ((i = 0; i < rounds; i++)); do
   if (( i % 2 == 0 )); then run "$a" "$i" "$@"; run "$b" "$i" "$@"

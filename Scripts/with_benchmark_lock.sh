@@ -13,12 +13,18 @@ mkdir -p "$project_root/.build"
 owner_token="pid=$$;random=$RANDOM;started=$(date +%s)"
 
 if ! mkdir "$lock_dir" 2>/dev/null; then
-  if [[ -r "$lock_dir/owner" ]]; then
-    echo "benchmark lock occupied: $(<"$lock_dir/owner")" >&2
+  recorded=""
+  [[ -r "$lock_dir/owner" ]] && recorded="$(<"$lock_dir/owner")"
+  holder="${recorded#pid=}"; holder="${holder%%;*}"
+  if [[ "$holder" =~ ^[0-9]+$ ]] && ! kill -0 "$holder" 2>/dev/null; then
+    echo "benchmark lock: reclaiming from exited pid $holder" >&2
+    rm -f "$lock_dir/owner"
+    rmdir "$lock_dir"
+    mkdir "$lock_dir"
   else
-    echo "benchmark lock occupied: owner record unavailable" >&2
+    echo "benchmark lock occupied: ${recorded:-owner record unavailable}" >&2
+    exit 75
   fi
-  exit 75
 fi
 
 printf '%s\n' "$owner_token" > "$lock_dir/owner"

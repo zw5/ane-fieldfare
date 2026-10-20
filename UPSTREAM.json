@@ -14,14 +14,14 @@
  "local_contracts": [
   "Explicit hybrid-ane backend and native ANE lifecycle",
   "All eight routed experts in ANE mode",
-  "1024-token prefill default and 32/64/128/256/512/1024 selections",
+  "Prefill chunk sizes 32/64/128/256/512/1024, by default the smallest that covers the prompt",
   "Reference-order SIMD attention, including upstream image visibility",
   "Routed experts served zero-copy from the OS page cache (no app-level slot cache)",
-  "32K CLI context default and legacy --prefill-chunk alias",
+  "32K CLI context default",
   "Device supervisor with ANE routed-prefill guest, local profiling and numerical oracles"
  ],
- "scope": "Imported runtime, compact format, CLI, and their regression tests. Upstream GUI and server remain outside this repository. Repack writers are test-fixture support only.",
- "benchmark_boundary": "September 16 post-merge comparison uses unmodified latest Turbo 4c6db1e with matched release toolchain, official generation fixtures/settings, nine discarded warmups and eighteen measured runs. See results/turbo-latest-20260916/REPORT.md and summary.json. September 8 receipts remain historical comparisons against 6c044011.",
+ "scope": "Imported runtime, compact format, CLI, and their regression tests. The upstream GUI and server are not imported; this repository's server is its own. Repack writers are test-fixture support only.",
+ "benchmark_boundary": "September 16 post-merge comparison uses unmodified latest Turbo 4c6db1e with matched release toolchain, official generation fixtures/settings, nine discarded warmups and eighteen measured runs. The receipts are kept locally and not published. September 8 receipts are historical comparisons against 6c044011.",
  "additional_imports": [
   {
    "source": "https://github.com/drumih/turbo-fieldfare/pull/188 (includes #187)",

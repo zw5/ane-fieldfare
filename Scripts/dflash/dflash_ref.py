@@ -6,10 +6,10 @@ Greedy acceptance is simulated exactly: the verifier's greedy continuation is
 the captured generation, so a drafted block is accepted up to its first
 mismatch, and the next anchor is the bonus token after it.
 """
-import json, struct, sys, time
+import json, os, struct, sys, time
 import numpy as np
 
-ROOT = "<repo>/checkpoints/dflash/gemma-4-26B-A4B-it-DFlash"
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../checkpoints/dflash/gemma-4-26B-A4B-it-DFlash")
 D, V, G = 2816, 262144, 64
 
 

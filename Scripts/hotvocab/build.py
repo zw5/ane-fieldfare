@@ -3,9 +3,9 @@
 ranked by frequency, special and byte-fallback tokens first.
 
 The runtime only guesses from this list and checks every guess against the
-full head, so it changes speed, never output. The shipped list came from the
-first 80 MB of theblackcat102/sharegpt-english (assistant turns, 9 of every 10
-conversations) plus the Python standard library's sources.
+full head, so it changes speed, never output. The shipped list was built from
+an 80 MB sample of theblackcat102/sharegpt-english assistant turns plus the
+Python standard library's sources; the sample is not in this repository.
 
 usage: build.py <tokenizer.json> <out.bin> <text files or dirs...> [--count N]
 needs: pip install tokenizers
