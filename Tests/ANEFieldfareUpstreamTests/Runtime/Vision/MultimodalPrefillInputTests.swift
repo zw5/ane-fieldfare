@@ -4,12 +4,12 @@ import Testing
 
 /// Projected features of `rows` text-hidden rows, contents unspecified.
 func visionTestFeatures(rows: Int, context: MetalContext) throws -> VisionFeatures {
-    let bytes = rows * VisionConfig().textHiddenSize * MemoryLayout<Float16>.stride
+    let bytes = rows * VisionConfig.textHiddenSize * MemoryLayout<Float16>.stride
     let buffer = try #require(context.device.makeBuffer(
         length: bytes, options: .storageModePrivate))
     return VisionFeatures(
         buffer: buffer, tokenCount: rows,
-        hiddenSize: VisionConfig().textHiddenSize)
+        hiddenSize: VisionConfig.textHiddenSize)
 }
 
 @Suite struct MultimodalPrefillInputTests {

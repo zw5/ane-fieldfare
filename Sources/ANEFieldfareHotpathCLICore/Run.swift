@@ -153,7 +153,7 @@ public func run(args: Args,
             // The device from the guard above, not a fresh `MetalContext`:
             // building one compiles every shader module, and planning never
             // touches the GPU.
-            let preprocessor = Gemma4ImagePreprocessor(device: device, config: VisionConfig())
+            let preprocessor = Gemma4ImagePreprocessor(device: device)
             var projected = 0
             for id in ordered {
                 guard let url = imageURLs[id] else { continue }
@@ -432,8 +432,7 @@ func estimatedPromptTokens(
                 }
             }
         }
-        let preprocessor = Gemma4ImagePreprocessor(
-            device: device, config: VisionConfig())
+        let preprocessor = Gemma4ImagePreprocessor(device: device)
         for url in images.values {
             // Not `try?`: an image that cannot be planned would count as zero
             // soft tokens, so `auto` would size the chunk for the text alone and

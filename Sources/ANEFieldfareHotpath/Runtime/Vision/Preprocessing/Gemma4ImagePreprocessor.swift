@@ -9,7 +9,6 @@ public final class Gemma4ImagePreprocessor {
     }
 
     private let device: any MTLDevice
-    private let config: VisionConfig
     private let metadataReader: ImageMetadataReader
     /// Set when the reduction runs on the GPU. Building it needs a full
     /// `MetalContext`, so callers that only have a device keep the CPU filter.
@@ -17,12 +16,10 @@ public final class Gemma4ImagePreprocessor {
 
     public init(
         device: any MTLDevice,
-        config: VisionConfig = VisionConfig(),
         limits: VisionImageLimits = VisionImageLimits(),
         gpuResize: VisionResize? = nil
     ) {
         self.device = device
-        self.config = config
         self.metadataReader = ImageMetadataReader(limits: limits)
         self.gpuResize = gpuResize
     }
@@ -33,8 +30,7 @@ public final class Gemma4ImagePreprocessor {
         let metadata = try metadataReader.read(opened: opened)
         let geometry = try Gemma4ImageGeometry(
             sourceWidth: metadata.orientedWidth,
-            sourceHeight: metadata.orientedHeight,
-            config: config)
+            sourceHeight: metadata.orientedHeight)
         return VisionImagePlan(metadata: metadata, geometry: geometry, opened: opened)
     }
 
@@ -74,7 +70,6 @@ public final class Gemma4ImagePreprocessor {
             : device.makeBuffer(length: sourceBytes, options: .storageModeShared)
         let sourceRGBA = unsafe sourceBuffer?.contents()
             ?? UnsafeMutableRawPointer.allocate(byteCount: sourceBytes, alignment: 64)
-        unsafe sourceRGBA.initializeMemory(as: UInt8.self, repeating: 255, count: sourceBytes)
         defer { if sourceBuffer == nil { unsafe sourceRGBA.deallocate() } }
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let sourceDrawing = unsafe CGContext(
@@ -92,7 +87,6 @@ public final class Gemma4ImagePreprocessor {
         sourceDrawing.fill(CGRect(x: 0, y: 0, width: decoded.width, height: decoded.height))
         sourceDrawing.draw(
             decoded, in: CGRect(x: 0, y: 0, width: decoded.width, height: decoded.height))
-        withExtendedLifetime(sourceDrawing) {}
 
         let rowBytes = try checkedMultiply(geometry.processedWidth, 4)
         let rgbaBytes = try checkedMultiply(rowBytes, geometry.processedHeight)
@@ -122,7 +116,7 @@ public final class Gemma4ImagePreprocessor {
                 destinationRowBytes: rowBytes)
         }
 
-        let patchElements = try checkedMultiply(geometry.patchCount, config.patchDimension)
+        let patchElements = try checkedMultiply(geometry.patchCount, VisionConfig.patchDimension)
         let patchBytes = try checkedMultiply(patchElements, MemoryLayout<UInt16>.stride)
         let positionElements = try checkedMultiply(geometry.patchCount, 2)
         let positionBytes = try checkedMultiply(
@@ -150,16 +144,16 @@ public final class Gemma4ImagePreprocessor {
         positions: any MTLBuffer
     ) {
         let patchPointer = unsafe patches.contents().bindMemory(
-            to: UInt16.self, capacity: geometry.patchCount * config.patchDimension)
+            to: UInt16.self, capacity: geometry.patchCount * VisionConfig.patchDimension)
         let positionPointer = unsafe positions.contents().bindMemory(
             to: Int32.self, capacity: geometry.patchCount * 2)
-        let size = config.patchSize
+        let size = VisionConfig.patchSize
         for patchY in 0..<geometry.patchGridHeight {
             for patchX in 0..<geometry.patchGridWidth {
                 let row = patchY * geometry.patchGridWidth + patchX
                 unsafe positionPointer[row * 2] = Int32(patchX)
                 unsafe positionPointer[row * 2 + 1] = Int32(patchY)
-                var output = row * config.patchDimension
+                var output = row * VisionConfig.patchDimension
                 for pixelY in 0..<size {
                     let inputRow = (patchY * size + pixelY) * rowBytes
                     for pixelX in 0..<size {

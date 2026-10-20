@@ -226,7 +226,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                      maxContext: maxContext,
                                      maxPrefillChunkTokens: max(
                                         runtimeConfiguration.prefillChunkTokens,
-                                        VisionConfig().maximumPooledTokens))
+                                        VisionConfig.maximumPooledTokens))
 
         self.embedInt4 = try EmbedLookupInt4(context: context)
         self.rms       = try RMSNorm(context: context)
@@ -993,7 +993,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         let imageBuffers = input.imageSpans.map(\.features.buffer)
 
         // One scratch layout for the whole turn, sized for its largest item.
-        let pooledTokens = VisionConfig().maximumPooledTokens
+        let pooledTokens = VisionConfig.maximumPooledTokens
         let hasImages = work.contains(where: \.isImage)
         let layoutTokens = hasImages
             ? max(config.chunkTokens, pooledTokens)

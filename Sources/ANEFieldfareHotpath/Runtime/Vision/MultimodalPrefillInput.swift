@@ -38,14 +38,14 @@ public struct MultimodalPrefillInput {
             guard !range.isEmpty,
                   range.lowerBound >= previousUpperBound,
                   range.upperBound <= embeddingTokenIDs.count,
-                  range.count <= VisionConfig().maximumPooledTokens else {
+                  range.count <= VisionConfig.maximumPooledTokens else {
                 throw MultimodalPrefillInputError.invalidImageTokenRange
             }
             let featureBytes = range.count
-                * VisionConfig().textHiddenSize
+                * VisionConfig.textHiddenSize
                 * MemoryLayout<Float16>.stride
             guard span.features.tokenCount == range.count,
-                  span.features.hiddenSize == VisionConfig().textHiddenSize,
+                  span.features.hiddenSize == VisionConfig.textHiddenSize,
                   span.features.buffer.length >= featureBytes else {
                 throw MultimodalPrefillInputError.featureShapeMismatch
             }

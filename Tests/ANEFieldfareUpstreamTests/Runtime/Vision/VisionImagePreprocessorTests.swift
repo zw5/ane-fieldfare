@@ -63,7 +63,7 @@ import Testing
             #expect(result.geometry.patchGridWidth == fixture.gridWidth)
             #expect(result.geometry.patchGridHeight == fixture.gridHeight)
             #expect(result.patchesBF16.length
-                    == result.geometry.patchCount * VisionConfig().patchDimension * 2)
+                    == result.geometry.patchCount * VisionConfig.patchDimension * 2)
             #expect(result.positionsInt32x2.length
                     == result.geometry.patchCount * 2 * MemoryLayout<Int32>.stride)
 
@@ -75,8 +75,8 @@ import Testing
             }
             let patches = unsafe result.patchesBF16.contents().bindMemory(
                 to: UInt16.self,
-                capacity: result.geometry.patchCount * VisionConfig().patchDimension)
-            let count = result.geometry.patchCount * VisionConfig().patchDimension
+                capacity: result.geometry.patchCount * VisionConfig.patchDimension)
+            let count = result.geometry.patchCount * VisionConfig.patchDimension
             for index in stride(from: 0, to: count, by: 251) {
                 let value = unsafe Quantization.bf16ToFloat(patches[index])
                 #expect(value.isFinite && value >= 0 && value <= 1)

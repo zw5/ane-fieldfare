@@ -535,18 +535,8 @@ extension Model {
     /// next touch.
     ///
     /// The caller must serialize this transition against forward execution.
-    public func prepareExpertResidencyForVision(
-        _ policy: VisionResidencyPolicy,
-        gpuDrainNanoseconds: UInt64 = 0
-    ) -> VisionExpertResidencyTransition {
-        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-        let released = policy == .onDemand ? routedLayers.release() : 0
-        return VisionExpertResidencyTransition(
-            policy: policy,
-            gpuDrainNanoseconds: gpuDrainNanoseconds,
-            releasedLayerCount: released,
-            remainingOpenLayerCount: routedLayers.openLayerCount,
-            wallNanoseconds: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+    public func prepareExpertResidencyForVision(_ policy: VisionResidencyPolicy) {
+        if policy == .onDemand { _ = routedLayers.release() }
     }
 
 }

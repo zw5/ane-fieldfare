@@ -31,7 +31,7 @@ public final class VisionAttention {
         }
         pipeline = try context.device.makeComputePipelineState(function: function)
         // The fused layout is addressed by padded GEMM rows, not patch rows.
-        let paddedBytes = Self.paddedRowCount(VisionConfig().maximumPatches)
+        let paddedBytes = Self.paddedRowCount(VisionConfig.maximumPatches)
             * 16 * Self.paddedHeadDimension * MemoryLayout<UInt16>.stride
         fusedQ = try Self.makePrivateBuffer(device: context.device, bytes: paddedBytes)
         fusedK = try Self.makePrivateBuffer(device: context.device, bytes: paddedBytes)
