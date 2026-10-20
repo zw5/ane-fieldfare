@@ -32,7 +32,6 @@ final class FusedQKVEpilogue {
                     MetalFunctionConstant(index: 83, value: .uint32(shape.numQHeads)),
                     MetalFunctionConstant(index: 84, value: .uint32(shape.numKVHeads)),
                     MetalFunctionConstant(index: 85, value: .uint32(shape.rotatedPairs)),
-                    MetalFunctionConstant(index: 86, value: .bool(true)),
                 ])
         }
         self.specializedPSOs = variants
@@ -45,7 +44,6 @@ final class FusedQKVEpilogue {
                     MetalFunctionConstant(index: 83, value: .uint32(shape.numQHeads)),
                     MetalFunctionConstant(index: 84, value: .uint32(shape.numKVHeads)),
                     MetalFunctionConstant(index: 85, value: .uint32(shape.rotatedPairs)),
-                    MetalFunctionConstant(index: 86, value: .bool(true)),
                 ])
         }
         self.rowsPSOs = rowVariants

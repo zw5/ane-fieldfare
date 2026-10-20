@@ -19,7 +19,6 @@ final class FusedPostAttentionSetup {
             "fused_post_attn_setup",
             constants: [
                 MetalFunctionConstant(index: 80, value: .uint32(2816)),
-                MetalFunctionConstant(index: 86, value: .bool(true)),
             ])
     }
 

@@ -13,7 +13,6 @@ final class LMHeadChainInt4 {
     private static let realDecodeHeadConstants: [MetalFunctionConstant] = [
         MetalFunctionConstant(index: 10, value: .uint32(realDecodeD)),
         MetalFunctionConstant(index: 11, value: .uint32(realDecodeVocab)),
-        MetalFunctionConstant(index: 13, value: .bool(true)),
     ]
 
     /// Rows one `encodeGreedyCheck` call checks; matches the kernel.
@@ -55,8 +54,7 @@ final class LMHeadChainInt4 {
         self.rowReducer = try context.pipeline("lm_head_greedy_int4_rows_reduce")
         self.hotGreedy = try context.pipeline(
             "lm_head_greedy_int4_listed_chunk_raw",
-            constants: [MetalFunctionConstant(index: 10, value: .uint32(Self.realDecodeD)),
-                        MetalFunctionConstant(index: 13, value: .bool(true))])
+            constants: [MetalFunctionConstant(index: 10, value: .uint32(Self.realDecodeD))])
         self.checkSpecialized = try (1...Self.maxCheckRows).map {
             try context.pipeline("lm_head_greedy_int4_check_chunk_raw",
                                  constants: Self.realDecodeHeadConstants

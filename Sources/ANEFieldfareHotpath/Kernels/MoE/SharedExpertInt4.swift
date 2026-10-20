@@ -62,7 +62,6 @@ public final class SharedExpertInt4 {
         let pipeline = try context.pipeline("shared_gate_up_act_int4", constants: [
             MetalFunctionConstant(index: 0, value: .uint32(d)),
             MetalFunctionConstant(index: 1, value: .uint32(f)),
-            MetalFunctionConstant(index: 3, value: .bool(true)),
         ])
         let encoder = try cb.makeTracedComputeEncoder()
         encoder.setComputePipelineState(pipeline)

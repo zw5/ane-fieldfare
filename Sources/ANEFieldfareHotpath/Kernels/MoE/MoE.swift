@@ -39,12 +39,10 @@ final class MoE {
         MetalFunctionConstant(index: 0, value: .uint32(realDecodeD)),
         MetalFunctionConstant(index: 1, value: .uint32(realDecodeF)),
         MetalFunctionConstant(index: 2, value: .uint32(realDecodeTopK)),
-        MetalFunctionConstant(index: 3, value: .bool(true)),
     ]
     private static let realDecodeRouterConstants: [MetalFunctionConstant] = [
         MetalFunctionConstant(index: 40, value: .uint32(realDecodeNumExperts)),
         MetalFunctionConstant(index: 41, value: .uint32(realDecodeD)),
-        MetalFunctionConstant(index: 43, value: .bool(true)),
     ]
 
     private let routerGemvPSO: any MTLComputePipelineState

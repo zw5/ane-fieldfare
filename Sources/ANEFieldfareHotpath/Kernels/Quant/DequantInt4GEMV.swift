@@ -41,7 +41,6 @@ final class DequantInt4GEMV {
                 constants: [
                     MetalFunctionConstant(index: 20, value: .uint32(shape.m)),
                     MetalFunctionConstant(index: 21, value: .uint32(shape.n)),
-                    MetalFunctionConstant(index: 22, value: .bool(true)),
                 ],
                 maxTotalThreadsPerThreadgroup: 512)
         }
@@ -98,7 +97,6 @@ final class DequantInt4GEMV {
             constants: [
                 MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
                 MetalFunctionConstant(index: 28, value: .uint32(n)),
-                MetalFunctionConstant(index: 29, value: .bool(true)),
                 MetalFunctionConstant(index: 32, value: .uint32(UInt32(weightRows))),
             ],
             maxTotalThreadsPerThreadgroup: 256)
@@ -109,8 +107,9 @@ final class DequantInt4GEMV {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        let values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
-        for i in values.indices { encoder.setValue(values[i], index: 5 + i) }
+        encoder.setValue(m, index: 5)
+        encoder.setValue(UInt32(xStrideElements), index: 8)
+        encoder.setValue(UInt32(yStrideElements), index: 9)
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(m) + 8 * weightRows - 1) / (8 * weightRows), height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -162,7 +161,6 @@ final class DequantInt4GEMV {
             constants: [
                 MetalFunctionConstant(index: 27, value: .uint32(UInt32(rows))),
                 MetalFunctionConstant(index: 28, value: .uint32(n)),
-                MetalFunctionConstant(index: 29, value: .bool(true)),
                 MetalFunctionConstant(index: 33, value: .bool(ids != nil)),
             ],
             maxTotalThreadsPerThreadgroup: 128)
@@ -174,8 +172,9 @@ final class DequantInt4GEMV {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        let values = [m, n, UInt32(rows), UInt32(xStrideElements), UInt32(yStrideElements)]
-        for i in values.indices { encoder.setValue(values[i], index: 5 + i) }
+        encoder.setValue(m, index: 5)
+        encoder.setValue(UInt32(xStrideElements), index: 8)
+        encoder.setValue(UInt32(yStrideElements), index: 9)
         encoder.dispatchThreadgroups(
             MTLSize(width: (Int(m) + 31) / 32, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
@@ -209,10 +208,8 @@ final class DequantInt4GEMV {
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
         encoder.setBuffer(x, offset: xOffset, index: 3)
         encoder.setBuffer(y, offset: yOffset, index: 4)
-        let mValue = m
-        let nValue = n
-        encoder.setValue(mValue, index: 5)
-        encoder.setValue(nValue, index: 6)
+        encoder.setValue(m, index: 5)
+        encoder.setValue(n, index: 6)
 
         let threadgroupSize = MTLSize(
             width: 32 * Self.rowsPerThreadgroup,

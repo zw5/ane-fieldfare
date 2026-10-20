@@ -8,45 +8,33 @@ constant constexpr float kGeluCubicCoeff = 0.044715f;
 
 constant uint FC_ROUTER_NUM_EXPERTS [[function_constant(40)]];
 constant uint FC_ROUTER_D [[function_constant(41)]];
-constant bool FC_ROUTER_USE_FC [[function_constant(43)]];
 
 constant uint FC_MOE_D [[function_constant(0)]];
 constant uint FC_MOE_F [[function_constant(1)]];
 constant uint FC_MOE_TOP_K [[function_constant(2)]];
-constant bool FC_MOE_USE_FC [[function_constant(3)]];
 
 static inline uint router_fc_num_experts(constant uint& num_experts) {
-    return (is_function_constant_defined(FC_ROUTER_USE_FC) &&
-            FC_ROUTER_USE_FC &&
-            is_function_constant_defined(FC_ROUTER_NUM_EXPERTS))
+    return is_function_constant_defined(FC_ROUTER_NUM_EXPERTS)
         ? FC_ROUTER_NUM_EXPERTS
         : num_experts;
 }
 
 static inline uint router_fc_d(constant uint& D) {
-    return (is_function_constant_defined(FC_ROUTER_USE_FC) &&
-            FC_ROUTER_USE_FC &&
-            is_function_constant_defined(FC_ROUTER_D))
+    return is_function_constant_defined(FC_ROUTER_D)
         ? FC_ROUTER_D
         : D;
 }
 
 static inline uint moe_fc_d(constant uint& D) {
-    return (is_function_constant_defined(FC_MOE_USE_FC) &&
-            FC_MOE_USE_FC &&
-            is_function_constant_defined(FC_MOE_D)) ? FC_MOE_D : D;
+    return is_function_constant_defined(FC_MOE_D) ? FC_MOE_D : D;
 }
 
 static inline uint moe_fc_f(constant uint& F) {
-    return (is_function_constant_defined(FC_MOE_USE_FC) &&
-            FC_MOE_USE_FC &&
-            is_function_constant_defined(FC_MOE_F)) ? FC_MOE_F : F;
+    return is_function_constant_defined(FC_MOE_F) ? FC_MOE_F : F;
 }
 
 static inline uint moe_fc_top_k(constant uint& top_k) {
-    return (is_function_constant_defined(FC_MOE_USE_FC) &&
-            FC_MOE_USE_FC &&
-            is_function_constant_defined(FC_MOE_TOP_K)) ? FC_MOE_TOP_K : top_k;
+    return is_function_constant_defined(FC_MOE_TOP_K) ? FC_MOE_TOP_K : top_k;
 }
 
 static inline float gelu_pytorch_tanh(float x) {

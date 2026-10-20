@@ -19,12 +19,9 @@ using namespace metal;
 // partial sums. Slot 0 is reused after the merge to broadcast the final inv.
 constant constexpr uint kRmsMaxSimdGroups = 8;
 constant uint FC_RMS_D [[function_constant(30)]];
-constant bool FC_RMS_USE_FC [[function_constant(31)]];
 
 static inline uint rms_fc_d(constant uint& D) {
-    return (is_function_constant_defined(FC_RMS_USE_FC) &&
-            FC_RMS_USE_FC &&
-            is_function_constant_defined(FC_RMS_D)) ? FC_RMS_D : D;
+    return is_function_constant_defined(FC_RMS_D) ? FC_RMS_D : D;
 }
 
 // Common block reduction. Returns `inv = rsqrt(mean(x^2) + eps)` broadcast to

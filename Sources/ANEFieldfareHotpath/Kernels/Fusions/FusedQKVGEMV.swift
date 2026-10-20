@@ -28,7 +28,6 @@ final class FusedQKVGEMV {
                     MetalFunctionConstant(index: 23, value: .uint32(shape.qRows)),
                     MetalFunctionConstant(index: 24, value: .uint32(shape.kvRows)),
                     MetalFunctionConstant(index: 25, value: .uint32(shape.n)),
-                    MetalFunctionConstant(index: 26, value: .bool(true)),
                 ],
                 maxTotalThreadsPerThreadgroup: 512)
         }

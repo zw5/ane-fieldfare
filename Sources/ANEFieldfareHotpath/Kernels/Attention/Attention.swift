@@ -294,7 +294,6 @@ final class Attention {
             MetalFunctionConstant(index: 60, value: .uint32(headDim)),
             MetalFunctionConstant(index: 61, value: .uint32(numQHeads)),
             MetalFunctionConstant(index: 62, value: .uint32(numKVHeads)),
-            MetalFunctionConstant(index: 63, value: .bool(true)),
         ]
         if let numChunks {
             constants.append(MetalFunctionConstant(index: 65, value: .uint32(numChunks)))

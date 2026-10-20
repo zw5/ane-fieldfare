@@ -19,46 +19,35 @@ using namespace metal;
 constant constexpr uint kGroupSize = 64;
 constant uint FC_INT4_M [[function_constant(20)]];
 constant uint FC_INT4_N [[function_constant(21)]];
-constant bool FC_INT4_USE_FC [[function_constant(22)]];
 constant uint FC_INT4_QKV_MQ [[function_constant(23)]];
 constant uint FC_INT4_QKV_MKV [[function_constant(24)]];
 constant uint FC_INT4_QKV_N [[function_constant(25)]];
-constant bool FC_INT4_QKV_USE_FC [[function_constant(26)]];
 constant uint FC_INT4_ROWS_R [[function_constant(27)]];
 constant uint FC_INT4_ROWS_K [[function_constant(28)]];
-constant bool FC_INT4_ROWS_USE_FC [[function_constant(29)]];
 constant uint FC_INT4_ROWS_WPS [[function_constant(32)]];
+// The host runs 1 or 2 weight rows per SIMD group.
+constant constexpr uint kInt4RowsMaxWPS = 2;
 // Set for the matrix kernel to read weight row ids[o] for output o.
 constant bool FC_INT4_ROWS_LISTED [[function_constant(33)]];
 
 static inline uint int4_fc_m(constant uint& M) {
-    return (is_function_constant_defined(FC_INT4_USE_FC) &&
-            FC_INT4_USE_FC &&
-            is_function_constant_defined(FC_INT4_M)) ? FC_INT4_M : M;
+    return is_function_constant_defined(FC_INT4_M) ? FC_INT4_M : M;
 }
 
 static inline uint int4_fc_n(constant uint& N) {
-    return (is_function_constant_defined(FC_INT4_USE_FC) &&
-            FC_INT4_USE_FC &&
-            is_function_constant_defined(FC_INT4_N)) ? FC_INT4_N : N;
+    return is_function_constant_defined(FC_INT4_N) ? FC_INT4_N : N;
 }
 
 static inline uint int4_qkv_fc_mq(constant uint& Mq) {
-    return (is_function_constant_defined(FC_INT4_QKV_USE_FC) &&
-            FC_INT4_QKV_USE_FC &&
-            is_function_constant_defined(FC_INT4_QKV_MQ)) ? FC_INT4_QKV_MQ : Mq;
+    return is_function_constant_defined(FC_INT4_QKV_MQ) ? FC_INT4_QKV_MQ : Mq;
 }
 
 static inline uint int4_qkv_fc_mkv(constant uint& Mkv) {
-    return (is_function_constant_defined(FC_INT4_QKV_USE_FC) &&
-            FC_INT4_QKV_USE_FC &&
-            is_function_constant_defined(FC_INT4_QKV_MKV)) ? FC_INT4_QKV_MKV : Mkv;
+    return is_function_constant_defined(FC_INT4_QKV_MKV) ? FC_INT4_QKV_MKV : Mkv;
 }
 
 static inline uint int4_qkv_fc_n(constant uint& N) {
-    return (is_function_constant_defined(FC_INT4_QKV_USE_FC) &&
-            FC_INT4_QKV_USE_FC &&
-            is_function_constant_defined(FC_INT4_QKV_N)) ? FC_INT4_QKV_N : N;
+    return is_function_constant_defined(FC_INT4_QKV_N) ? FC_INT4_QKV_N : N;
 }
 
 kernel void embed_lookup_int4(
@@ -245,8 +234,6 @@ kernel void dequant_int4_gemv_rows(
     device const T*       x        [[buffer(3)]],
     device TY*            y        [[buffer(4)]],
     constant uint&        O        [[buffer(5)]],   // output columns (weight rows)
-    constant uint&        K        [[buffer(6)]],   // input width
-    constant uint&        R        [[buffer(7)]],   // input rows, 1..16
     constant uint&        xStride  [[buffer(8)]],
     constant uint&        yStride  [[buffer(9)]],
     uint                  tg_idx   [[threadgroup_position_in_grid]],
@@ -254,22 +241,21 @@ kernel void dequant_int4_gemv_rows(
     uint                  lane     [[thread_index_in_simdgroup]]
 ) {
     constexpr uint simds_per_tg = 8;
-    // Specialized pipelines fix the row count, the width and the weight rows
-    // per SIMD group, so the guarded loops below fold to exactly R x WPS
+    // The pipeline fixes the row count, the width and the weight rows per
+    // SIMD group, so the guarded loops below fold to exactly R x WPS
     // accumulators and the group loop unrolls. Each input chunk is loaded and
     // converted once per SIMD group and applied to all WPS weight rows: past a
     // few input rows the kernel is bound by input traffic, not weights.
-    const bool fc = is_function_constant_defined(FC_INT4_ROWS_USE_FC) && FC_INT4_ROWS_USE_FC;
-    const uint RR = fc ? FC_INT4_ROWS_R : min(R, 16u);
-    const uint KK = fc ? FC_INT4_ROWS_K : K;
-    const uint WPS = (fc && is_function_constant_defined(FC_INT4_ROWS_WPS)) ? FC_INT4_ROWS_WPS : 1u;
+    const uint RR = FC_INT4_ROWS_R;
+    const uint KK = FC_INT4_ROWS_K;
+    const uint WPS = FC_INT4_ROWS_WPS;
     const uint row0 = (tg_idx * simds_per_tg + sg_idx) * WPS;
     if (row0 >= O) return;
     const uint n_groups  = KK / kGroupSize;
 
-    float acc[4][16];
+    float acc[kInt4RowsMaxWPS][16];
     #pragma unroll
-    for (uint w = 0; w < 4; ++w) {
+    for (uint w = 0; w < kInt4RowsMaxWPS; ++w) {
         #pragma unroll
         for (uint r = 0; r < 16; ++r) acc[w][r] = 0.0f;
     }
@@ -279,9 +265,9 @@ kernel void dequant_int4_gemv_rows(
         const uint byte_base = blk * 128u + lane * 4u;
         const uint g  = blk * 4u + (lane >> 3);
         const uint elem = byte_base * 2u;
-        float q[4][8], s[4], b[4];
+        float q[kInt4RowsMaxWPS][8], s[kInt4RowsMaxWPS], b[kInt4RowsMaxWPS];
         #pragma unroll
-        for (uint w = 0; w < 4; ++w) {
+        for (uint w = 0; w < kInt4RowsMaxWPS; ++w) {
             if (w < WPS) {
                 const uint row = min(row0 + w, O - 1);
                 device const ushort* wp = (device const ushort*)(W + row * (KK / 2) + byte_base);
@@ -302,7 +288,7 @@ kernel void dequant_int4_gemv_rows(
                 const float e4 = float(xb.x), e5 = float(xb.y), e6 = float(xb.z), e7 = float(xb.w);
                 const float sum = e0 + e1 + e2 + e3 + e4 + e5 + e6 + e7;
                 #pragma unroll
-                for (uint w = 0; w < 4; ++w) {
+                for (uint w = 0; w < kInt4RowsMaxWPS; ++w) {
                     if (w < WPS) {
                         float dot = 0.0f;
                         dot = fma(q[w][0], e0, dot); dot = fma(q[w][1], e1, dot);
@@ -317,9 +303,9 @@ kernel void dequant_int4_gemv_rows(
         }
     }
     for (uint g = full_blocks * 4u; g < n_groups; ++g) {
-        float q0[4], q1[4], s[4], b[4];
+        float q0[kInt4RowsMaxWPS], q1[kInt4RowsMaxWPS], s[kInt4RowsMaxWPS], b[kInt4RowsMaxWPS];
         #pragma unroll
-        for (uint w = 0; w < 4; ++w) {
+        for (uint w = 0; w < kInt4RowsMaxWPS; ++w) {
             if (w < WPS) {
                 const uint row = min(row0 + w, O - 1);
                 const uint8_t byte = W[row * (KK / 2) + g * (kGroupSize / 2) + lane];
@@ -335,7 +321,7 @@ kernel void dequant_int4_gemv_rows(
                 device const T* xr = x + r * xStride + g * kGroupSize + lane * 2u;
                 const float x0 = float(xr[0]), x1 = float(xr[1]);
                 #pragma unroll
-                for (uint w = 0; w < 4; ++w) {
+                for (uint w = 0; w < kInt4RowsMaxWPS; ++w) {
                     if (w < WPS) {
                         float dot = fma(q0[w], x0, 0.0f);
                         dot = fma(q1[w], x1, dot);
@@ -347,7 +333,7 @@ kernel void dequant_int4_gemv_rows(
         }
     }
     #pragma unroll
-    for (uint w = 0; w < 4; ++w) {
+    for (uint w = 0; w < kInt4RowsMaxWPS; ++w) {
         if (w < WPS && row0 + w < O) {
             #pragma unroll
             for (uint r = 0; r < 16; ++r) {
@@ -362,13 +348,13 @@ kernel void dequant_int4_gemv_rows(
 
 template [[host_name("dequant_int4_gemv_rows")]] kernel void dequant_int4_gemv_rows<half, half>(
     device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device half*,
-    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint);
+    constant uint&, constant uint&, constant uint&, uint, uint, uint);
 template [[host_name("dequant_int4_gemv_rows_bf16")]] kernel void dequant_int4_gemv_rows<bfloat, bfloat>(
     device const uint8_t*, device const bfloat*, device const bfloat*, device const bfloat*, device bfloat*,
-    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint);
+    constant uint&, constant uint&, constant uint&, uint, uint, uint);
 template [[host_name("dequant_int4_gemv_rows_f32")]] kernel void dequant_int4_gemv_rows<half, float>(
     device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device float*,
-    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint);
+    constant uint&, constant uint&, constant uint&, uint, uint, uint);
 
 // y[r][o] = sum_k W[o, k] * x[r][k] for 5..16 input rows on the SIMD-group
 // matrix units. dequant_int4_gemv_rows converts and multiplies each weight
@@ -404,8 +390,6 @@ kernel void dequant_int4_gemv_rows_mma(
     device const TX*      x        [[buffer(3)]],
     device TY*            y        [[buffer(4)]],
     constant uint&        O        [[buffer(5)]],
-    constant uint&        K        [[buffer(6)]],
-    constant uint&        R        [[buffer(7)]],
     constant uint&        xStride  [[buffer(8)]],
     constant uint&        yStride  [[buffer(9)]],
     uint                  tg_idx   [[threadgroup_position_in_grid]],
@@ -414,9 +398,8 @@ kernel void dequant_int4_gemv_rows_mma(
     device const uint*    ids      [[buffer(10), function_constant(FC_INT4_ROWS_LISTED)]]
 ) {
     constexpr uint simds_per_tg = 4;
-    const bool fc = is_function_constant_defined(FC_INT4_ROWS_USE_FC) && FC_INT4_ROWS_USE_FC;
-    const uint RR = fc ? FC_INT4_ROWS_R : min(R, 16u);
-    const uint KK = fc ? FC_INT4_ROWS_K : K;
+    const uint RR = FC_INT4_ROWS_R;
+    const uint KK = FC_INT4_ROWS_K;
     const uint o0 = (tg_idx * simds_per_tg + sg_idx) * 8u;
     if (o0 >= O) return;
     const uint n_groups = KK / kGroupSize;
@@ -477,13 +460,13 @@ kernel void dequant_int4_gemv_rows_mma(
 
 template [[host_name("dequant_int4_gemv_rows_mma")]] kernel void dequant_int4_gemv_rows_mma<half, half>(
     device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device half*,
-    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
+    constant uint&, constant uint&, constant uint&, uint, uint, uint,
     device const uint*);
 template [[host_name("dequant_int4_gemv_rows_mma_f32")]] kernel void dequant_int4_gemv_rows_mma<half, float>(
     device const uint8_t*, device const bfloat*, device const bfloat*, device const half*, device float*,
-    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
+    constant uint&, constant uint&, constant uint&, uint, uint, uint,
     device const uint*);
 template [[host_name("dequant_int4_gemv_rows_mma_bf16")]] kernel void dequant_int4_gemv_rows_mma<bfloat, bfloat>(
     device const uint8_t*, device const bfloat*, device const bfloat*, device const bfloat*, device bfloat*,
-    constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint, uint, uint,
+    constant uint&, constant uint&, constant uint&, uint, uint, uint,
     device const uint*);

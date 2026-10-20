@@ -26,7 +26,6 @@ final class FusedLayerTail {
     init(context: MetalContext) throws {
         let d2816: [MetalFunctionConstant] = [
             MetalFunctionConstant(index: 80, value: .uint32(2816)),
-            MetalFunctionConstant(index: 86, value: .bool(true)),
         ]
         self.pso = try context.pipeline("fused_layer_tail")
         self.specializedPSO = try context.pipeline("fused_layer_tail", constants: d2816)

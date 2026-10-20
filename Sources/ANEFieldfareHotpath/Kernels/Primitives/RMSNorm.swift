@@ -14,7 +14,6 @@ final class RMSNorm {
             "rmsnorm_bf16w",
             constants: [
                 MetalFunctionConstant(index: 30, value: .uint32(2816)),
-                MetalFunctionConstant(index: 31, value: .bool(true)),
             ])
     }
 

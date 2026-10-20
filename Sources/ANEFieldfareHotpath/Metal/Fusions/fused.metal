@@ -21,30 +21,25 @@ constant uint FC_FUSED_HEAD_DIM [[function_constant(82)]];
 constant uint FC_FUSED_NUM_Q_HEADS [[function_constant(83)]];
 constant uint FC_FUSED_NUM_KV_HEADS [[function_constant(84)]];
 constant uint FC_FUSED_ROTARY [[function_constant(85)]];
-constant bool FC_FUSED_USE_FC [[function_constant(86)]];
-
-static inline bool fused_use_fc() {
-    return is_function_constant_defined(FC_FUSED_USE_FC) && FC_FUSED_USE_FC;
-}
 
 static inline uint fused_fc_d(constant uint& D) {
-    return (fused_use_fc() && is_function_constant_defined(FC_FUSED_D)) ? FC_FUSED_D : D;
+    return is_function_constant_defined(FC_FUSED_D) ? FC_FUSED_D : D;
 }
 
 static inline uint fused_fc_head_dim(constant uint& head_dim) {
-    return (fused_use_fc() && is_function_constant_defined(FC_FUSED_HEAD_DIM)) ? FC_FUSED_HEAD_DIM : head_dim;
+    return is_function_constant_defined(FC_FUSED_HEAD_DIM) ? FC_FUSED_HEAD_DIM : head_dim;
 }
 
 static inline uint fused_fc_num_q_heads(constant uint& num_q_heads) {
-    return (fused_use_fc() && is_function_constant_defined(FC_FUSED_NUM_Q_HEADS)) ? FC_FUSED_NUM_Q_HEADS : num_q_heads;
+    return is_function_constant_defined(FC_FUSED_NUM_Q_HEADS) ? FC_FUSED_NUM_Q_HEADS : num_q_heads;
 }
 
 static inline uint fused_fc_num_kv_heads(constant uint& num_kv_heads) {
-    return (fused_use_fc() && is_function_constant_defined(FC_FUSED_NUM_KV_HEADS)) ? FC_FUSED_NUM_KV_HEADS : num_kv_heads;
+    return is_function_constant_defined(FC_FUSED_NUM_KV_HEADS) ? FC_FUSED_NUM_KV_HEADS : num_kv_heads;
 }
 
 static inline uint fused_fc_rotary(constant uint& rotary) {
-    return (fused_use_fc() && is_function_constant_defined(FC_FUSED_ROTARY)) ? FC_FUSED_ROTARY : rotary;
+    return is_function_constant_defined(FC_FUSED_ROTARY) ? FC_FUSED_ROTARY : rotary;
 }
 
 inline void fused_rope_neox_pair(thread float& x0,

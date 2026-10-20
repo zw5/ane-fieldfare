@@ -16,7 +16,6 @@ final class DequantInt8GEMV {
             constants: [
                 MetalFunctionConstant(index: 70, value: .uint32(2816)),
                 MetalFunctionConstant(index: 71, value: .uint32(2112)),
-                MetalFunctionConstant(index: 72, value: .bool(true)),
             ])
     }
 
