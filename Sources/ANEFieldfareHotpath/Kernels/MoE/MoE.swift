@@ -443,6 +443,7 @@ final class MoE {
         encoder.setBuffer(y, offset: 0, index: 5)
         encoder.setValue(dimension, index: 6)
         encoder.setValue(intermediate, index: 7)
+        encoder.setValue(topK, index: 8)
         encoder.dispatchThreadgroups(
             MTLSize(width: Int(d), height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
@@ -526,6 +527,7 @@ final class MoE {
             encoder.setBuffer(y, offset: 0, index: 5)
             encoder.setValue(dimension, index: 6)
             encoder.setValue(intermediate, index: 7)
+            encoder.setValue(expertCount, index: 8)
             encoder.dispatchThreadgroups(
                 MTLSize(width: Int(d), height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))

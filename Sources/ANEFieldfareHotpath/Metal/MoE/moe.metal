@@ -605,6 +605,8 @@ kernel void moe_gather_routed_slots(
     for (uint i = tid; i < D; i += threads) saved[i] = hidden[i];
 }
 
+// One SIMD group per routed slot; slots at or past `top_k` were not computed
+// and add zero.
 kernel void moe_phase2_down_reduce_k8(
     device const RoutedBlobs& routed [[buffer(0)]],
     constant ExpertOffsets& routed_offsets [[buffer(1)]],
@@ -614,6 +616,7 @@ kernel void moe_phase2_down_reduce_k8(
     device half* y [[buffer(5)]],
     constant uint& D [[buffer(6)]],
     constant uint& F [[buffer(7)]],
+    constant uint& top_k [[buffer(8)]],
     uint d [[threadgroup_position_in_grid]],
     uint sg_idx [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]
@@ -623,16 +626,20 @@ kernel void moe_phase2_down_reduce_k8(
     const uint FF = moe_fc_f(F);
     if (d >= DD) return;
 
-    device const uint8_t* base = routed.blob[sg_idx];
-    const ExpertOffsets re = routed_offsets;
-    device const uint8_t* dW = base + re.down_W_off;
-    device const bfloat* dS = (device const bfloat*)(base + re.down_s_off);
-    device const bfloat* dB = (device const bfloat*)(base + re.down_b_off);
-    device const half* act_slot = acts + sg_idx * FF;
+    float weighted = 0.0f;
+    if (sg_idx < moe_fc_top_k(top_k)) {
+        device const uint8_t* base = routed.blob[sg_idx];
+        const ExpertOffsets re = routed_offsets;
+        device const uint8_t* dW = base + re.down_W_off;
+        device const bfloat* dS = (device const bfloat*)(base + re.down_s_off);
+        device const bfloat* dB = (device const bfloat*)(base + re.down_b_off);
+        device const half* act_slot = acts + sg_idx * FF;
 
-    const float value = moe_int4_gemv_row_simd_dev_vec(
-        dW, dS, dB, act_slot, d, FF, lane);
-    if (lane == 0) partial[sg_idx] = float(routing_w[sg_idx]) * value;
+        const float value = moe_int4_gemv_row_simd_dev_vec(
+            dW, dS, dB, act_slot, d, FF, lane);
+        weighted = float(routing_w[sg_idx]) * value;
+    }
+    if (lane == 0) partial[sg_idx] = weighted;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (sg_idx == 0 && lane == 0) {
