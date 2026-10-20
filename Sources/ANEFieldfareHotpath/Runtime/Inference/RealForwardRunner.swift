@@ -186,7 +186,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
     var gpuRoutedVerify = ProcessInfo.processInfo.environment["ANE_FIELDFARE_HOST_ROUTED_VERIFY"] == nil
     /// Guessed experts per verify row a GPU-routed layer binds.
     private lazy var verifyBindTop = max(1, min(cfg.numExperts,
-        ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_BIND_TOP"].flatMap(Int.init) ?? 48))
+        ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_BIND_TOP"].flatMap(Int.init) ?? 20))
     /// Per layer, the GPU-routed verify pass's bound experts.
     private let verifyBoundList: any MTLBuffer
     /// Verify routes the GPU-routed pass ran, and layers that needed a host

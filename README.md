@@ -97,7 +97,7 @@ prompt runs on the Neural Engine (`hybrid-ane`) unless you pass `--backend metal
 | `ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS=n` | Use the ANE for layers `0..<n` only. |
 | `ANE_FIELDFARE_HOT_HEAD=0` | `ANEFieldfareBench` only: turn off the [hot-vocabulary shortcut](#hot-vocabulary-shortcut). |
 | `ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` | Plan every verify layer's experts on the CPU instead of routing them on the GPU. Slower; meant for checking the GPU routing. |
-| `ANE_FIELDFARE_VERIFY_BIND_TOP=n` | Guessed experts per verify row bound for GPU routing. Default 48. |
+| `ANE_FIELDFARE_VERIFY_BIND_TOP=n` | Guessed experts per verify row bound for GPU routing. Default 20. |
 | `ANE_FIELDFARE_TEST_CHECKPOINT=<path>` | Model location for tests, if not the default. |
 | `ANE_FIELDFARE_API_KEY=<key>` | Server only: require `Authorization: Bearer <key>`, like `--api-key`, without putting the key on the command line. |
 

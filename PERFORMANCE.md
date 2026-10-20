@@ -324,11 +324,25 @@ What it took:
   at 8 rows (register arrays sized for 8 rows cost occupancy, while most
   experts take 1–3). Row classes brought 8-row expert time from 28.7 to
   26.5 ms.
-- How many guesses to bind: 16 left 7.3 ms of idle per 8-row verify (patches
-  late), 24–128 all ~2 ms; 48 is the default (`ANE_FIELDFARE_VERIFY_BIND_TOP`).
-- Binding is host work (~2 µs per expert for residency probes and
-  `useResources`) done while the GPU runs the layer's attention and shared
-  FFN, so it stays off the critical path.
+- How many guesses to bind (`ANE_FIELDFARE_VERIFY_BIND_TOP`): by idle time
+  alone, 16 left 7.3 ms per 8-row verify (patches late) and 24–128 all ~2 ms.
+  End to end, binding is not free: each bound expert costs host time for
+  residency probes and `useResources`, and the union of 8 rows' guesses grows
+  quickly. Quick suite with the drafter, three runs of 2 repetitions each,
+  2026-10-20:
+
+  | Bound per row | code | math | explanation |
+  | ---: | ---: | ---: | ---: |
+  | 96 | 67.7 | 54.6 | 46.4 |
+  | 64 | 73.7 | 63.7 | 56.6 |
+  | 48 (old default) | 89.9 | 71.1 | 66.0 |
+  | 32 | 95.7 | 74.7 | 69.4 |
+  | 24 | 95.9 | 74.9 | 70.5 |
+  | 20 (default) | 95.9 | 75.6 | 71.3 |
+  | 16 | 94.0 | 75.1 | 70.1 |
+
+  Reading 3 or 4 early experts per layer instead of 2 changed nothing beyond
+  noise at 20 or 24.
 
 GPU idle per verify fell from 5.1–5.5 ms to 0.5–1.1 ms at every row count. The
 GPU-routed result is bitwise the host-routed one: same greedy tokens and same
