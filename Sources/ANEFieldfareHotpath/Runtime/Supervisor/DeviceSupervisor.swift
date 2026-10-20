@@ -52,14 +52,14 @@ final class DeviceSupervisor {
     private(set) var evicted = false
     private(set) var faults: [GuestFault] = []
 
-    /// `--backend hybrid-ane` places every layer;
-    /// `ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS=n` overrides the count for
-    /// either backend.
+    /// `--backend hybrid-ane` places every layer, or layers `0..<n` under
+    /// `ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS=n`; `metal` places none.
     static func aneLayerCount(backend: RuntimeBackend, numLayers: Int) throws -> Int {
+        guard backend == .hybridANE else { return 0 }
         let variable = "ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS"
-        guard let raw = ProcessInfo.processInfo.environment[variable] else { return backend == .hybridANE ? numLayers : 0 }
+        guard let raw = ProcessInfo.processInfo.environment[variable] else { return numLayers }
         guard let count = Int(raw), (0...numLayers).contains(count) else {
-            throw ANEExecutionError.rejected("\(variable)=\(raw) must be an integer in 0...\(numLayers)")
+            throw RuntimeEnvironmentError(variable: variable, value: raw, expected: "an integer in 0...\(numLayers)")
         }
         return count
     }
@@ -108,9 +108,8 @@ final class DeviceSupervisor {
         }
     }
 
-    var routedPrefillProfile: [String: Any] {
-        guest?.profile ?? ["layers": 0, "evaluations": 0]
-    }
+    /// The ANE guest's profile; nil when no layer runs on the ANE.
+    var routedPrefillProfile: [String: Any]? { guest?.profile }
 
     var profile: [String: Any] {
         [

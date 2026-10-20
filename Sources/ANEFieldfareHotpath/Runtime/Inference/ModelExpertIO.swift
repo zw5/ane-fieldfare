@@ -65,7 +65,6 @@ extension Model {
 
     /// Reads `experts` into memory, concurrently, off the caller's thread.
     public func readRoutedExperts(layer: Int, experts: [Int]) async throws {
-        guard !experts.isEmpty else { return }
         try await Self.read(experts, of: expertLayer(layer))
     }
 

@@ -42,6 +42,10 @@ final class RoutedExpertLayers: Sendable {
         }
     }
 
+    func isOpen(_ layer: Int) -> Bool {
+        table.withLock { $0[layer] != nil }
+    }
+
     var openLayerCount: Int {
         table.withLock { $0.count { $0 != nil } }
     }

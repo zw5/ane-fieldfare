@@ -51,7 +51,6 @@ public func run(args: Args,
                 stdout: FileHandle = .standardOutput,
                 stderr: FileHandle = .standardError) async -> RunResult {
     do {
-        let environment = ProcessInfo.processInfo.environment
         let modelURL = URL(fileURLWithPath: args.model)
         let input = try parseInput(args: args)
         var selectedDevice: any MTLDevice?
@@ -133,8 +132,7 @@ public func run(args: Args,
             // The fused heads draw greedy or sampled tokens on the GPU; only a
             // repetition penalty needs the logits on the host.
             forceLogitsHead: makeConfig(maxNewTokens: args.maxNew).repetitionPenalty != 1,
-            imagePrompt: input.hasImages,
-            environment: environment)
+            imagePrompt: input.hasImages)
 
         if !args.quiet,
            let notice = prefillCoercionNotice(
@@ -302,7 +300,7 @@ public func run(args: Args,
             let profile: [String: Any] = [
                 "schema": "ane-fieldfare.hotpath-profile.v1",
                 "requested_backend": args.backend.rawValue,
-                "ane_routed_prefill": runner.aneRoutedPrefillProfile,
+                "ane_routed_prefill": runner.aneRoutedPrefillProfile ?? NSNull(),
                 "supervisor": runner.supervisorProfile,
                 "decode_expert_read_seconds": Double(runner.decodeExpertReadNanos) / nanosPerSecond,
                 "pre_router_gpu_encode_seconds": Double(runner.totalCb1Nanos) / nanosPerSecond,
@@ -337,7 +335,6 @@ public func run(args: Args,
                 "prefill_pre_router_gpu_seconds": Double(runner.prefillPreRouterGPUNanos) / nanosPerSecond,
                 "prefill_shared_gpu_seconds": Double(runner.prefillSharedGPUNanos) / nanosPerSecond,
                 "prefill_routed_gpu_seconds": Double(runner.prefillRoutedGPUNanos) / nanosPerSecond,
-                "prefill_attention_path": runtime.prefillAttentionPath.rawValue,
                 "prefill_chunk_tokens": runtime.prefillChunkTokens,
                 "first_token_latency_seconds": stats.prefillSeconds +
                     (stats.newTokens > 0 ? stats.decodeSeconds / Double(stats.newTokens) : 0),

@@ -100,8 +100,7 @@ private struct Generation: Decodable {
         let D = cfg.hiddenSize, layers = cfg.numLayers, topK = cfg.topKExperts
         let runner = try RealForwardRunner(
             model: model, context: context, maxContext: 4096,
-            runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: chunk,
-                                                       forceLogitsHead: true))
+            runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: chunk, headPath: .logits))
         var hidden = [Float16](repeating: 0, count: tokens.count * contextLayers.count * D)
         var routes = [UInt8](repeating: 0, count: tokens.count * layers * topK)
         var chunks: [[Int]] = []

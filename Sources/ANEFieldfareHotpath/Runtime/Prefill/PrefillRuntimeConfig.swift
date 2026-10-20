@@ -114,11 +114,6 @@ enum PrefillChunkPlanner {
 }
 
 public struct PrefillRuntimeConfig: Sendable, Equatable {
-    public enum Mode: String, Sendable, Equatable {
-        case off
-        case chunked
-    }
-
     public static let maxChunkTokens = 4096
     public static let allowedChunkTokens = [32, 64, 128, 256, 512, 1024, 2048, 4096]
 
@@ -138,9 +133,9 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
         return ceiling
     }
 
-    public let mode: Mode
+    public let mode: RuntimePrefillPolicy
     public let chunkTokens: Int
-    private init(mode: Mode, chunkTokens: Int) {
+    private init(mode: RuntimePrefillPolicy, chunkTokens: Int) {
         self.mode = mode
         self.chunkTokens = chunkTokens
     }

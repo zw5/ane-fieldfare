@@ -3,8 +3,8 @@ import ANEFieldfareHotpath
 import ANEFieldfareHotpathCLICore
 
 final class RuntimeSelectionTests: XCTestCase {
-    /// The hybrid ANE rail runs all eight routed experts through the causal
-    /// SIMD prefill path; flags that would break that contract are refused.
+    /// The hybrid ANE rail runs all eight routed experts; flags that would
+    /// break that contract are refused.
     func testHybridANESelectionPreservesANEContracts() throws {
         let required = ["--model", "/model", "--prompt", "hello"]
         let args = try Args.parse(required + ["--backend", "hybrid-ane",
@@ -14,7 +14,6 @@ final class RuntimeSelectionTests: XCTestCase {
         XCTAssertEqual(runtime.prefillChunkTokens, 256)
         XCTAssertEqual(runtime.faultPolicy, .failoverMetal)
         XCTAssertEqual(runtime.activeRoutedExperts, 8)
-        XCTAssertEqual(runtime.prefillAttentionPath, .causalSIMD)
         XCTAssertEqual(try Args.parse(required).backend, .hybridANE)
         for flags in [["--expert-top-k", "6"], ["--prefill-expert-cap", "8"], ["--prefill", "off"]] {
             XCTAssertEqual(try Args.parse(required + flags).backend, .metal)

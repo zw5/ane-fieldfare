@@ -52,8 +52,8 @@ public final class ModelEngine: CompletionEngine {
         // `--prefill-chunk-tokens auto` chooses it; the runner's KV ring has to
         // hold the largest one the context allows.
         let maxChunk = PrefillRuntimeConfig.autoChunkTokens(promptTokens: options.maxContext)
-        // The CLI's own validation and environment handling, with the CLI's
-        // greedy head: `forceLogitsHead` false.
+        // The CLI's own validation, with the CLI's greedy head:
+        // `forceLogitsHead` false.
         let args = Args(model: options.modelURL.path,
                         backend: options.backend,
                         maxContext: options.maxContext,
@@ -63,8 +63,7 @@ public final class ModelEngine: CompletionEngine {
                         faultPolicy: options.faultPolicy,
                         earlyExpertRead: options.earlyExpertRead,
                         drafter: options.drafterURL?.path)
-        let runtime = try args.resolvedRuntimeConfiguration(
-            forceLogitsHead: false, environment: ProcessInfo.processInfo.environment)
+        let runtime = try args.resolvedRuntimeConfiguration(forceLogitsHead: false)
         let context = try MetalContext()
         let model = try Model.load(directoryURL: options.modelURL, device: context.device)
         let runner = try RealForwardRunner(model: model, context: context, maxContext: options.maxContext,
