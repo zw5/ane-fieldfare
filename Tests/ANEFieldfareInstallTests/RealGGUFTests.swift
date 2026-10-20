@@ -74,14 +74,14 @@ private let realGGUF: (path: String, readable: UInt64)? = {
         let source = try read(q.offset..<(q.offset + q.size))
         var weights: [UInt8] = [], scales: [UInt8] = []
         RowCodec.repackQ4_0(source[...], cols: 2816, weights: &weights, scales: &scales)
-        #expect(outputs[0]?[qTensor.weights.offset] == weights)
-        #expect(outputs[0]?[qScales.offset] == scales)
+        #expect(mismatch(joined(outputs[0], at: qTensor.weights.offset, count: weights.count), weights) == nil)
+        #expect(mismatch(joined(outputs[0], at: qScales.offset, count: scales.count), scales) == nil)
 
         let gate = try #require(plan.experts.tensors.first)
         let expert0 = try read(gateUp.offset..<(gateUp.offset + gateUp.rowBytes * 704))
         weights = []; scales = []
         RowCodec.repackQ4_0(expert0[...], cols: 2816, weights: &weights, scales: &scales)
-        #expect(outputs[1]?[gate.weights.offset] == weights, "layer 0 file, expert 0 gate")
+        #expect(mismatch(joined(outputs[1], at: gate.weights.offset, count: weights.count), weights) == nil, "layer 0 file, expert 0 gate")
     }
 
     /// The vision plan for the pinned `mmproj`: every tensor mapped, the
@@ -103,6 +103,24 @@ private let realGGUF: (path: String, readable: UInt64)? = {
         #expect(byName["embed_vision.embedding_projection.weight"]?.shape == [2816, 1152])
         #expect(plan.vision.tensors.filter { $0.encoding == .bf16 }.count == plan.vision.tensors.count - 1)
     }
+}
+
+/// `count` bytes written at `offset`, joined across the segments that wrote them.
+private func joined(_ writes: [UInt64: [UInt8]]?, at offset: UInt64, count: Int) -> [UInt8]? {
+    var out: [UInt8] = []
+    while out.count < count, let bytes = writes?[offset + UInt64(out.count)], !bytes.isEmpty {
+        out += bytes
+    }
+    return out.isEmpty ? nil : out
+}
+
+/// Where two byte arrays first differ, without printing megabytes of either.
+private func mismatch(_ got: [UInt8]?, _ want: [UInt8]) -> String? {
+    guard let got else { return "missing" }
+    if let i = (0..<min(got.count, want.count)).first(where: { got[$0] != want[$0] }) {
+        return "byte \(i) of \(want.count): \(got[i]) != \(want[i])"
+    }
+    return got.count == want.count ? nil : "\(got.count) bytes, expected \(want.count)"
 }
 
 private let realMMProj: String? = {
