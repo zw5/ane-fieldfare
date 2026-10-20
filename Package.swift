@@ -29,11 +29,11 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
     ],
     targets: [
-        // Resident-index fixture types for the synthetic loader fixtures.
+        // Writers for synthetic gturbo fixtures; the runtime only reads the format.
         .target(
-            name: "ANEFieldfareRepackTestSupport",
+            name: "ANEFieldfareFormatTestSupport",
             dependencies: ["ANEFieldfareImportedFormat"],
-            path: "Tests/Support/Repack",
+            path: "Tests/Support/Format",
             swiftSettings: strictSwiftSettings
         ),
         .target(
@@ -47,7 +47,7 @@ let package = Package(
             dependencies: [
                 "ANEFieldfareHotpath", "ANEFieldfareHotpathCLICore",
                 "ANEFieldfareImportedFormat", "ANEFieldfareValidationSupport",
-                "ANEFieldfareRepackTestSupport",
+                "ANEFieldfareFormatTestSupport",
                 .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ],
@@ -57,7 +57,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ANEFieldfareFormatTests",
-            dependencies: ["ANEFieldfareImportedFormat"],
+            dependencies: ["ANEFieldfareImportedFormat", "ANEFieldfareFormatTestSupport"],
             path: "Tests/ANEFieldfareFormatTests",
             swiftSettings: strictSwiftSettings
         ),

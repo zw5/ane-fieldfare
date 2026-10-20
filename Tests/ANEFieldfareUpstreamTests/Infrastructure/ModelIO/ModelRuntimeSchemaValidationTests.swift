@@ -32,7 +32,6 @@ import Testing
                 bits: gate.bits)
             return ExpertEntry(
                 expert: expert.expert,
-                physicalRank: expert.physicalRank,
                 offset: expert.offset,
                 size: expert.size,
                 subTensors: tensors)

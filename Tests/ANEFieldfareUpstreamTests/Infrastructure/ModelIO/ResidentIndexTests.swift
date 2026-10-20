@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import ANEFieldfareHotpath
-@testable import ANEFieldfareRepackTestSupport
+@testable import ANEFieldfareFormatTestSupport
 
 /// Writer-encoded round trips are covered end to end by the
 /// `ModelLoaderTests.writeToySynthetic` load tests.

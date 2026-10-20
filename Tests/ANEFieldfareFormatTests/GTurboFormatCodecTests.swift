@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ANEFieldfareImportedFormat
+import ANEFieldfareFormatTestSupport
 
 private enum FormatFixture {
     static func manifest() -> GTurboManifestV1 {
@@ -31,8 +32,7 @@ private enum FormatFixture {
             ],
             expertsPerLayer: 2,
             numLayers: 1,
-            expertStride: GTurboFormatV1.alignmentBytes,
-            bitWidthOverridesHonored: 120)
+            expertStride: GTurboFormatV1.alignmentBytes)
     }
 
     static let quantSlot = GTurboManifestQuantSlotV1(
@@ -103,16 +103,12 @@ private enum FormatFixture {
 }
 
 @Suite struct GTurboManifestCodecTests {
-    @Test func roundTripPreservesOptionalPresenceAndWriterField() throws {
+    @Test func roundTrips() throws {
         let manifest = FormatFixture.manifest()
-        let encoded = try GTurboManifestCodec.encode(manifest)
-        #expect(try GTurboManifestCodec.decode(encoded) == manifest)
-        let root = try #require(
-            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        #expect(root["bitWidthOverridesHonored"] as? Int == 120)
+        #expect(try GTurboManifestCodec.decode(GTurboManifestCodec.encode(manifest)) == manifest)
     }
 
-    @Test(arguments: ["sourceSnapshotHash", "quant", "bitWidthOverridesHonored"])
+    @Test(arguments: ["sourceSnapshotHash", "quant"])
     func acceptsAbsentLegacyOptionalField(_ key: String) throws {
         let data = try GTurboManifestCodec.encode(FormatFixture.manifest())
         var root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -121,7 +117,6 @@ private enum FormatFixture {
         let decoded = try GTurboManifestCodec.decode(changed)
         if key == "sourceSnapshotHash" { #expect(decoded.sourceSnapshotHash == nil) }
         if key == "quant" { #expect(decoded.quant == nil) }
-        if key == "bitWidthOverridesHonored" { #expect(decoded.bitWidthOverridesHonored == nil) }
     }
 
     @Test func rejectsUnsafeManifestPaths() throws {
@@ -131,7 +126,9 @@ private enum FormatFixture {
         files["../escape.bin"] = files.removeValue(forKey: "model_weights.bin")
         root["files"] = files
         let data = try JSONSerialization.data(withJSONObject: root)
-        #expect(throws: GTurboFormatError.self) { try GTurboManifestCodec.decode(data) }
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.validate(GTurboManifestCodec.decode(data))
+        }
     }
 }
 

@@ -12,9 +12,6 @@ struct SubTensorEntry: Sendable, Equatable {
 struct ExpertEntry: Sendable {
     /// Logical routed-expert id used by the model/router.
     let expert: Int
-    /// Physical rank inside the layer file. Old identity layouts use
-    /// `physicalRank == expert`.
-    let physicalRank: Int
     /// Absolute byte offset of this expert blob's start inside its layer file.
     let offset: UInt64
     /// Total bytes consumed by this expert blob (== `expertStride`).
@@ -24,12 +21,10 @@ struct ExpertEntry: Sendable {
     let subTensors: [String: SubTensorEntry]
 
     init(expert: Int,
-                physicalRank: Int? = nil,
-                offset: UInt64,
-                size: UInt64,
-                subTensors: [String: SubTensorEntry]) {
+         offset: UInt64,
+         size: UInt64,
+         subTensors: [String: SubTensorEntry]) {
         self.expert = expert
-        self.physicalRank = physicalRank ?? expert
         self.offset = offset
         self.size = size
         self.subTensors = subTensors
@@ -76,7 +71,6 @@ enum PackedExpertsLayoutReader {
                 let logical = expert.expert ?? position
                 return ExpertEntry(
                     expert: logical,
-                    physicalRank: expert.physicalRank,
                     offset: expert.offset,
                     size: expert.size,
                     subTensors: expert.tensors.mapValues {

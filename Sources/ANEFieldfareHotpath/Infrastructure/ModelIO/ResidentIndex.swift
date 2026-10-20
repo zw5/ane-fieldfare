@@ -9,7 +9,6 @@ import ANEFieldfareImportedFormat
 struct ResidentIndexHeader: Sendable, Equatable {
     let indexSize: UInt64
     let residentSize: UInt64
-    let entryCount: UInt64
 }
 
 public struct ResidentIndexEntry: Sendable {
@@ -65,8 +64,7 @@ enum ResidentIndexReader {
         guard unsafe fstat(fd, &st) == 0, st.st_size >= 0 else {
             throw ModelError.posixFailed(call: "fstat(\(displayPath))", errno: errno)
         }
-        guard wireHeader.indexSize <= UInt64(st.st_size),
-              wireHeader.indexSize <= UInt64(Int.max) else {
+        guard wireHeader.indexSize <= UInt64(st.st_size) else {
             throw ModelError.indexCorrupt(detail: "index region exceeds file size")
         }
 
@@ -92,8 +90,7 @@ enum ResidentIndexReader {
             throw ModelError.indexCorrupt(detail: "\(error)")
         }
         let header = ResidentIndexHeader(indexSize: wireHeader.indexSize,
-                                         residentSize: wireHeader.residentSize,
-                                         entryCount: wireHeader.entryCount)
+                                         residentSize: wireHeader.residentSize)
         let entries = Dictionary(uniqueKeysWithValues: wireEntries.map { wire in
             let shape = wire.shape
             return (wire.name, ResidentIndexEntry(

@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import ANEFieldfareHotpath
 @testable import ANEFieldfareImportedFormat
-@testable import ANEFieldfareRepackTestSupport
+@testable import ANEFieldfareFormatTestSupport
 import ANEFieldfareValidationSupport
 
 @Suite struct ModelLoaderTests {
