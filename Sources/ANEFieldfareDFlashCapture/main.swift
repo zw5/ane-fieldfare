@@ -62,10 +62,13 @@ private struct Generation: Decodable {
     /// `ANE_FIELDFARE_VERIFY_SAMPLE=temperature,topK,topP,seed` checks a
     /// sampled generation drawn under that rule instead of a greedy one.
     static func verifySampling() -> TokenSampling? {
-        guard let rule = ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_SAMPLE"]?
-            .split(separator: ",").compactMap({ Double($0) }), rule.count == 4 else { return nil }
-        return TokenSampling(temperature: Float(rule[0]), topK: Int(rule[1]), topP: Float(rule[2]),
-                             seed: UInt64(rule[3]))
+        guard let text = ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_SAMPLE"] else { return nil }
+        let fields = text.split(separator: ",", omittingEmptySubsequences: false)
+        guard fields.count == 4, let temperature = Float(fields[0]), let topK = Int(fields[1]),
+              let topP = Float(fields[2]), let seed = UInt64(fields[3]) else {
+            fail("ANE_FIELDFARE_VERIFY_SAMPLE must be temperature,topK,topP,seed: \(text)")
+        }
+        return TokenSampling(temperature: temperature, topK: topK, topP: topP, seed: seed)
     }
 
     static func write(_ bytes: UnsafeRawBufferPointer, to path: String) throws {

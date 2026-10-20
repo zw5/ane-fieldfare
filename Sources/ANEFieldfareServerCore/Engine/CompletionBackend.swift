@@ -218,7 +218,6 @@ public final class SerializedBackend<Engine: CompletionEngine>: CompletionBacken
         let ids: [Int32]
         switch prompt {
         case .chat(let messages):
-            guard !messages.isEmpty else { throw APIError.badRequest("messages must not be empty", param: "messages") }
             let rendered: String
             do {
                 rendered = try tokenizer.applyChatTemplate(messages)

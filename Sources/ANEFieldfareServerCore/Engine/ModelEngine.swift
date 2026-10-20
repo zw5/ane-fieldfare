@@ -54,17 +54,10 @@ public final class ModelEngine: CompletionEngine {
         let maxChunk = PrefillRuntimeConfig.autoChunkTokens(promptTokens: options.maxContext)
         // The CLI's own validation and environment handling, with the CLI's
         // greedy head: `forceLogitsHead` false.
-        let args = Args(model: options.modelURL.path,
-                        backend: options.backend,
-                        maxContext: options.maxContext,
-                        temperature: 0,
-                        prefillChunkTokens: maxChunk,
-                        prefillChunkTokensAuto: false,
-                        faultPolicy: options.faultPolicy,
-                        earlyExpertRead: options.earlyExpertRead,
-                        drafter: options.drafterURL?.path)
-        let runtime = try args.resolvedRuntimeConfiguration(
-            forceLogitsHead: false, environment: ProcessInfo.processInfo.environment)
+        let runtime = try Args.runtimeConfiguration(
+            backend: options.backend, prefillChunkTokens: maxChunk, faultPolicy: options.faultPolicy,
+            earlyExpertRead: options.earlyExpertRead, forceLogitsHead: false,
+            environment: ProcessInfo.processInfo.environment)
         let context = try MetalContext()
         let model = try Model.load(directoryURL: options.modelURL, device: context.device)
         let runner = try RealForwardRunner(model: model, context: context, maxContext: options.maxContext,

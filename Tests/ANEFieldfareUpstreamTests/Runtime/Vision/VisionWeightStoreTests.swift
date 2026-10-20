@@ -3,6 +3,7 @@ import Metal
 import Testing
 @testable import ANEFieldfareHotpath
 @testable import ANEFieldfareImportedFormat
+import ANEFieldfareFormatTestSupport
 
 @Suite struct VisionWeightStoreTests {
     @Test func opensBoundedCompanion() throws {
@@ -39,7 +40,7 @@ import Testing
         let weights = Data(repeating: 0, count: Int(GTurboVisionFormatV1.alignmentBytes))
         let processor = Data("{}".utf8)
         let manifest = GTurboVisionManifestV1(
-            modelID: "fixture/model", sourceRevision: "fixture-revision",
+            modelID: "fixture/model",
             compatibleTextSourceSnapshotHash: "text-snapshot",
             files: [
                 GTurboVisionFormatV1.weightsFile: .init(size: UInt64(weights.count)),

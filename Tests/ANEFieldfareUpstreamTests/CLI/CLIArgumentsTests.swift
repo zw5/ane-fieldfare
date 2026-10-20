@@ -91,6 +91,22 @@ import ANEFieldfareHotpath
         }
     }
 
+    /// The flags the CLI shares with the server follow the server's rules too.
+    @Test func sharedFlagsFollowOneRule() throws {
+        let base = ["--model", "m.gturbo", "--prompt", "hi"]
+        #expect(throws: ArgsError.helpRequested) { _ = try Args.parse(base + ["-h"]) }
+        #expect(try Args.parse(base + ["--max-context", "16"]).maxContext == 16)
+        for (flag, value) in [("--max-context", "15"), ("--temperature", "inf"), ("--temperature", "nan"),
+                              ("--repetition-penalty", "inf")] {
+            #expect(throws: ArgsError.invalidValue(flag: flag, value: value)) {
+                _ = try Args.parse(base + [flag, value])
+            }
+        }
+        #expect(throws: ArgsError.unknownFlag("--prefill-chunk")) {
+            _ = try Args.parse(base + ["--prefill-chunk", "256"])
+        }
+    }
+
     @Test(arguments: [
         (["--prompt", "X", "--messages-file", "Y.json"], ArgsError.mutuallyExclusive("--prompt", "--messages-file")),
         (["--chat-prompt", "X", "--messages-file", "Y.json"],

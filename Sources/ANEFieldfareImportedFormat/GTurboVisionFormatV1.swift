@@ -73,7 +73,6 @@ package struct GTurboVisionManifestV1: Codable, Equatable, Sendable {
     package let versionMajor: Int
     package let versionMinor: Int
     package let modelID: String
-    package let sourceRevision: String
     package let compatibleTextSourceSnapshotHash: String
     package let files: [String: GTurboManifestFileV1]
     package let tensors: [GTurboVisionTensorRegionV1]
@@ -82,7 +81,7 @@ package struct GTurboVisionManifestV1: Codable, Equatable, Sendable {
                  artifactKind: String = GTurboVisionFormatV1.artifactKind,
                  versionMajor: Int = GTurboVisionFormatV1.versionMajor,
                  versionMinor: Int = GTurboVisionFormatV1.versionMinor,
-                 modelID: String, sourceRevision: String,
+                 modelID: String,
                  compatibleTextSourceSnapshotHash: String,
                  files: [String: GTurboManifestFileV1],
                  tensors: [GTurboVisionTensorRegionV1]) {
@@ -91,7 +90,6 @@ package struct GTurboVisionManifestV1: Codable, Equatable, Sendable {
         self.versionMajor = versionMajor
         self.versionMinor = versionMinor
         self.modelID = modelID
-        self.sourceRevision = sourceRevision
         self.compatibleTextSourceSnapshotHash = compatibleTextSourceSnapshotHash
         self.files = files
         self.tensors = tensors
@@ -113,27 +111,6 @@ package enum GTurboVisionManifestCodec {
         try GTurboVisionStructuralValidator.validate(manifest)
         return manifest
     }
-
-    package static func encode(_ manifest: GTurboVisionManifestV1) throws -> Data {
-        try GTurboVisionStructuralValidator.validate(manifest)
-        let encoder = JSONEncoder()
-        do {
-            let object = try JSONSerialization.jsonObject(with: encoder.encode(manifest))
-            let data = try JSONSerialization.data(
-                withJSONObject: object,
-                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-            guard UInt64(data.count) <= GTurboVisionFormatV1.metadataMaxBytes else {
-                throw GTurboFormatError.invalid(
-                    field: GTurboVisionFormatV1.manifestFile, reason: "metadata exceeds 4 MiB")
-            }
-            return data
-        } catch let error as GTurboFormatError {
-            throw error
-        } catch {
-            throw GTurboFormatError.invalid(
-                field: GTurboVisionFormatV1.manifestFile, reason: "\(error)")
-        }
-    }
 }
 
 package enum GTurboVisionStructuralValidator {
@@ -148,27 +125,17 @@ package enum GTurboVisionStructuralValidator {
             throw GTurboFormatError.invalid(field: "vision.manifest.version",
                                              reason: "unsupported version")
         }
-        guard !manifest.modelID.isEmpty, !manifest.sourceRevision.isEmpty,
-              !manifest.compatibleTextSourceSnapshotHash.isEmpty else {
+        guard !manifest.modelID.isEmpty, !manifest.compatibleTextSourceSnapshotHash.isEmpty else {
             throw GTurboFormatError.invalid(field: "vision.manifest",
                                              reason: "missing source identity")
         }
 
-        let expectedFiles = Set([
-            GTurboVisionFormatV1.weightsFile,
-            GTurboVisionFormatV1.processorFile,
-        ])
-        guard Set(manifest.files.keys) == expectedFiles else {
-            throw GTurboFormatError.invalid(field: "vision.manifest.files",
-                                             reason: "expected exactly two payload files")
-        }
-        var filesystemKeys = Set<String>()
-        for path in manifest.files.keys {
-            try GTurboPathValidator.validateBasename(path, field: "vision.manifest.files.\(path)")
-            guard filesystemKeys.insert(GTurboPathValidator.appleFilesystemKey(path)).inserted else {
-                throw GTurboFormatError.invalid(field: "vision.manifest.files.\(path)",
-                                                 reason: "filesystem-equivalent duplicate path")
-            }
+        guard manifest.files.count == 2,
+              let weightsSize = manifest.files[GTurboVisionFormatV1.weightsFile]?.size,
+              manifest.files[GTurboVisionFormatV1.processorFile] != nil else {
+            throw GTurboFormatError.invalid(
+                field: "vision.manifest.files",
+                reason: "expected exactly \(GTurboVisionFormatV1.weightsFile) and \(GTurboVisionFormatV1.processorFile)")
         }
 
         guard !manifest.tensors.isEmpty else {
@@ -177,10 +144,6 @@ package enum GTurboVisionStructuralValidator {
         }
         var names = Set<String>()
         var previousEnd: UInt64 = 0
-        guard let weightsSize = manifest.files[GTurboVisionFormatV1.weightsFile]?.size else {
-            throw GTurboFormatError.invalid(field: "vision.manifest.files",
-                                             reason: "missing \(GTurboVisionFormatV1.weightsFile)")
-        }
         for (index, tensor) in manifest.tensors.enumerated() {
             guard !tensor.name.isEmpty, !tensor.name.contains("\0"),
                   names.insert(tensor.name).inserted else {

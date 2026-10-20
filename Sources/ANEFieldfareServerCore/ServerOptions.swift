@@ -7,7 +7,7 @@ public struct ServerOptions: Sendable, Equatable {
     public var drafter: String?
     public var host: String = "127.0.0.1"
     public var port: UInt16 = 8080
-    public var maxContext: Int = 32_768
+    public var maxContext: Int = OptionDefaults.maxContext
     public var modelID: String = "gemma-4-26b-a4b-it"
     public var apiKey: String?
     public var maxQueue: Int = 8
@@ -18,24 +18,6 @@ public struct ServerOptions: Sendable, Equatable {
 
     public init(model: String) {
         self.model = model
-    }
-
-    public enum ParseError: Error, Equatable, CustomStringConvertible {
-        case helpRequested
-        case unknownFlag(String)
-        case missingValue(String)
-        case invalidValue(flag: String, value: String)
-        case requiredMissing(String)
-
-        public var description: String {
-            switch self {
-            case .helpRequested: return "help requested"
-            case .unknownFlag(let flag): return "unknown flag: \(flag)"
-            case .missingValue(let flag): return "missing value for \(flag)"
-            case .invalidValue(let flag, let value): return "invalid value for \(flag): \(value)"
-            case .requiredMissing(let flag): return "required flag missing: \(flag)"
-            }
-        }
     }
 
     public static let apiKeyEnvironmentVariable = "ANE_FIELDFARE_API_KEY"
@@ -84,101 +66,49 @@ public struct ServerOptions: Sendable, Equatable {
         var model: String?
         var options = ServerOptions(model: "")
         options.apiKey = environment[apiKeyEnvironmentVariable].flatMap { $0.isEmpty ? nil : $0 }
-        var index = 0
-        func value(_ flag: String) throws -> String {
-            guard index + 1 < argv.count else { throw ParseError.missingValue(flag) }
-            index += 2
-            return argv[index - 1]
-        }
-        while index < argv.count {
-            let flag = argv[index]
+        var cursor = ArgumentCursor(argv)
+        while let flag = cursor.nextFlag() {
             switch flag {
             case "--help", "-h":
-                throw ParseError.helpRequested
+                throw ArgsError.helpRequested
             case "--model":
-                model = try value(flag)
+                model = try cursor.value(for: flag)
             case "--drafter":
-                options.drafter = try value(flag)
+                options.drafter = try cursor.value(for: flag)
             case "--host":
-                let host = try value(flag)
-                guard !host.isEmpty else { throw ParseError.invalidValue(flag: flag, value: host) }
-                options.host = host
+                options.host = try cursor.value(for: flag, as: String.self) { !$0.isEmpty }
             case "--port":
-                let text = try value(flag)
-                guard let port = UInt16(text) else { throw ParseError.invalidValue(flag: flag, value: text) }
-                options.port = port
+                options.port = try cursor.value(for: flag, as: UInt16.self)
             case "--max-context":
-                let text = try value(flag)
-                guard let parsed = Int(text), parsed >= 16 else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.maxContext = parsed
+                options.maxContext = try cursor.maxContext(for: flag)
             case "--model-id":
-                let id = try value(flag)
-                guard !id.isEmpty else { throw ParseError.invalidValue(flag: flag, value: id) }
-                options.modelID = id
+                options.modelID = try cursor.value(for: flag, as: String.self) { !$0.isEmpty }
             case "--api-key":
-                let key = try value(flag)
-                guard !key.isEmpty else { throw ParseError.invalidValue(flag: flag, value: key) }
-                options.apiKey = key
+                options.apiKey = try cursor.value(for: flag, as: String.self) { !$0.isEmpty }
             case "--max-queue":
-                let text = try value(flag)
-                guard let parsed = Int(text), parsed >= 0 else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.maxQueue = parsed
+                options.maxQueue = try cursor.value(for: flag, as: Int.self) { $0 >= 0 }
             case "--temperature":
-                let text = try value(flag)
-                guard let parsed = Float(text), parsed.isFinite, parsed >= 0 else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.defaults.temperature = parsed
+                options.defaults.temperature = try cursor.temperature(for: flag)
             case "--top-k":
-                let text = try value(flag)
-                guard let parsed = Int(text), (0...256).contains(parsed) else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.defaults.topK = parsed == 0 ? nil : parsed
+                options.defaults.topK = try cursor.topK(for: flag)
             case "--top-p":
-                let text = try value(flag)
-                guard let parsed = Float(text), parsed > 0, parsed <= 1 else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.defaults.topP = parsed
+                options.defaults.topP = try cursor.topP(for: flag)
             case "--max-tokens":
-                let text = try value(flag)
-                guard let parsed = Int(text), parsed > 0 else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.defaults.maxTokens = parsed
+                options.defaults.maxTokens = try cursor.value(for: flag, as: Int.self) { $0 > 0 }
             case "--backend":
-                let text = try value(flag)
-                guard let parsed = RuntimeBackend(rawValue: text) else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.backend = parsed
+                options.backend = try cursor.choice(for: flag, as: RuntimeBackend.self)
             case "--fault-policy":
-                let text = try value(flag)
-                guard let parsed = RuntimeFaultPolicy(rawValue: text) else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.faultPolicy = parsed
+                options.faultPolicy = try cursor.choice(for: flag, as: RuntimeFaultPolicy.self)
             case "--early-expert-read":
-                let text = try value(flag)
-                guard let parsed = RuntimeEarlyExpertRead(rawValue: text) else {
-                    throw ParseError.invalidValue(flag: flag, value: text)
-                }
-                options.earlyExpertRead = parsed
+                options.earlyExpertRead = try cursor.choice(for: flag, as: RuntimeEarlyExpertRead.self)
             default:
-                throw ParseError.unknownFlag(flag)
+                throw ArgsError.unknownFlag(flag)
             }
         }
-        guard let model, !model.isEmpty else { throw ParseError.requiredMissing("--model") }
+        guard let model, !model.isEmpty else { throw ArgsError.requiredMissing("--model") }
         options.model = model
-        let defaults = options.defaults
-        if defaults.temperature > 0, defaults.topK == nil, let topP = defaults.topP, topP < 1 {
-            throw ParseError.invalidValue(flag: "--top-p", value: "\(topP) requires --top-k between 1 and 256")
-        }
+        try validateTruncation(temperature: options.defaults.temperature, topK: options.defaults.topK,
+                               topP: options.defaults.topP)
         return options
     }
 }

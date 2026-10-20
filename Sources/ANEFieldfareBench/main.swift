@@ -1,4 +1,5 @@
 import ANEFieldfareHotpath
+import ANEFieldfareHotpathCLICore
 import Darwin
 import Foundation
 import Metal
@@ -8,10 +9,12 @@ import Metal
 /// build into statistics, token agreement and an HTML report.
 ///
 /// usage: ANEFieldfareBench --model <dir> [--drafter <dir>] [--tokens N] [--reps N]
-///                          [--suite quick|full] [--label name] [--out file.json]
+///                          [--suite quick|full] [--backend metal|hybrid-ane]
+///                          [--label name] [--out file.json]
 ///
-/// Cases run the CLI's own generation loop (`runRawCompletion`), greedy, with a
-/// fresh KV cache per case and a fresh speculation policy per speculative case.
+/// Cases run the CLI's own generation loop (`runRawCompletion`) on the CLI's
+/// runtime configuration, greedy, with a fresh KV cache per case and a fresh
+/// speculation policy per speculative case.
 /// Step samples time one decode step and verifies of 1, 2, 4 and 8 rows at a
 /// fixed context, rewinding after each.
 @main private enum Bench {
@@ -20,12 +23,18 @@ import Metal
         var drafter: String?
         var tokens = 192
         var reps = 2
-        var suite = "quick"
+        var suite = Suite.quick
+        var backend = RuntimeBackend.hybridANE
         var label = "run"
         var out: String?
         /// 0 is greedy; above it, top-k 64, top-p 0.95 and a fixed seed.
         var temperature: Float = 0
     }
+
+    enum Suite: String { case quick, full }
+
+    /// Step samples slide a window over the first case's generated tokens.
+    static let stepSampleTokens = 96
 
     static let prompts: [(String, String)] = [
         ("code", "Write a Python function that parses an ISO 8601 date string without using datetime, with tests."),
@@ -47,23 +56,19 @@ import Metal
 
     static func parse(_ argv: [String]) throws -> Options {
         var options = Options()
-        var i = 0
-        func value() throws -> String {
-            guard i + 1 < argv.count else { throw BenchError("missing value for \(argv[i])") }
-            i += 2
-            return argv[i - 1]
-        }
-        while i < argv.count {
-            switch argv[i] {
-            case "--model": options.model = try value()
-            case "--drafter": options.drafter = try value()
-            case "--tokens": options.tokens = Int(try value()) ?? options.tokens
-            case "--reps": options.reps = Int(try value()) ?? options.reps
-            case "--suite": options.suite = try value()
-            case "--label": options.label = try value()
-            case "--out": options.out = try value()
-            case "--temperature": options.temperature = Float(try value()) ?? 0
-            default: throw BenchError("unknown flag \(argv[i])")
+        var cursor = ArgumentCursor(argv)
+        while let flag = cursor.nextFlag() {
+            switch flag {
+            case "--model": options.model = try cursor.value(for: flag)
+            case "--drafter": options.drafter = try cursor.value(for: flag)
+            case "--tokens": options.tokens = try cursor.value(for: flag, as: Int.self) { $0 > 0 }
+            case "--reps": options.reps = try cursor.value(for: flag, as: Int.self) { $0 > 0 }
+            case "--suite": options.suite = try cursor.choice(for: flag, as: Suite.self)
+            case "--backend": options.backend = try cursor.choice(for: flag, as: RuntimeBackend.self)
+            case "--label": options.label = try cursor.value(for: flag)
+            case "--out": options.out = try cursor.value(for: flag)
+            case "--temperature": options.temperature = try cursor.temperature(for: flag)
+            default: throw ArgsError.unknownFlag(flag)
             }
         }
         return options
@@ -83,15 +88,21 @@ import Metal
         let model = try Model.load(directoryURL: modelURL, device: context.device)
         let tokenizer = try await GFTokenizer.load(forModelDirectory: modelURL)
         let maxContext = 4096
+        let production = RuntimeConfiguration.production
+        let runtime = try Args.runtimeConfiguration(
+            backend: options.backend,
+            prefillChunkTokens: PrefillRuntimeConfig.autoChunkTokens(promptTokens: maxContext),
+            faultPolicy: production.faultPolicy, earlyExpertRead: production.earlyExpertRead,
+            forceLogitsHead: false, environment: ProcessInfo.processInfo.environment)
         let runner = try RealForwardRunner(model: model, context: context, maxContext: maxContext,
-                                           runtimeConfiguration: RuntimeConfiguration())
+                                           runtimeConfiguration: runtime)
         var drafter: DFlashDrafter?
         if let path = options.drafter {
             drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: path), model: model, context: context,
                                               maxContext: maxContext)
         }
         let scratch = try RawCompletionScratch(context: context, vocab: model.config.vocabSize)
-        let promptSet = options.suite == "full" ? prompts : Array(prompts.prefix(3))
+        let promptSet = options.suite == .full ? prompts : Array(prompts.prefix(3))
         let modes = drafter == nil ? ["plain"] : ["plain", "spec"]
         log(unsafe "[bench \(options.label)] load \(String(format: "%.1f", Date().timeIntervalSince(started)))s; "
             + "\(promptSet.count) prompts x \(modes.count) modes x \(options.reps) reps, \(options.tokens) tokens")
@@ -158,12 +169,14 @@ import Metal
             }
         }
 
-        let steps = try await stepSamples(runner: runner, prompt: stepPrompt, generated: stepTokens)
+        let steps = try await stepSamples(runner: runner, context: context, vocab: model.config.vocabSize,
+                                          prompt: stepPrompt, generated: stepTokens)
         let report: [String: Any] = [
             "schema": "ane-fieldfare.bench.v1",
             "label": options.label,
             "environment": environment(),
-            "options": ["tokens": options.tokens, "reps": options.reps, "suite": options.suite,
+            "options": ["tokens": options.tokens, "reps": options.reps, "suite": options.suite.rawValue,
+                        "backend": options.backend.rawValue,
                         "temperature": options.temperature,
                         "drafter": options.drafter as Any? ?? NSNull(), "max_context": maxContext],
             "cases": cases,
@@ -229,11 +242,15 @@ import Metal
 
     /// Medians need many samples, so steps rewind to the same context and
     /// slide the token window, as generation would vary routes.
-    static func stepSamples(runner: RealForwardRunner, prompt: [Int32], generated: [Int32]) async throws
-        -> [[String: Any]] {
-        guard generated.count >= 96 else { return [] }
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let logits = device.makeBuffer(length: 262_144 * 2, options: .storageModeShared) else { return [] }
+    static func stepSamples(runner: RealForwardRunner, context: MetalContext, vocab: Int,
+                            prompt: [Int32], generated: [Int32]) async throws -> [[String: Any]] {
+        guard generated.count >= stepSampleTokens else {
+            throw BenchError("step samples need \(stepSampleTokens) generated tokens; "
+                + "the first case stopped after \(generated.count) (raise --tokens)")
+        }
+        guard let logits = context.device.makeBuffer(length: vocab * 2, options: .storageModeShared) else {
+            throw BenchError("cannot allocate the step-sample logits")
+        }
         let warm = 48
         let prefix = prompt + generated[0..<warm]
         runner.reset()

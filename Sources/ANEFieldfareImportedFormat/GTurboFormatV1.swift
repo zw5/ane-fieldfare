@@ -9,6 +9,8 @@ package enum GTurboFormatV1 {
     package static let residentEntryBytes = 72
     package static let residentIndexMaxBytes: UInt64 = 16 * 1024 * 1024
 
+    /// The flags Turbo Fieldfare's installer writes. Only `turboQuantKV`
+    /// changes what a reader must do; `ManifestReader` refuses it.
     package static let knownFlags: Set<String> = [
         "streamingPresent", "turboQuantKV", "aneSharedExpert",
     ]

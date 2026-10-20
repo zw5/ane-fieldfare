@@ -113,7 +113,6 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
     package let expertsPerLayer: Int
     package let numLayers: Int
     package let expertStride: UInt64
-    package let bitWidthOverridesHonored: Int?
 
     package init(magic: String = GTurboFormatV1.magic,
                  versionMajor: Int = GTurboFormatV1.versionMajor,
@@ -122,8 +121,7 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
                  sourceSnapshotHash: String?, arch: GTurboManifestArchV1,
                  quant: GTurboManifestQuantV1?,
                  files: [String: GTurboManifestFileV1],
-                 expertsPerLayer: Int, numLayers: Int, expertStride: UInt64,
-                 bitWidthOverridesHonored: Int?) {
+                 expertsPerLayer: Int, numLayers: Int, expertStride: UInt64) {
         self.magic = magic
         self.versionMajor = versionMajor
         self.versionMinor = versionMinor
@@ -136,93 +134,27 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
         self.expertsPerLayer = expertsPerLayer
         self.numLayers = numLayers
         self.expertStride = expertStride
-        self.bitWidthOverridesHonored = bitWidthOverridesHonored
     }
 }
 
 package enum GTurboManifestCodec {
     package static func decode(_ data: Data) throws -> GTurboManifestV1 {
-        let manifest = try decodeUnchecked(data)
-        try validate(manifest)
-        return manifest
-    }
-
-    package static func decodeUnchecked(_ data: Data) throws -> GTurboManifestV1 {
-        let manifest: GTurboManifestV1
-        do { manifest = try JSONDecoder().decode(GTurboManifestV1.self, from: data) }
+        do { return try JSONDecoder().decode(GTurboManifestV1.self, from: data) }
         catch { throw GTurboFormatError.invalid(field: "manifest.json", reason: "\(error)") }
-        return manifest
     }
 
-    package static func encode(_ manifest: GTurboManifestV1) throws -> Data {
-        try validate(manifest)
-        let encoder = JSONEncoder()
-        do {
-            let object = try JSONSerialization.jsonObject(with: encoder.encode(manifest))
-            return try JSONSerialization.data(
-                withJSONObject: object,
-                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-        } catch {
-            throw GTurboFormatError.invalid(field: "manifest.json", reason: "\(error)")
-        }
-    }
-
+    /// The structure a reader relies on: the streaming metadata agrees with
+    /// the architecture, the expert stride is set, and every file path is a
+    /// safe relative path, unique on an Apple filesystem. Magic, version,
+    /// flags and stride alignment are `ManifestReader`'s, which reports them
+    /// with their own errors and compares the architecture and quantization
+    /// with the expected model exactly.
     package static func validate(_ manifest: GTurboManifestV1) throws {
-        guard manifest.magic == GTurboFormatV1.magic else {
-            throw GTurboFormatError.invalid(field: "manifest.magic", reason: "expected GTURBO")
-        }
-        guard manifest.versionMajor == GTurboFormatV1.versionMajor,
-              manifest.versionMinor >= 0 else {
-            throw GTurboFormatError.invalid(field: "manifest.version", reason: "unsupported version")
-        }
-        for flag in manifest.flags.keys where !GTurboFormatV1.knownFlags.contains(flag) {
-            throw GTurboFormatError.invalid(field: "manifest.flags.\(flag)", reason: "unknown v1 flag")
-        }
-        guard !manifest.modelID.isEmpty,
-              manifest.numLayers > 0, manifest.expertsPerLayer > 0,
-              manifest.expertStride > 0,
-              manifest.expertStride % GTurboFormatV1.alignmentBytes == 0 else {
-            throw GTurboFormatError.invalid(field: "manifest", reason: "invalid dimensions or stride")
-        }
-        guard manifest.arch.numLayers == manifest.numLayers,
+        guard manifest.expertStride > 0,
+              manifest.arch.numLayers == manifest.numLayers,
               manifest.arch.numExperts == manifest.expertsPerLayer else {
             throw GTurboFormatError.invalid(
-                field: "manifest.arch", reason: "dimensions disagree with streaming metadata")
-        }
-        let arch = manifest.arch
-        guard arch.hiddenSize > 0, arch.ffnIntermediate > 0,
-              arch.moeIntermediateSize > 0, arch.numHeads > 0,
-              arch.numKVHeads > 0, arch.numFullKVHeads > 0,
-              arch.headDim > 0, arch.fullHeadDim > 0,
-              arch.vocabSize > 0, arch.slidingWindow > 0,
-              arch.topKExperts > 0, arch.topKExperts <= arch.numExperts,
-              arch.finalLogitSoftcap.isFinite,
-              arch.ropeTheta.isFinite, arch.ropeTheta > 0,
-              arch.fullRopeTheta.isFinite, arch.fullRopeTheta > 0,
-              arch.partialRotaryFactor.isFinite,
-              arch.partialRotaryFactor >= 0, arch.partialRotaryFactor <= 1,
-              !arch.hiddenActivation.isEmpty,
-              arch.fullAttentionLayerMask.count == arch.numLayers,
-              arch.fullAttentionLayerMask.allSatisfy({ $0 == 0 || $0 == 1 }) else {
-            throw GTurboFormatError.invalid(
-                field: "manifest.arch", reason: "invalid architecture values")
-        }
-        if let quant = manifest.quant {
-            for (name, slot) in [
-                ("embedding", quant.embedding),
-                ("attention", quant.attention),
-                ("router", quant.router),
-                ("sharedExpert", quant.sharedExpert),
-                ("routedExpert", quant.routedExpert),
-            ] {
-                guard slot.weightBits > 0, slot.weightBits <= 32,
-                      slot.groupSize > 0,
-                      !slot.scheme.isEmpty, !slot.scaleType.isEmpty,
-                      !slot.biasType.isEmpty else {
-                    throw GTurboFormatError.invalid(
-                        field: "manifest.quant.\(name)", reason: "invalid quantization values")
-                }
-            }
+                field: "manifest", reason: "streaming metadata disagrees with the architecture")
         }
         let reservedFiles: Set<String> = ["manifest.json"]
         var canonicalPaths: [String: String] = [:]
@@ -253,5 +185,4 @@ package enum GTurboManifestCodec {
             }
         }
     }
-
 }

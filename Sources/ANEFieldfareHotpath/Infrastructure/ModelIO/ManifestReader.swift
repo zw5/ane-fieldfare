@@ -1,64 +1,9 @@
-public import Foundation
-import ANEFieldfareImportedFormat
+package import Foundation
+package import ANEFieldfareImportedFormat
 
-public struct ManifestFileEntry: Decodable, Equatable, Sendable {
-    public let size: UInt64
-}
-
-public struct ManifestArch: Decodable, Equatable, Sendable {
-    public let hiddenSize: Int
-    public let ffnIntermediate: Int
-    public let moeIntermediateSize: Int
-    public let numHeads: Int
-    public let numKVHeads: Int
-    public let numFullKVHeads: Int
-    public let headDim: Int
-    public let fullHeadDim: Int
-    public let vocabSize: Int
-    public let slidingWindow: Int
-    public let finalLogitSoftcap: Double
-    public let ropeTheta: Double
-    public let fullRopeTheta: Double
-    public let partialRotaryFactor: Double
-    public let numLayers: Int
-    public let numExperts: Int
-    public let topKExperts: Int
-    public let tieWordEmbeddings: Bool
-    public let attentionKEqV: Bool
-    public let hiddenActivation: String
-    public let fullAttentionLayerMask: [Int]
-}
-
-public struct ManifestQuantSlot: Decodable, Equatable, Sendable {
-    public let weightBits: Int
-    public let scheme: String
-    public let scaleType: String
-    public let biasType: String
-    public let groupSize: Int
-}
-
-public struct ManifestQuant: Decodable, Equatable, Sendable {
-    public let embedding: ManifestQuantSlot
-    public let attention: ManifestQuantSlot
-    public let router: ManifestQuantSlot
-    public let sharedExpert: ManifestQuantSlot
-    public let routedExpert: ManifestQuantSlot
-}
-
-public struct Manifest: Decodable, Equatable, Sendable {
-    public let magic: String
-    public let versionMajor: Int
-    public let versionMinor: Int
-    public let flags: [String: Bool]
-    public let modelID: String
-    public let sourceSnapshotHash: String?
-    public let arch: ManifestArch
-    public let quant: ManifestQuant?
-    public let files: [String: ManifestFileEntry]
-    public let expertsPerLayer: Int
-    public let numLayers: Int
-    public let expertStride: UInt64
-}
+/// The runtime reads the wire types directly.
+package typealias Manifest = GTurboManifestV1
+package typealias ManifestQuantSlot = GTurboManifestQuantSlotV1
 
 public enum ManifestReader {
     public static let defaultMaxBytes: UInt64 = 4 * 1024 * 1024
@@ -70,9 +15,9 @@ public enum ManifestReader {
         "packed_experts/layout.json",
     ]
 
-    public static func load(directoryURL: URL,
-                            expecting: ArchConfig,
-                            maxBytes: UInt64 = defaultMaxBytes) throws -> Manifest {
+    package static func load(directoryURL: URL,
+                             expecting: ArchConfig,
+                             maxBytes: UInt64 = defaultMaxBytes) throws -> Manifest {
         let directory = try GTurboModelDirectory(rootURL: directoryURL)
         let data: Data
         do {
@@ -87,7 +32,7 @@ public enum ManifestReader {
                                expecting: ArchConfig) throws -> Manifest {
         let manifest: Manifest
         do {
-            let wire = try GTurboManifestCodec.decodeUnchecked(data)
+            let wire = try GTurboManifestCodec.decode(data)
             guard wire.magic == GTurboFormatV1.magic else {
                 throw ModelError.notAGTurboDirectory
             }
@@ -105,7 +50,7 @@ public enum ManifestReader {
                     pageSize: Int(GTurboFormatV1.alignmentBytes))
             }
             try GTurboManifestCodec.validate(wire)
-            manifest = Manifest(wire: wire)
+            manifest = wire
         } catch let error as ModelError {
             throw error
         } catch {
@@ -120,7 +65,7 @@ public enum ManifestReader {
                          against expected: ArchConfig) throws {
         if m.flags["turboQuantKV"] == true {
             throw ModelError.indexCorrupt(
-                detail: "manifest requests removed TurboQuant KV runtime support")
+                detail: "manifest needs a TurboQuant KV cache, which this runtime does not have")
         }
         try validateArch(m.arch, expected: expected)
         if let quant = m.quant {
@@ -134,7 +79,7 @@ public enum ManifestReader {
         }
     }
 
-    private static func validateQuant(_ quant: ManifestQuant) throws {
+    private static func validateQuant(_ quant: GTurboManifestQuantV1) throws {
         let slots: [(String, ManifestQuantSlot, Set<Int>)] = [
             ("embedding", quant.embedding, [4]),
             ("attention", quant.attention, [4]),
@@ -153,7 +98,7 @@ public enum ManifestReader {
         }
     }
 
-    private static func validateArch(_ a: ManifestArch,
+    private static func validateArch(_ a: GTurboManifestArchV1,
                                      expected e: ArchConfig) throws {
         func check<T: Equatable & CustomStringConvertible>(
             _ field: String, _ actual: T, _ expected: T) throws {
@@ -187,72 +132,5 @@ public enum ManifestReader {
         try check("fullAttentionLayerMask",
                   actualMask.description,
                   e.fullAttentionLayerMask.description)
-    }
-}
-
-private extension ManifestFileEntry {
-    init(wire: GTurboManifestFileV1) {
-        self.init(size: wire.size)
-    }
-}
-
-private extension ManifestArch {
-    init(wire: GTurboManifestArchV1) {
-        self.init(hiddenSize: wire.hiddenSize,
-                  ffnIntermediate: wire.ffnIntermediate,
-                  moeIntermediateSize: wire.moeIntermediateSize,
-                  numHeads: wire.numHeads,
-                  numKVHeads: wire.numKVHeads,
-                  numFullKVHeads: wire.numFullKVHeads,
-                  headDim: wire.headDim,
-                  fullHeadDim: wire.fullHeadDim,
-                  vocabSize: wire.vocabSize,
-                  slidingWindow: wire.slidingWindow,
-                  finalLogitSoftcap: wire.finalLogitSoftcap,
-                  ropeTheta: wire.ropeTheta,
-                  fullRopeTheta: wire.fullRopeTheta,
-                  partialRotaryFactor: wire.partialRotaryFactor,
-                  numLayers: wire.numLayers,
-                  numExperts: wire.numExperts,
-                  topKExperts: wire.topKExperts,
-                  tieWordEmbeddings: wire.tieWordEmbeddings,
-                  attentionKEqV: wire.attentionKEqV,
-                  hiddenActivation: wire.hiddenActivation,
-                  fullAttentionLayerMask: wire.fullAttentionLayerMask)
-    }
-}
-
-private extension ManifestQuantSlot {
-    init(wire: GTurboManifestQuantSlotV1) {
-        self.init(weightBits: wire.weightBits, scheme: wire.scheme,
-                  scaleType: wire.scaleType, biasType: wire.biasType,
-                  groupSize: wire.groupSize)
-    }
-}
-
-private extension ManifestQuant {
-    init(wire: GTurboManifestQuantV1) {
-        self.init(embedding: ManifestQuantSlot(wire: wire.embedding),
-                  attention: ManifestQuantSlot(wire: wire.attention),
-                  router: ManifestQuantSlot(wire: wire.router),
-                  sharedExpert: ManifestQuantSlot(wire: wire.sharedExpert),
-                  routedExpert: ManifestQuantSlot(wire: wire.routedExpert))
-    }
-}
-
-private extension Manifest {
-    init(wire: GTurboManifestV1) {
-        self.init(magic: wire.magic,
-                  versionMajor: wire.versionMajor,
-                  versionMinor: wire.versionMinor,
-                  flags: wire.flags,
-                  modelID: wire.modelID,
-                  sourceSnapshotHash: wire.sourceSnapshotHash,
-                  arch: ManifestArch(wire: wire.arch),
-                  quant: wire.quant.map(ManifestQuant.init(wire:)),
-                  files: wire.files.mapValues(ManifestFileEntry.init(wire:)),
-                  expertsPerLayer: wire.expertsPerLayer,
-                  numLayers: wire.numLayers,
-                  expertStride: wire.expertStride)
     }
 }

@@ -27,7 +27,8 @@ import ANEFieldfareHotpath
         {"messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true},
          "max_tokens":10,"max_completion_tokens":20,"temperature":0,"top_p":0.5,"top_k":7,
          "repetition_penalty":1.1,"stop":"END","seed":-1,"n":1,"user":"u","logprobs":false,
-         "frequency_penalty":0,"tools":[],"unknown_field":{"nested":true}}
+         "frequency_penalty":0,"presence_penalty":0,"tools":[],"response_format":{"type":"text"},
+         "unknown_field":{"nested":true}}
         """)
         #expect(request.stream && request.includeUsage)
         #expect(request.parameters.maxTokens == 20, "max_completion_tokens wins over max_tokens")
@@ -81,6 +82,10 @@ import ANEFieldfareHotpath
             ("{\(user),\"top_k\":1000}", "top_k"),
             ("{\(user),\"top_k\":0,\"top_p\":0.5,\"temperature\":1}", "top_p"),
             ("{\(user),\"repetition_penalty\":0}", "repetition_penalty"),
+            ("{\(user),\"tools\":[{\"type\":\"function\"}]}", "tools"),
+            ("{\(user),\"response_format\":{\"type\":\"json_object\"}}", "response_format"),
+            ("{\(user),\"presence_penalty\":0.5}", "presence_penalty"),
+            ("{\(user),\"frequency_penalty\":1}", "frequency_penalty"),
         ]
         for (json, param) in cases {
             let error = refusal { try chat(json) }

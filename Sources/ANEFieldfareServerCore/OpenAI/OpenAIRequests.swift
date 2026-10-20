@@ -1,8 +1,9 @@
 public import Foundation
 import ANEFieldfareHotpath
+public import ANEFieldfareHotpathCLICore
 
 /// Sampling defaults for requests that leave a field out. The server's flags
-/// set them; the built-in values are the CLI's.
+/// set them; the built-in values are the CLI's (`OptionDefaults`).
 public struct SamplingDefaults: Sendable, Equatable {
     public var temperature: Float
     public var topK: Int?
@@ -10,7 +11,8 @@ public struct SamplingDefaults: Sendable, Equatable {
     /// nil: until a stop or the end of the context.
     public var maxTokens: Int?
 
-    public init(temperature: Float = 0.2, topK: Int? = 64, topP: Float? = 0.95, maxTokens: Int? = nil) {
+    public init(temperature: Float = OptionDefaults.temperature, topK: Int? = OptionDefaults.topK,
+                topP: Float? = OptionDefaults.topP, maxTokens: Int? = nil) {
         self.temperature = temperature
         self.topK = topK
         self.topP = topP
@@ -54,9 +56,11 @@ private struct StreamOptions: Decodable {
     let includeUsage: Bool?
 }
 
-/// The request fields both endpoints share. Unknown fields are ignored.
+/// The request fields both endpoints share. `model` names nothing (the
+/// server serves one model) and `user` is advisory, so both are ignored with
+/// every other unknown field; fields that would change the output are
+/// refused by `refuseUnsupported` instead.
 private struct CommonFields: Decodable {
-    let model: String?
     let stream: Bool?
     let streamOptions: StreamOptions?
     let maxTokens: Int?
@@ -69,7 +73,6 @@ private struct CommonFields: Decodable {
     let seed: Int64?
     let n: Int?
     let logprobs: LogprobsField?
-    let user: String?
 }
 
 /// `logprobs` is a boolean on chat and an integer on completions; any
@@ -160,7 +163,7 @@ public enum OpenAIRequestDecoder {
     }
 
     public static func chat(_ body: Data, defaults: SamplingDefaults) throws -> CompletionRequest {
-        try requireObject(body)
+        try refuseUnsupported(requireObject(body))
         let common = try decode(CommonFields.self, from: body)
         let chat = try decode(ChatFields.self, from: body)
         let messages = try ChatPrompt.messages(from: chat.messages)
@@ -168,7 +171,7 @@ public enum OpenAIRequestDecoder {
     }
 
     public static func completion(_ body: Data, defaults: SamplingDefaults) throws -> CompletionRequest {
-        try requireObject(body)
+        try refuseUnsupported(requireObject(body))
         let common = try decode(CommonFields.self, from: body)
         let fields = try decode(CompletionFields.self, from: body)
         if fields.echo == true {
@@ -196,7 +199,7 @@ public enum OpenAIRequestDecoder {
         return try request(prompt: prompt, common: common, defaults: defaults)
     }
 
-    private static func requireObject(_ body: Data) throws {
+    private static func requireObject(_ body: Data) throws -> [String: Any] {
         guard !body.isEmpty else {
             throw APIError.badRequest("the request body must be a JSON object", code: "invalid_json")
         }
@@ -206,8 +209,26 @@ public enum OpenAIRequestDecoder {
         } catch {
             throw APIError.badRequest("the request body is not valid JSON", code: "invalid_json")
         }
-        guard parsed is [String: Any] else {
+        guard let object = parsed as? [String: Any] else {
             throw APIError.badRequest("the request body must be a JSON object", code: "invalid_json")
+        }
+        return object
+    }
+
+    /// Fields this server cannot honour, refused unless they hold the value
+    /// that asks for nothing: tools, a structured response format, and
+    /// presence or frequency penalties.
+    private static func refuseUnsupported(_ object: [String: Any]) throws {
+        if let tools = object["tools"] as? [Any], !tools.isEmpty {
+            throw APIError.badRequest("tools are not supported", param: "tools")
+        }
+        if let format = object["response_format"] as? [String: Any], format["type"] as? String != "text" {
+            throw APIError.badRequest("response_format other than text is not supported", param: "response_format")
+        }
+        for penalty in ["presence_penalty", "frequency_penalty"] {
+            if let value = object[penalty] as? NSNumber, value.doubleValue != 0 {
+                throw APIError.badRequest("\(penalty) is not supported", param: penalty)
+            }
         }
     }
 

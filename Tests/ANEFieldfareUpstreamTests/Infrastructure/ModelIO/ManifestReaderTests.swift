@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import Darwin
 @testable import ANEFieldfareHotpath
+import ANEFieldfareImportedFormat
 
 @Suite struct ManifestReaderTests {
 

@@ -65,10 +65,8 @@ import ANEFieldfareHotpath
         #expect(prefillCoercionNotice(hasImages: false, config: .off) == nil)
     }
 
-    /// Images are planned in prompt order, not dictionary order: Swift derives
-    /// that from a per-process hash seed, so the same command line did the work
-    /// in a different order on every run and a failure named a different image
-    /// each time.
+    /// Images are planned in prompt order, not dictionary order, which
+    /// changes with each process's hash seed.
     @Test func imagesAreProcessedInPromptOrder() {
         let ids = (0..<6).map { _ in UUID() }
         var images: [UUID: URL] = [:]
@@ -76,11 +74,13 @@ import ANEFieldfareHotpath
             images[id] = URL(fileURLWithPath: "/tmp/image-\(index).png")
         }
         let messages = [MultimodalMessage(role: .user, content: ids.map { .image(id: $0) })]
-        #expect(orderedImageIDs(messages: messages, images: images) == ids)
+        #expect(orderedImages(messages: messages, images: images).map(\.id) == ids)
 
         // An image the parts never mention is still processed, not dropped.
         let orphan = UUID()
         images[orphan] = URL(fileURLWithPath: "/tmp/orphan.png")
-        #expect(orderedImageIDs(messages: messages, images: images) == ids + [orphan])
+        let ordered = orderedImages(messages: messages, images: images)
+        #expect(ordered.map(\.id) == ids + [orphan])
+        #expect(ordered.allSatisfy { images[$0.id] == $0.url })
     }
 }
