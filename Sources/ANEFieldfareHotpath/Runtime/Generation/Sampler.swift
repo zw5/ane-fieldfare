@@ -145,7 +145,6 @@ final class Sampler {
         softcap.encode(commandBuffer: commandBuffer,
                        logits: logits, probs: probs, v: v, softcap: logitSoftcap)
 
-        let isGreedy = config.temperature == 0
         let seed = Self.seedFor(config: config, position: position)
         if config.temperature > 0,
            config.topK == 64 {
@@ -158,7 +157,7 @@ final class Sampler {
         } else {
             sampleKernel.encode(commandBuffer: commandBuffer,
                                 probs: probs, outToken: outToken, v: v,
-                                temperature: isGreedy ? 0.0 : config.temperature,
+                                temperature: config.temperature,
                                 topK: UInt32(config.topK ?? 0),
                                 topP: config.topP ?? 1.0,
                                 seed: seed,
@@ -171,7 +170,7 @@ final class Sampler {
     /// HF convention: for each token id seen in `history`, a positive logit is
     /// divided by `penalty`, a negative logit multiplied. Edits the shared
     /// `logits` buffer in place — no full-buffer copy, only the unique history
-    /// entries are touched (counted for the audit).
+    /// entries are touched.
     ///
     /// The penalty must act on the POST-softcap logit (HF applies it to the
     /// model's output logits, and Gemma's output includes the 30*tanh(z/30)

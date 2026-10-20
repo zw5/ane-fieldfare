@@ -1,7 +1,7 @@
 public import Metal
 
-/// Plain greedy decoding whose head reads ~1/8 of the vocabulary per token,
-/// with output bitwise equal to the full head's.
+/// Plain greedy decoding whose head reads only the hot vocabulary on most
+/// tokens, with output bitwise equal to the full head's.
 ///
 /// Each decode step guesses its token from `HotVocabulary`, the head rows of
 /// the tokens a decode likely emits, and feeds the guess to the next step.

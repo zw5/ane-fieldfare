@@ -148,16 +148,17 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         let started = Date()
         // A draft queued behind the last verify is this step's when it is
         // anchored here.
-        var draft = chained.flatMap { $0.position == position && drafter.anchor == token ? $0 : nil }
+        let anchored = chained.flatMap { $0.position == position && drafter.anchor == token ? $0 : nil }
         let planned = plannedPlain == position
         chained = nil
         plannedPlain = nil
-        if draft == nil {
+        let draft: (position: Int, rows: Int, drafts: [Int32], confidences: [Float])
+        if let anchored {
+            draft = anchored
+        } else {
             let length = planned ? 1 : policy.next(limit: maxContext - position)
             if length == 1 {
-                try await plainStep(token: token, position: position, into: logits)
-                policy.recordPlain(seconds: Date().timeIntervalSince(started))
-                policy.recordThroughput(tokens: 1, seconds: Date().timeIntervalSince(started))
+                try await plainStep(token: token, position: position, into: logits, started: started)
                 return
             }
             try catchUp(to: position)
@@ -168,26 +169,29 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
             policy.recordDraft(length: length, seconds: seconds)
             draft = (position, length, tokens, drafter.drafts(count: length).confidences)
         }
-        guard let draft else { return }
         stats.draftedTokens += draft.drafts.count
         let rows = policy.verifyLength(confidences: draft.confidences)
         if rows < draft.rows { stats.truncatedSteps += 1 }
         if rows == 1 {
-            try await plainStep(token: token, position: position, into: logits)
-            policy.recordPlain(seconds: Date().timeIntervalSince(started))
-            policy.recordThroughput(tokens: 1, seconds: Date().timeIntervalSince(started))
+            try await plainStep(token: token, position: position, into: logits, started: started)
             return
         }
         try await verifyStep(draft: draft, rows: rows, started: started)
     }
 
-    private func plainStep(token: Int32, position: Int, into logits: any MTLBuffer) async throws {
+    /// One plain decode step, recorded with the policy as taking the time
+    /// since `started`.
+    private func plainStep(token: Int32, position: Int, into logits: any MTLBuffer,
+                           started: Date) async throws {
         try await runner.produce(token: token, position: position, into: logits)
         lastGreedyToken = runner.lastGreedyToken
         stats.plainSteps += 1
         // The step's feature row is in the ring; add the backlog before the
         // ring wraps onto it.
         if position + 1 - drafter.contextLength >= backlogLimit { try catchUp(to: position + 1) }
+        let seconds = Date().timeIntervalSince(started)
+        policy.recordPlain(seconds: seconds)
+        policy.recordThroughput(tokens: 1, seconds: seconds)
     }
 
     /// Verifies the first `rows` rows of `draft` (anchor and drafts) in one
@@ -197,7 +201,9 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
                             rows: Int, started: Date) async throws {
         let position = draft.position
         var nextLength = 1
-        var update: (any MTLCommandBuffer)?, draftCB: (any MTLCommandBuffer)?
+        let update = try runner.makeCommandBuffer()
+        update.label = "dflash context+accept ctx=\(position) rows=\(rows)"
+        var draftCB: (any MTLCommandBuffer)?
         let verifyStart = Date()
         // Behind the head: this block's rows into the drafter's context, the
         // acceptance, and the next block's draft from the target's next
@@ -206,13 +212,10 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
         try await runner.verifyBlock(rows: rows, startPosition: position, tokens: drafter.block, greedy: verified) {
             [self] in
             nextLength = policy.next(limit: maxContext - position - rows)
-            let cb = try runner.makeCommandBuffer()
-            cb.label = "dflash context+accept ctx=\(position) rows=\(rows)"
-            try drafter.encodeContextUpdate(cb, position: position, rows: rows)
-            drafter.encodeAccept(cb, verified: verified, rows: rows)
-            cb.commit()
-            update = cb
-            guard nextLength >= 2 else { return cb }
+            try drafter.encodeContextUpdate(update, position: position, rows: rows)
+            try drafter.encodeAccept(update, verified: verified, rows: rows)
+            update.commit()
+            guard nextLength >= 2 else { return update }
             let draft = try runner.makeCommandBuffer()
             draft.label = "dflash draft rows=\(nextLength)"
             try drafter.encodeDraft(draft, rows: nextLength, sampling: tokenSampling)
@@ -221,7 +224,6 @@ public final class SpeculativeDecoder: LogitProducer, ChunkedPrefillRunner, Cont
             return draft
         }
         let stepSeconds = Date().timeIntervalSince(verifyStart)
-        guard let update else { throw DFlashError.invalidState("verify ran no chained work") }
         for cb in [update, draftCB].compactMap({ $0 }) {
             if let error = cb.error { throw DFlashError.invalidState("chained drafter work failed: \(error)") }
         }

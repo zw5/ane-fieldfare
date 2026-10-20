@@ -1,6 +1,6 @@
 public import Metal
 
-/// Produces next-token logits for the `Generator`. The production
+/// Produces next-token logits for `runRawCompletion`. The production
 /// implementation is `RealForwardRunner`; tests use scripted logits so decode
 /// behavior stays independent of the kernel stack.
 ///

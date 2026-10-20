@@ -84,10 +84,10 @@ struct DFlashMatrix {
 ///
 /// They live in one file next to the checkpoint, built once from
 /// `model.safetensors`, and the GPU reads them in place from the page cache:
-/// measured on an M5, a file-backed no-copy buffer streams at the same
-/// ~134 GB/s as a private allocation once resident, while the drafter costs
-/// no load-time quantization, no 860 MB BF16 staging copy, and its pages
-/// stay clean, so the OS can reclaim them like any cached file.
+/// a file-backed no-copy buffer streams as fast as a private allocation once
+/// resident, the drafter costs no load-time quantization or BF16 staging
+/// copy, and its pages stay clean, so the OS can reclaim them like any
+/// cached file.
 ///
 /// Layout: 8-byte magic `GFDFI4\0\1`, UInt32 header length, a JSON header
 /// (source fingerprint, config, tensor table) padded to `dataAlignment`, then
@@ -144,12 +144,8 @@ struct DFlashWeights {
         }
         FileHandle.standardError.write(Data("[dflash] installing INT4 drafter weights to \(installed.path)\n".utf8))
         removeStalePartials(in: directory)
-        try build(source: source, into: installed, config: config,
-                  fingerprint: (sourceBytes, sourceModified))
-        guard let header = try? readHeader(installed) else {
-            throw DFlashError.invalidCheckpoint("installed drafter weights are unreadable")
-        }
-        return Layout(tensors: header.tensors, dataBytes: header.dataBytes)
+        return try build(source: source, into: installed, config: config,
+                         fingerprint: (sourceBytes, sourceModified))
     }
 
     /// Maps installed weights with `layout` (from `install`) as a no-copy
@@ -285,7 +281,7 @@ struct DFlashWeights {
     /// mapped read-write and renaming it into place once complete, so a
     /// crash never leaves a partial install behind.
     private static func build(source: URL, into destination: URL, config: DFlashDrafterConfig,
-                              fingerprint: (bytes: Int, modified: Double)) throws {
+                              fingerprint: (bytes: Int, modified: Double)) throws -> Layout {
         let st = try Safetensors(source)
         defer { st.close() }
         let D = config.hiddenSize, F = config.intermediateSize
@@ -312,20 +308,23 @@ struct DFlashWeights {
 
         var tensors: [String: Int] = [:]
         var cursor = 0
-        func take(_ name: String, _ bytes: Int) {
+        func take(_ name: String, _ bytes: Int) -> Int {
             tensors[name] = cursor
-            cursor += (bytes + 255) / 256 * 256
+            defer { cursor += (bytes + 255) / 256 * 256 }
+            return cursor
         }
+        var placedMatrices: [(sources: [String], columns: Int, weights: Int, scales: Int, biases: Int)] = []
         for (name, sources, columns) in matrices {
             guard columns % Quantization.groupSize == 0 else {
                 throw DFlashError.invalidCheckpoint("\(name) has \(columns) columns")
             }
             let total = sources.map(rows).reduce(0, +)
-            take(name + ".q4", total * columns / 2)
-            take(name + ".scales", total * columns / Quantization.groupSize * 2)
-            take(name + ".biases", total * columns / Quantization.groupSize * 2)
+            placedMatrices.append((sources, columns,
+                                   take(name + ".q4", total * columns / 2),
+                                   take(name + ".scales", total * columns / Quantization.groupSize * 2),
+                                   take(name + ".biases", total * columns / Quantization.groupSize * 2)))
         }
-        for (name, source) in vectors { take(name, vectorLength(source) * 2) }
+        let placedVectors = vectors.map { name, source in (source: source, offset: take(name, vectorLength(source) * 2)) }
         let dataBytes = cursor
         let header = try JSONEncoder().encode(Header(sourceBytes: fingerprint.bytes,
                                                      sourceModified: fingerprint.modified,
@@ -366,10 +365,7 @@ struct DFlashWeights {
         unsafe header.copyBytes(to: UnsafeMutableRawBufferPointer(start: mapped + 12, count: header.count))
         let data = unsafe mapped + dataAlignment
 
-        for (name, sources, columns) in matrices {
-            guard let w = tensors[name + ".q4"], let s = tensors[name + ".scales"], let b = tensors[name + ".biases"] else {
-                throw DFlashError.invalidCheckpoint("\(name) was not laid out")
-            }
+        for (sources, columns, w, s, b) in placedMatrices {
             var row0 = 0
             for sourceName in sources {
                 let n = rows(sourceName)
@@ -382,8 +378,7 @@ struct DFlashWeights {
                 row0 += n
             }
         }
-        for (name, source) in vectors {
-            guard let offset = tensors[name] else { throw DFlashError.invalidCheckpoint("\(name) was not laid out") }
+        for (source, offset) in placedVectors {
             let n = vectorLength(source)
             let values = unsafe try st.bf16(source, shape: [n])
             unsafe (data + offset).copyMemory(from: values, byteCount: n * 2)
@@ -395,6 +390,7 @@ struct DFlashWeights {
             throw ModelError.posixFailed(call: "rename(\(destination.path))", errno: errno)
         }
         renamed = true
+        return Layout(tensors: tensors, dataBytes: dataBytes)
     }
 
     /// `[rows][columns]` BF16 to INT4 affine with the target installer's
