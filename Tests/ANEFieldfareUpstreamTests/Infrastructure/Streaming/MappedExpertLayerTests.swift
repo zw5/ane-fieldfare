@@ -34,7 +34,7 @@ import Metal
     }
 
     @Test func prefetchAcceptsAnyExpert() throws {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let device = try #require(MTLCreateSystemDefaultDevice())
         let url = try Self.writeSyntheticLayer()
         defer { try? FileManager.default.removeItem(at: url) }
         let layer = try Self.open(url, device: device)
@@ -44,7 +44,7 @@ import Metal
     }
 
     @Test func outOfRangeExpertReadThrows() throws {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let device = try #require(MTLCreateSystemDefaultDevice())
         let url = try Self.writeSyntheticLayer()
         defer { try? FileManager.default.removeItem(at: url) }
         let layer = try Self.open(url, device: device)
@@ -52,7 +52,7 @@ import Metal
     }
 
     @Test func misalignedStrideOrOffsetThrows() throws {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let device = try #require(MTLCreateSystemDefaultDevice())
         let url = try Self.writeSyntheticLayer()
         defer { try? FileManager.default.removeItem(at: url) }
         #expect(throws: ExpertStoreError.self) {
@@ -64,7 +64,7 @@ import Metal
     }
 
     @Test func fileShorterThanLayoutThrows() throws {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let device = try #require(MTLCreateSystemDefaultDevice())
         let url = try Self.writeSyntheticLayer()
         defer { try? FileManager.default.removeItem(at: url) }
         let offsets = Self.offsets + [UInt64(Self.headerBytes + Self.numExperts * Self.expertStride)]

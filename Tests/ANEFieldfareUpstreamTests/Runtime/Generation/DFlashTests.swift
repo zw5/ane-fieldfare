@@ -23,7 +23,10 @@ private func decode(_ producer: any FusedGreedyProducer & ChunkedPrefillRunner, 
     let prefill = try await producer.prefillChunked(
         tokens: prompt[start...], startPosition: start, outputMode: .greedyIfAvailable,
         config: .production(chunkTokens: 64), into: logits, onProgress: { _ in })
-    guard case .greedyToken(let seed) = prefill.seed else { return [] }
+    guard case .greedyToken(let seed) = prefill.seed else {
+        Issue.record("prefill did not seed a greedy token")
+        return []
+    }
     var tokens = [Int32(bitPattern: seed)]
     while tokens.count < count {
         try await producer.produce(token: tokens[tokens.count - 1],
