@@ -1,14 +1,14 @@
 # ANE Fieldfare
 
 This project uses DFlash alongside the Apple Neural Engine to run Google's **Gemma 4 26B-A4B**, a 26-billion-parameter
-mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
+mixture-of-experts model, on a **16 GB Mac at up to 56 tokens/s**.
 
 
 | Throughput on M5, 16 GB | |
 | --- | ---: |
-| Generation | 73–99 tok/s |
-| Prefill, 3,015-token prompt, GPU + ANE | 8.8 s (down from 22.2 s) |
-| Prefill, 3,015-token prompt, GPU only | 15.3 s (down from 24.0 s) |
+| Generation | 50–56 tok/s |
+| Prefill, 3,630-token prompt, GPU + ANE | 10.6 s |
+| Prefill, 3,630-token prompt, GPU only | 18.3 s |
 
 ## Repo contents
 
@@ -23,7 +23,7 @@ mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
 - **DFlash speculative decoding.** Plain decoding has to read roughly 2 GB
   of weights per token, so its speed is bound by the machine's memory
   bandwidth. Speculative decoding with a DFlash drafter checks several tokens
-  per read, which takes code generation from around 50 to 99 tok/s. On a model whose experts
+  per read, which takes code generation from 45 to 55 tok/s. On a model whose experts
   stream from disk, checking drafts costs more than writing them (8 draft
   tokens touch ~29 experts per layer instead of 8), so a scheduler decides
   every step, from measured timings, how much to draft and how much to check.
@@ -58,8 +58,8 @@ mixture-of-experts model, on a **16 GB Mac at up to 99 tokens/s**.
   `checkpoints/`).
 - `z-lab/gemma-4-26B-A4B-it-DFlash` (dflash drafter) at
   `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash` (or beside the model), where
-  the CLI and the server find it. Without it the model still runs, at half the
-  speed. The first run quantizes it to this runtime's 4-bit format into
+  the CLI and the server find it. Without it the model still runs, 11–22%
+  slower. The first run quantizes it to this runtime's 4-bit format into
   `fieldfare-dflash-q4_0.bin` (242 MB) in the same directory.
 
 ## Quick start
@@ -324,17 +324,24 @@ was built by `Scripts/hotvocab/build.py`.
 
 ## Performance
 
-M5, 16 GB, macOS 27. Greedy decoding, 192 generated tokens, from the benchmark
-quick suite:
+M5, 16 GB, macOS 27, AC power, Google's QAT model installed by
+`ANEFieldfareInstall`. Greedy decoding, 256 generated tokens, the first three
+prompts of the benchmark quick suite, mean of two runs:
 
 | Prompt | `--drafter off` | Default (drafter) |
 | --- | ---: | ---: |
-| code | 51.2 tok/s | 98.7 tok/s |
-| math word problem | 49.1 tok/s | 78.3 tok/s |
-| explanation | 49.8 tok/s | 72.7 tok/s |
+| code | 45.3 tok/s | 55.1 tok/s |
+| math word problem | 43.7 tok/s | 55.7 tok/s |
+| explanation | 44.5 tok/s | 50.2 tok/s |
 
-Prefill of a 3,015-token prompt: 8.8 s with `hybrid-ane`, 15.3 s with `metal`
-(single runs).
+Prefill of a 3,630-token prompt: 10.6 s with `hybrid-ane`, 18.3 s with `metal`.
+
+The same runtime on the earlier MLX 4-bit conversion of the model ran 49/49/48
+tok/s plain and 85/74/59 tok/s with the drafter in the same session. The GPU
+work per token is the same; the QAT model's decode misses the page cache about
+three times as often (2.6–3.4 experts per token against 0.7–1.3), so more of
+each step waits on storage and the drafter's verify blocks cost more. The
+figures in [PERFORMANCE.md](PERFORMANCE.md) were measured on the MLX conversion.
 
 How these numbers were reached, step by step, including what was tried and
 rejected: [PERFORMANCE.md](PERFORMANCE.md).
