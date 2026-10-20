@@ -16,8 +16,7 @@ private let realGGUF: (path: String, readable: UInt64)? = {
     return (path, UInt64(st.st_size))
 }()
 
-@Suite(.enabled(if: realGGUF != nil, "Google's QAT GGUF (or a prefix of it) required"))
-struct RealGGUFTests {
+@Suite struct RealGGUFTests {
     private func read(_ range: Range<UInt64>) throws -> [UInt8] {
         let file = try #require(realGGUF)
         let fd = unsafe open(file.path, O_RDONLY | O_CLOEXEC)
@@ -32,7 +31,8 @@ struct RealGGUFTests {
 
     /// The plan the installer makes for the pinned file: the architecture
     /// the runtime runs, and the expert layout its kernels expect.
-    @Test func plansTheRuntimeLayout() throws {
+    @Test(.enabled(if: realGGUF != nil, "Google's QAT GGUF (or a prefix of it) required"))
+    func plansTheRuntimeLayout() throws {
         let plan = try Gemma4Plan.plan(try header())
         #expect(plan.arch.hiddenSize == 2816 && plan.arch.numLayers == 30 && plan.arch.numExperts == 128)
         #expect(plan.arch.fullAttentionLayers == [5, 11, 17, 23, 29])
@@ -51,7 +51,8 @@ struct RealGGUFTests {
 
     /// Layer 0 converted from the real bytes: attention keeps every Q4_0
     /// value, and expert 0's gate is the first half of its gate_up rows.
-    @Test func convertsLayerZero() throws {
+    @Test(.enabled(if: realGGUF != nil, "Google's QAT GGUF (or a prefix of it) required"))
+    func convertsLayerZero() throws {
         let header = try header()
         let plan = try Gemma4Plan.plan(header)
         let q = try #require(header.tensor("blk.0.attn_q.weight"))
@@ -82,4 +83,30 @@ struct RealGGUFTests {
         RowCodec.repackQ4_0(expert0[...], cols: 2816, weights: &weights, scales: &scales)
         #expect(outputs[1]?[gate.weights.offset] == weights, "layer 0 file, expert 0 gate")
     }
+
+    /// The vision plan for the pinned `mmproj`: every tensor mapped, the
+    /// tower in BF16 and the projector in Q4_0.
+    @Test(.enabled(if: realMMProj != nil, "Google's QAT mmproj GGUF required"))
+    func plansTheVisionTower() throws {
+        let path = try #require(realMMProj)
+        let fd = unsafe open(path, O_RDONLY | O_CLOEXEC)
+        try #require(fd >= 0)
+        defer { close(fd) }
+        let prefix = try POSIXFile.read(fd: fd, range: 0..<(4 * 1024 * 1024), path: path)
+        let header = try GGUFReader.parse(Data(prefix), fileSize: SupportedModel.mmproj.size)
+        let plan = try Gemma4VisionPlan.plan(header, textHiddenSize: 2816)
+        #expect(plan.vision.tensors.count == 5 + 27 * 13)
+        let byName = Dictionary(uniqueKeysWithValues: plan.vision.tensors.map { ($0.name, $0) })
+        #expect(byName["vision_tower.patch_embedder.input_proj.weight"]?.shape == [1152, 768])
+        #expect(byName["vision_tower.patch_embedder.position_embedding_table"]?.shape == [2, 10240, 1152])
+        #expect(byName["embed_vision.embedding_projection.weight"]?.encoding == .q4_0)
+        #expect(byName["embed_vision.embedding_projection.weight"]?.shape == [2816, 1152])
+        #expect(plan.vision.tensors.filter { $0.encoding == .bf16 }.count == plan.vision.tensors.count - 1)
+    }
 }
+
+private let realMMProj: String? = {
+    let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("../../checkpoints/source/gemma-4-26B-it-mmproj.gguf").standardizedFileURL.path
+    return FileManager.default.fileExists(atPath: path) ? path : nil
+}()
