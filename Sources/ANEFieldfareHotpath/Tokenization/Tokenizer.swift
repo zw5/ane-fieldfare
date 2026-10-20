@@ -10,6 +10,7 @@ public enum GFTokenizerError: Error, CustomStringConvertible {
     case unsupportedDecoder(actual: String)
     case invalidTokenID(token: String, id: Int)
     case specialTokenMismatch(token: String, expected: Int32, resolved: Int32)
+    case missingInstalledTokenizer(path: String)
 
     public var description: String {
         switch self {
@@ -27,27 +28,24 @@ public enum GFTokenizerError: Error, CustomStringConvertible {
         case .specialTokenMismatch(let token, let expected, let resolved):
             return "tokenizer resolves \(token) to \(resolved), but the runtime "
                 + "expects \(expected); the tokenizer does not match this build"
+        case .missingInstalledTokenizer(let path):
+            return "no tokenizer.json in \(path); reinstall the model"
         }
     }
 }
 
 /// Gemma 4 tokenizer wrapper.
 ///
-/// Prefers tokenizer sidecars in a completed `.gturbo/tokenizer/` directory,
-/// then falls back to the IT variant's Hugging Face Hub tokenizer cache. Exposes
-/// typed accessors for the IDs the generator actually needs (BOS / EOS / pad /
-/// end-of-turn) and adapts encode/decode to Int32 to match the buffer types
-/// kernels consume.
-///
-/// TurboFieldfare owns the minimal chat framing because the upstream
-/// `tokenizer_config.json` has no `chat_template`. Literal control-token text in
-/// user content is accepted as a trusted-input research-runtime limitation.
+/// A model loads the tokenizer installed in its `tokenizer/` directory; `load()`
+/// fetches the IT variant's from the Hugging Face Hub. Exposes typed accessors
+/// for the IDs the generator needs (BOS / EOS / end-of-turn) and adapts
+/// encode/decode to Int32 to match the buffer types kernels consume. Literal
+/// control-token text in user content is not escaped.
 public struct GFTokenizer: Sendable {
     public static let modelID = "google/gemma-4-26B-A4B-it"
 
     public let bosID: Int32
     public let eosID: Int32
-    public let padID: Int32
     public let endOfTurnID: Int32
     public let toolCallStartID: Int32
     public let toolCallEndID: Int32
@@ -76,27 +74,20 @@ public struct GFTokenizer: Sendable {
         try await GFTokenizerLoadCoordinator.shared.load(.pretrained(modelID))
     }
 
+    /// The tokenizer installed with the model at `modelDirectory`.
     public static func load(forModelDirectory modelDirectory: URL) async throws -> GFTokenizer {
-        if let folder = tokenizerFolder(forModelDirectory: modelDirectory) {
-            return try await GFTokenizerLoadCoordinator.shared.load(.local(folder.path))
+        guard let folder = tokenizerFolder(forModelDirectory: modelDirectory) else {
+            throw GFTokenizerError.missingInstalledTokenizer(
+                path: modelDirectory.appendingPathComponent("tokenizer").path)
         }
-        return try await load()
+        return try await GFTokenizerLoadCoordinator.shared.load(.local(folder.path))
     }
 
-    public static func tokenizerFolder(forModelDirectory modelDirectory: URL,
-                                       environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+    public static func tokenizerFolder(forModelDirectory modelDirectory: URL) -> URL? {
         let sidecar = modelDirectory
             .standardizedFileURL
             .appendingPathComponent("tokenizer", isDirectory: true)
-        if hasTokenizerJSON(in: sidecar) {
-            return sidecar
-        }
-
-        guard let override = environment["TURBO_FIELDFARE_TOKENIZER_DIR"], !override.isEmpty else {
-            return nil
-        }
-        let overrideURL = URL(fileURLWithPath: override).standardizedFileURL
-        return hasTokenizerJSON(in: overrideURL) ? overrideURL : nil
+        return hasTokenizerJSON(in: sidecar) ? sidecar : nil
     }
 
     static func loadUncached(pretrained modelID: String) async throws -> GFTokenizer {
@@ -129,17 +120,10 @@ public struct GFTokenizer: Sendable {
     ///
     /// `GemmaDecoding` reproduces `Sequence[Replace("▁" -> " "), ByteFallback,
     /// Fuse]` rather than calling `Tokenizers.decode`, so that decode stays
-    /// lossless and per-token (see `GemmaDecoding`). The installed tokenizer is
-    /// pinned and hash-validated, but `TURBO_FIELDFARE_TOKENIZER_DIR` can point
-    /// at any directory. Without this check a tokenizer declaring a different
-    /// decoder would decode subtly wrong text instead of failing.
-    ///
-    /// The check reads `tokenizer.json`'s decoder declaration structurally, so
-    /// it rejects any foreign decoder — including one whose behavior happens to
-    /// coincide on a handful of probe strings — without asserting the library's
-    /// exact runtime output, which a benign dependency bump may change.
-    /// Behavioral agreement with the library is pinned by the differential
-    /// tests instead.
+    /// lossless and per-token. A tokenizer declaring a different decoder would
+    /// decode subtly wrong text, so it fails here instead. The declaration is
+    /// read structurally; agreement with the library's own decode is pinned by
+    /// the differential tests.
     static func verifyDecoderConfiguration(_ tokenizerData: Config) throws {
         let decoder = tokenizerData["decoder"]
         let steps = decoder.decoders.array(or: [])
@@ -202,7 +186,6 @@ public struct GFTokenizer: Sendable {
         }
         self.bosID = try Self.int32ID("<bos>", bos)
         self.eosID = try Self.int32ID("<eos>", eos)
-        self.padID = try Self.requireTokenID(tokenizer, "<pad>")
         self.endOfTurnID = try Self.requireTokenID(tokenizer, "<turn|>")
         self.toolCallStartID = try Self.requireTokenID(tokenizer, "<|tool_call>")
         self.toolCallEndID = try Self.requireTokenID(tokenizer, "<tool_call|>")

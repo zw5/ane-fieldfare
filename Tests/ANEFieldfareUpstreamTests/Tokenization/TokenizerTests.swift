@@ -20,15 +20,15 @@ struct TokenizerTests {
         #expect(throws: GFTokenizerError.self) {
             _ = try GFTokenizer.requireTokenID(tok.tokenizer, "<no-such-token-xyzzy>")
         }
-        #expect(try GFTokenizer.requireTokenID(tok.tokenizer, "<pad>") == tok.padID)
+        #expect(try GFTokenizer.requireTokenID(tok.tokenizer, "<pad>") == 0)
     }
 
     @Test("Special-token ID set matches the library's skip filter")
-    func specialTokenSetMatchesLibrary() {
+    func specialTokenSetMatchesLibrary() throws {
         // A special token decodes to nothing when skipped and to its literal
         // text when kept.
         var probes = randomIDs(count: 64, seed: 0xDEAD_BEEF_CAFE_F00D)
-        probes += [tok.bosID, tok.eosID, tok.padID, tok.endOfTurnID,
+        probes += [tok.bosID, tok.eosID, try GFTokenizer.requireTokenID(tok.tokenizer, "<pad>"), tok.endOfTurnID,
                    tok.toolCallStartID, tok.toolCallEndID, tok.toolResponseID,
                    tok.toolResponseEndID, tok.channelStartID, tok.channelEndID]
         for id in probes {
@@ -68,7 +68,7 @@ struct TokenizerTests {
     }
 
     @Test("Decode differs from the library only by its cleanup pass")
-    func decodeDiffersFromLibraryOnlyByCleanup() {
+    func decodeDiffersFromLibraryOnlyByCleanup() throws {
         // swift-transformers as an independent oracle: our decode, run through
         // the cleanup pass we deliberately dropped, must reproduce the library
         // byte for byte. That covers special-token filtering, byte-fallback
@@ -77,7 +77,8 @@ struct TokenizerTests {
         // byte, trailing runs are flushed); the fixed seed produces no such
         // runs, and the byte-soup test covers them against the reference.
         var ids = randomIDs(count: 256, seed: 0x2545_F491_4F6C_DD1D)
-        ids += [tok.bosID, tok.eosID, tok.endOfTurnID, tok.channelStartID, tok.padID]
+        ids += [tok.bosID, tok.eosID, tok.endOfTurnID, tok.channelStartID,
+                try GFTokenizer.requireTokenID(tok.tokenizer, "<pad>")]
         // The library drops byte-fallback tokens that end a sequence, so end
         // on a regular token.
         if let trailing = tok.tokenizer.convertTokenToId("the") {
