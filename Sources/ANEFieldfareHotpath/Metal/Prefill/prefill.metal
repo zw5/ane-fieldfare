@@ -562,7 +562,7 @@ kernel void prefill_moe_reduce_token_major(
 kernel void prefill_grouped_routed_moe_batched_phase1(
     device const half*                                   hidden               [[buffer(0)]],
     device const PrefillTokenExpertPairMSL*              sorted_pairs         [[buffer(1)]],
-    device half*                                         gate_up_act_scratch  [[buffer(7)]],
+    device half*                                         act_scratch          [[buffer(7)]],
     device const PrefillStreamedRoutedBlobsMSL&          routed               [[buffer(9)]],
     constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p                    [[buffer(10)]],
     uint2                                                gid                  [[thread_position_in_grid]]
@@ -592,19 +592,13 @@ kernel void prefill_grouped_routed_moe_batched_phase1(
 
     const float gate = prefill_moe_int4_gemv_row_dev(gate_W, gate_s, gate_b, x, f, p.D);
     const float up = prefill_moe_int4_gemv_row_dev(up_W, up_s, up_b, x, f, p.D);
-    const uint row_elements = p.pair_count * p.F;
-    const uint index = pair_local * p.F + f;
-    gate_up_act_scratch[index] = half(gate);
-    gate_up_act_scratch[row_elements + index] = half(up);
-    gate_up_act_scratch[2u * row_elements + index] =
-        half(prefill_gelu_pytorch_tanh(gate) * up);
+    act_scratch[pair_local * p.F + f] = half(prefill_gelu_pytorch_tanh(gate) * up);
 }
 
 kernel void prefill_grouped_routed_moe_batched_down(
     device const PrefillTokenExpertPairMSL*              sorted_pairs         [[buffer(1)]],
     device half*                                         route_partials       [[buffer(5)]],
-    device const half*                                   gate_up_act_scratch  [[buffer(7)]],
-    device half*                                         down_scratch         [[buffer(8)]],
+    device const half*                                   act_scratch          [[buffer(7)]],
     device const PrefillStreamedRoutedBlobsMSL&          routed               [[buffer(9)]],
     constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p                    [[buffer(10)]],
     uint2                                                gid                  [[thread_position_in_grid]]
@@ -627,9 +621,8 @@ kernel void prefill_grouped_routed_moe_batched_down(
     device const uint8_t* down_W = expert + p.down_W_off;
     device const bfloat* down_s = reinterpret_cast<device const bfloat*>(expert + p.down_s_off);
     device const bfloat* down_b = reinterpret_cast<device const bfloat*>(expert + p.down_b_off);
-    device const half* act = gate_up_act_scratch + 2u * p.pair_count * p.F + pair_local * p.F;
+    device const half* act = act_scratch + pair_local * p.F;
     const half value = half(prefill_moe_int4_gemv_row_dev(down_W, down_s, down_b, act, d, p.F));
-    down_scratch[pair_local * p.D + d] = value;
     route_partials[(pair.token * p.top_k + pair.rank) * p.D + d] = value;
 }
 

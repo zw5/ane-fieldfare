@@ -5,8 +5,7 @@ enum PrefillGroupedRoutedMoEBufferIndex {
     static let hidden = 0
     static let sortedPairs = 1
     static let routePartials = 5
-    static let gateUpActScratch = 7
-    static let downScratch = 8
+    static let actScratch = 7
     static let expertArgumentState = 9
     static let params = 10
 }
@@ -307,8 +306,7 @@ final class PrefillGroupedRoutedMoE {
                                hidden: any MTLBuffer,
                                sortedPairs: any MTLBuffer,
                                routePartials: any MTLBuffer,
-                               gateUpActScratch: any MTLBuffer,
-                               downScratch: any MTLBuffer,
+                               actScratch: any MTLBuffer,
                                argumentBuffer: PrefillStreamedTileArgumentBuffer,
                                binding: PrefillStreamedTileBinding,
                                params: PrefillGroupedRoutedMoEStreamedParams,
@@ -324,8 +322,7 @@ final class PrefillGroupedRoutedMoE {
             gateUp.setComputePipelineState(batchedPhase1PSO)
             gateUp.setBuffer(hidden, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
             gateUp.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
-            gateUp.setBuffer(gateUpActScratch, offset: 0,
-                             index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
+            gateUp.setBuffer(actScratch, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.actScratch)
             gateUp.setBuffer(argumentBuffer.buffer, offset: 0,
                              index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
             gateUp.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
@@ -343,10 +340,7 @@ final class PrefillGroupedRoutedMoE {
             down.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
             down.setBuffer(routePartials, offset: 0,
                            index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
-            down.setBuffer(gateUpActScratch, offset: 0,
-                           index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
-            down.setBuffer(downScratch, offset: 0,
-                           index: PrefillGroupedRoutedMoEBufferIndex.downScratch)
+            down.setBuffer(actScratch, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.actScratch)
             down.setBuffer(argumentBuffer.buffer, offset: 0,
                            index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
             down.setValue(p, index: PrefillGroupedRoutedMoEBufferIndex.params)
@@ -401,7 +395,7 @@ final class PrefillGroupedRoutedMoE {
             enc.setBuffer(hidden, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.hidden)
             enc.setBuffer(sortedPairs, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
             enc.setBuffer(routePartials, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
-            enc.setBuffer(acts, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
+            enc.setBuffer(acts, offset: 0, index: PrefillGroupedRoutedMoEBufferIndex.actScratch)
             enc.setBuffer(argumentBuffer.buffer, offset: 0,
                           index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
             enc.setValue(params, index: PrefillGroupedRoutedMoEBufferIndex.params)

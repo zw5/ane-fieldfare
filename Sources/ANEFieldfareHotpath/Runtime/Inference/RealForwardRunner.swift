@@ -1556,8 +1556,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                         hidden: scratch.routedX,
                         sortedPairs: plan.metadata.sortedPairs,
                         routePartials: scratch.routePartials,
-                        gateUpActScratch: scratch.routedGateUpActScratch,
-                        downScratch: scratch.routedDownScratch,
+                        actScratch: scratch.routedActScratch,
                         argumentBuffer: arguments,
                         binding: binding,
                         params: PrefillGroupedRoutedMoEStreamedParams(

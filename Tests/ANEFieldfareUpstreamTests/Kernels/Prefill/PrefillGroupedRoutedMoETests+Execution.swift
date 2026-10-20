@@ -48,10 +48,7 @@ extension PrefillGroupedRoutedMoETests {
         ctx.device,
         halves: [Float16](repeating: -77, count: rows * topK * d)),
       let activationScratch = ctx.device.makeBuffer(
-        length: 3 * 4 * f * MemoryLayout<Float16>.stride,
-        options: .storageModePrivate),
-      let downScratch = ctx.device.makeBuffer(
-        length: 4 * d * MemoryLayout<Float16>.stride,
+        length: 4 * f * MemoryLayout<Float16>.stride,
         options: .storageModePrivate),
       let commandBuffer = ctx.queue.makeCommandBuffer()
     else {
@@ -83,8 +80,7 @@ extension PrefillGroupedRoutedMoETests {
       hidden: hiddenBuffer,
       sortedPairs: pairBuffer,
       routePartials: outputBuffer,
-      gateUpActScratch: activationScratch,
-      downScratch: downScratch,
+      actScratch: activationScratch,
       argumentBuffer: argumentBuffer,
       binding: binding,
       params: params,

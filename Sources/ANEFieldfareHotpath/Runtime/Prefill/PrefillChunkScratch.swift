@@ -47,8 +47,7 @@ struct PrefillChunkScratchBuffers {
     let routeIDs: any MTLBuffer
     let routeWeights: any MTLBuffer
     let sharedActScratch: any MTLBuffer
-    let routedGateUpActScratch: any MTLBuffer
-    let routedDownScratch: any MTLBuffer
+    let routedActScratch: any MTLBuffer
 
     static func allocate(device: any MTLDevice,
                          layout: PrefillChunkScratchLayout) throws -> PrefillChunkScratchBuffers {
@@ -93,9 +92,7 @@ struct PrefillChunkScratchBuffers {
             routeWeights: try sharedBuffer(layout.routeIDElements * MemoryLayout<Float16>.stride,
                                            label: "prefill.routeWeights"),
             sharedActScratch: try privateBuffer(layout.sharedIntermediate, label: "prefill.sharedActScratch"),
-            routedGateUpActScratch: try privateBuffer(3 * microbatch * layout.routedIntermediate,
-                                                      label: "prefill.routedGateUpActScratch"),
-            routedDownScratch: try privateBuffer(microbatch * layout.hiddenSize,
-                                                 label: "prefill.routedDownScratch"))
+            routedActScratch: try privateBuffer(microbatch * layout.routedIntermediate,
+                                                label: "prefill.routedActScratch"))
     }
 }
