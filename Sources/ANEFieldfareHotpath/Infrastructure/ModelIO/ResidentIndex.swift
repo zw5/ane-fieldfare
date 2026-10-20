@@ -12,7 +12,7 @@ struct ResidentIndexHeader: Sendable, Equatable {
     let entryCount: UInt64
 }
 
-public struct ResidentIndexEntry: Sendable, Equatable {
+public struct ResidentIndexEntry: Sendable {
     public let name: String
     public let dtype: UInt8
     /// Absolute file offset of the packed weight bytes (≥ `indexSize`).
@@ -23,15 +23,6 @@ public struct ResidentIndexEntry: Sendable, Equatable {
     public let scaleSize: UInt64
     public let biasOffset: UInt64
     public let biasSize: UInt64
-
-    public static func == (a: ResidentIndexEntry, b: ResidentIndexEntry) -> Bool {
-        a.name == b.name && a.dtype == b.dtype
-            && a.fileOffset == b.fileOffset && a.sizeBytes == b.sizeBytes
-            && a.shape.0 == b.shape.0 && a.shape.1 == b.shape.1
-            && a.shape.2 == b.shape.2 && a.shape.3 == b.shape.3
-            && a.scaleOffset == b.scaleOffset && a.scaleSize == b.scaleSize
-            && a.biasOffset == b.biasOffset && a.biasSize == b.biasSize
-    }
 }
 
 /// Parsed resident index: header + name-keyed entries.
@@ -46,25 +37,6 @@ enum ResidentIndexReader {
     /// `pread` the header + index region out of `model_weights.bin`. The
     /// tensor data region (starting at byte `header.indexSize`) is **not**
     /// read here — that's the resident-buffer materialization job.
-    static func load(fileURL: URL,
-                            maxBytes: UInt64 = defaultMaxBytes) throws -> ResidentIndex {
-        let fd = unsafe open(fileURL.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
-        guard fd >= 0 else {
-            throw ModelError.posixFailed(call: "open(\(fileURL.path))", errno: errno)
-        }
-        defer { close(fd) }
-        var info = stat()
-        guard unsafe fstat(fd, &info) == 0 else {
-            throw ModelError.posixFailed(call: "fstat(\(fileURL.path))", errno: errno)
-        }
-        guard (info.st_mode & S_IFMT) == S_IFREG else {
-            throw ModelError.indexCorrupt(detail: "resident index is not a regular file")
-        }
-
-        return try load(fileDescriptor: fd, displayPath: fileURL.path,
-                        maxBytes: maxBytes)
-    }
-
     package static func load(fileDescriptor fd: Int32,
                              displayPath: String,
                              maxBytes: UInt64 = defaultMaxBytes) throws -> ResidentIndex {

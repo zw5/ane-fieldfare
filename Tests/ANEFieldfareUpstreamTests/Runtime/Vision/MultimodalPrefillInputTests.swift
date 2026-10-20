@@ -2,49 +2,19 @@ import Metal
 import Testing
 @testable import ANEFieldfareHotpath
 
+/// Projected features of `rows` text-hidden rows, contents unspecified.
+func visionTestFeatures(rows: Int, context: MetalContext) throws -> VisionFeatures {
+    let bytes = rows * VisionConfig().textHiddenSize * MemoryLayout<Float16>.stride
+    let buffer = try #require(context.device.makeBuffer(
+        length: bytes, options: .storageModePrivate))
+    return VisionFeatures(
+        buffer: buffer, tokenCount: rows,
+        hiddenSize: VisionConfig().textHiddenSize)
+}
+
 @Suite struct MultimodalPrefillInputTests {
-    @Test func validatesProjectedFeatureShapeAndDualTokenStreams() throws {
-        let context = try MetalContext()
-        let rows = 4
-        let bytes = rows * VisionConfig().textHiddenSize * MemoryLayout<Float16>.stride
-        let buffer = try #require(context.device.makeBuffer(
-            length: bytes,
-            options: .storageModePrivate))
-        let features = VisionFeatures(
-            buffer: buffer,
-            tokenCount: rows,
-            hiddenSize: VisionConfig().textHiddenSize,
-            gpuNanoseconds: 0,
-            scratchBytes: bytes,
-            projectorPath: .affineThreadgroupF16,
-            expertResidencyTransition: nil,
-            preprocessing: nil)
-
-        let input = try MultimodalPrefillInput(
-            effectiveTokenIDs: [10, 20, 20, 20, 20, 30],
-            embeddingTokenIDs: [10, 0, 0, 0, 0, 30],
-            imageSpans: [MultimodalImageSpan(tokenRange: 1..<5, features: features)])
-
-        #expect(input.imageSpans.map(\.tokenRange) == [1..<5])
-        #expect(input.effectiveTokenIDs[1] == 20)
-        #expect(input.embeddingTokenIDs[1] == 0)
-    }
-
     @Test func rejectsFeatureTokenCountMismatch() throws {
-        let context = try MetalContext()
-        let buffer = try #require(context.device.makeBuffer(
-            length: 3 * VisionConfig().textHiddenSize * MemoryLayout<Float16>.stride,
-            options: .storageModePrivate))
-        let features = VisionFeatures(
-            buffer: buffer,
-            tokenCount: 3,
-            hiddenSize: VisionConfig().textHiddenSize,
-            gpuNanoseconds: 0,
-            scratchBytes: buffer.length,
-            projectorPath: .affineThreadgroupF16,
-            expertResidencyTransition: nil,
-            preprocessing: nil)
-
+        let features = try visionTestFeatures(rows: 3, context: MetalContext())
         #expect(throws: MultimodalPrefillInputError.featureShapeMismatch) {
             try MultimodalPrefillInput(
                 effectiveTokenIDs: [10, 20, 20, 30],
@@ -55,24 +25,15 @@ import Testing
 
     @Test func acceptsOrderedNonOverlappingImageSpans() throws {
         let context = try MetalContext()
-        func features(_ rows: Int) throws -> VisionFeatures {
-            let bytes = rows * VisionConfig().textHiddenSize * MemoryLayout<Float16>.stride
-            let buffer = try #require(context.device.makeBuffer(
-                length: bytes, options: .storageModePrivate))
-            return VisionFeatures(
-                buffer: buffer, tokenCount: rows,
-                hiddenSize: VisionConfig().textHiddenSize,
-                gpuNanoseconds: 0, scratchBytes: bytes,
-                projectorPath: .affineThreadgroupF16,
-                expertResidencyTransition: nil, preprocessing: nil)
-        }
         let input = try MultimodalPrefillInput(
             effectiveTokenIDs: [1, 2, 2, 3, 4, 4, 4, 5],
             embeddingTokenIDs: [1, 0, 0, 3, 0, 0, 0, 5],
             imageSpans: [
-                MultimodalImageSpan(tokenRange: 1..<3, features: try features(2)),
-                MultimodalImageSpan(tokenRange: 4..<7, features: try features(3)),
+                MultimodalImageSpan(tokenRange: 1..<3, features: try visionTestFeatures(rows: 2, context: context)),
+                MultimodalImageSpan(tokenRange: 4..<7, features: try visionTestFeatures(rows: 3, context: context)),
             ])
         #expect(input.imageSpans.map(\.tokenRange) == [1..<3, 4..<7])
+        #expect(input.effectiveTokenIDs[1] == 2)
+        #expect(input.embeddingTokenIDs[1] == 0)
     }
 }

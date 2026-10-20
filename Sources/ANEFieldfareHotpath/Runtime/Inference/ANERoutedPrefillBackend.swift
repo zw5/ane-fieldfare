@@ -93,7 +93,7 @@ final class ANERoutedPrefillBackend {
     /// all four experts' expanded weights (about 0.95 ms), so more lanes
     /// amortize that transfer over more rows; past 128 the ANE is compute
     /// bound and padding outweighs the saving.
-    let lanes: Int
+    let lanes = 128
     /// Upcoming expert groups read concurrently. SSD throughput rises from
     /// 4.7 GB/s at queue depth 1 to 6.7 GB/s at depth 2.
     let fetchLookahead = 4
@@ -149,8 +149,7 @@ final class ANERoutedPrefillBackend {
         }
     }
 
-    init(context: MetalContext, layers: Int, lanes: Int = 128) throws {
-        self.lanes = lanes
+    init(context: MetalContext, layers: Int) throws {
         let library = try MetalContext.privateLibrary(device: context.device, module: "ane_prefill")
         let constants = MTLFunctionConstantValues()
         var laneCount = UInt32(lanes)

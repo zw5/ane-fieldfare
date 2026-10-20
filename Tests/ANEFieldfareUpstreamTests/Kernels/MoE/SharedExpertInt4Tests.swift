@@ -31,8 +31,6 @@ import ANEFieldfareValidationSupport
         let runtime = try SharedExpertInt4(context: context)
         let xBuffer = try #require(Fp16Buffer.make(context.device, values: x))
         let yBuffer = try #require(Fp16Buffer.make(context.device, count: Self.d))
-        let gateScratch = try #require(Fp16Buffer.make(context.device, count: Self.f))
-        let upScratch = try #require(Fp16Buffer.make(context.device, count: Self.f))
         let actScratch = try #require(Fp16Buffer.make(context.device, count: Self.f))
         let commandBuffer = try #require(context.queue.makeCommandBuffer())
         try runtime.encode(commandBuffer: commandBuffer,
@@ -41,8 +39,6 @@ import ANEFieldfareValidationSupport
                            up: Self.projection(context, upPack, rows: Self.f, cols: Self.d),
                            down: Self.projection(context, downPack, rows: Self.d, cols: Self.f),
                            y: yBuffer,
-                           scratchGate: gateScratch,
-                           scratchUp: upScratch,
                            scratchAct: actScratch)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()

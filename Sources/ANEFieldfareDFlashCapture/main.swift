@@ -37,11 +37,6 @@ private struct Generation: Decodable {
             } else if args.count == 6, args[1] == "draft-check" {
                 try await draftCheck(modelPath: args[2], drafterPath: args[3], generationPath: args[4],
                                      anchors: args[5].split(separator: ",").compactMap { Int($0) })
-            } else if args.count == 2, args[1] == "bench-gemv" {
-                let context = try MetalContext()
-                for (m, n) in [(4096, 2816), (2048, 2816), (2816, 4096), (2112, 2816), (2816, 2112), (8192, 2816)] {
-                    print(try KernelBench.coldGEMV(context: context, m: m, n: n))
-                }
             } else if (4...5).contains(args.count), args[1] == "verify-check" {
                 try await verifyCheck(modelPath: args[2], generationPath: args[3],
                                       block: args.count == 5 ? Int(args[4]) ?? 0 : RealForwardRunner.maxVerifyTokens)
@@ -62,6 +57,15 @@ private struct Generation: Decodable {
 
     static func loadModel(_ path: String, context: MetalContext) throws -> Model {
         try Model.load(directoryURL: URL(fileURLWithPath: path), device: context.device)
+    }
+
+    /// `ANE_FIELDFARE_VERIFY_SAMPLE=temperature,topK,topP,seed` checks a
+    /// sampled generation drawn under that rule instead of a greedy one.
+    static func verifySampling() -> TokenSampling? {
+        guard let rule = ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_SAMPLE"]?
+            .split(separator: ",").compactMap({ Double($0) }), rule.count == 4 else { return nil }
+        return TokenSampling(temperature: Float(rule[0]), topK: Int(rule[1]), topP: Float(rule[2]),
+                             seed: UInt64(rule[3]))
     }
 
     static func write(_ bytes: UnsafeRawBufferPointer, to path: String) throws {
@@ -133,7 +137,7 @@ private struct Generation: Decodable {
         try routes.withUnsafeBytes { unsafe try write($0, to: prefix + ".routes.u8") }
         let receipt: [String: Any] = [
             "schema": "ane-fieldfare.dflash-capture.v1", "status": "accepted",
-            "command": args(), "host": ProcessInfo.processInfo.hostName,
+            "command": CommandLine.arguments, "host": ProcessInfo.processInfo.hostName,
             "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "positions": tokens.count, "prompt_tokens": generation.prompt_token_ids.count,
             "context_layers": contextLayers, "hidden_layout": "[position][context_layer][hidden] FP16",
@@ -147,66 +151,41 @@ private struct Generation: Decodable {
 
     /// Teacher-forces a greedy generation through `verify` in full blocks and
     /// counts rows whose greedy token disagrees with the recorded next token.
-    /// With `rewind`, a junk block is verified and rewound before each real one.
     static func verifyCheck(modelPath: String, generationPath: String, block: Int) async throws {
         let generation = try JSONDecoder().decode(
             Generation.self, from: Data(contentsOf: URL(fileURLWithPath: generationPath)))
         let context = try MetalContext()
         let model = try loadModel(modelPath, context: context)
         guard (1...RealForwardRunner.maxVerifyTokens).contains(block) else { fail("block \(block)") }
-        for useRewind in [false] {
-            let runner = try RealForwardRunner(
-                model: model, context: context, maxContext: 4096,
-                runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
-            // `ANE_FIELDFARE_VERIFY_SAMPLE=temperature,topK,topP,seed` checks a
-            // sampled generation drawn under that rule.
-            if let rule = ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_SAMPLE"]?
-                .split(separator: ",").compactMap({ Double($0) }), rule.count == 4 {
-                runner.tokenSampling = TokenSampling(temperature: Float(rule[0]), topK: Int(rule[1]),
-                                                     topP: Float(rule[2]), seed: UInt64(rule[3]))
+        let runner = try RealForwardRunner(
+            model: model, context: context, maxContext: 4096,
+            runtimeConfiguration: RuntimeConfiguration(prefillChunkTokens: 1024))
+        runner.tokenSampling = verifySampling()
+        guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
+                                                     options: .storageModeShared) else { fail("alloc", 1) }
+        let prompt = generation.prompt_token_ids
+        let result = try await runner.prefillChunked(tokens: prompt[...], startPosition: 0,
+            outputMode: .greedyIfAvailable, config: .production(chunkTokens: 1024), into: logits,
+            onProgress: { _ in })
+        let gen = generation.generated_token_ids
+        var mismatches = 0, rows = 0, firstMismatch = -1
+        if case .greedyToken(let t) = result.seed, Int32(t) != gen[0] { mismatches += 1; firstMismatch = 0 }
+        var position = prompt.count
+        var i = 0
+        let started = Date()
+        while i + 1 < gen.count {
+            let n = min(block, gen.count - 1 - i)
+            let out = try await runner.verify(tokens: Array(gen[i..<(i + n)]), startPosition: position)
+            for r in 0..<n where out[r] != gen[i + r + 1] {
+                mismatches += 1
+                if firstMismatch < 0 { firstMismatch = i + r + 1 }
             }
-            guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
-                                                         options: .storageModeShared) else { fail("alloc", 1) }
-            let prompt = generation.prompt_token_ids
-            let result = try await runner.prefillChunked(tokens: prompt[...], startPosition: 0,
-                outputMode: .greedyIfAvailable, config: .production(chunkTokens: 1024), into: logits,
-                onProgress: { _ in })
-            let gen = generation.generated_token_ids
-            var mismatches = 0, rows = 0, firstMismatch = -1
-            if case .greedyToken(let t) = result.seed, Int32(t) != gen[0] { mismatches += 1; firstMismatch = 0 }
-            var position = prompt.count
-            var i = 0
-            print("  after prompt: tile_fetch=\(fixed(Double(runner.prefillTileFetchNanos) / 1e9, 2)) "
-                + "tile_hits=\(runner.prefillTileHits) tile_misses=\(runner.prefillTileMisses) "
-                + "routed_wall=\(fixed(Double(runner.prefillRoutedWallNanos) / 1e9, 2))")
-            let started = Date()
-            while i + 1 < gen.count {
-                let n = min(block, gen.count - 1 - i)
-                if useRewind {
-                    _ = try await runner.verify(tokens: Array(repeating: 236761, count: block),
-                                                startPosition: position)
-                    try runner.rewind(to: position)
-                }
-                let out = try await runner.verify(tokens: Array(gen[i..<(i + n)]), startPosition: position)
-                for r in 0..<n where out[r] != gen[i + r + 1] {
-                    mismatches += 1
-                    if firstMismatch < 0 { firstMismatch = i + r + 1 }
-                }
-                rows += n; i += n; position += n
-            }
-            let seconds = Date().timeIntervalSince(started)
-            func sec(_ n: UInt64) -> String { fixed(Double(n) / 1e9, 2) }
-            print("  io=\(sec(runner.totalIoNanos)) routed_wall=\(sec(runner.prefillRoutedWallNanos)) "
-                + "pre_router_gpu=\(sec(runner.prefillPreRouterGPUNanos)) shared_gpu=\(sec(runner.prefillSharedGPUNanos)) "
-                + "routed_gpu=\(sec(runner.prefillRoutedGPUNanos)) hits=\(runner.routedExpertCacheHits) "
-                + "misses=\(runner.routedExpertCacheMisses) union=\(runner.prefillUnionExpertsBeforeCap) "
-                + "tile_fetch=\(sec(runner.prefillTileFetchNanos)) tile_drain=\(sec(runner.prefillTileDrainNanos)) "
-                + "tile_hits=\(runner.prefillTileHits) tile_misses=\(runner.prefillTileMisses)")
-            print("  bound_routes=\(runner.boundVerifyRoutes) patched_layers=\(runner.patchedVerifyLayers)")
-            print("rewind=\(useRewind) rows=\(rows) mismatches=\(mismatches) first=\(firstMismatch) "
-                + "verify_seconds=\(fixed(seconds, 2)) per_block_ms="
-                + fixed(seconds * 1000 / Double((rows + block - 1) / block) / (useRewind ? 2 : 1), 1))
+            rows += n; i += n; position += n
         }
+        let seconds = Date().timeIntervalSince(started)
+        print("rows=\(rows) mismatches=\(mismatches) first=\(firstMismatch) "
+            + "verify_seconds=\(fixed(seconds, 2)) per_block_ms="
+            + fixed(seconds * 1000 / Double((rows + block - 1) / block), 1))
     }
 
     /// Speculative greedy generation of as many tokens as the recorded plain
@@ -223,11 +202,7 @@ private struct Generation: Decodable {
         let drafter = try await DFlashDrafter(directory: URL(fileURLWithPath: drafterPath), model: model,
                                         context: context, maxContext: 4096)
         let decoder = try SpeculativeDecoder(runner: runner, drafter: drafter, maxBlock: block)
-        if let rule = ProcessInfo.processInfo.environment["ANE_FIELDFARE_VERIFY_SAMPLE"]?
-            .split(separator: ",").compactMap({ Double($0) }), rule.count == 4 {
-            decoder.tokenSampling = TokenSampling(temperature: Float(rule[0]), topK: Int(rule[1]),
-                                                  topP: Float(rule[2]), seed: UInt64(rule[3]))
-        }
+        decoder.tokenSampling = verifySampling()
         guard let logits = context.device.makeBuffer(length: model.config.vocabSize * 2,
                                                      options: .storageModeShared) else { fail("alloc", 1) }
         let prompt = generation.prompt_token_ids, reference = generation.generated_token_ids
@@ -295,5 +270,4 @@ private struct Generation: Decodable {
         print(String(decoding: data, as: UTF8.self))
     }
 
-    static func args() -> [String] { CommandLine.arguments }
 }

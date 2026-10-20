@@ -37,7 +37,7 @@ public struct SpeculationPolicy: Sendable {
     /// Seconds per verify by verified rows.
     public private(set) var verifySeconds: [Double]
     /// Recent realized tokens per second, the value of time in truncation.
-    public private(set) var throughput = 1 / 0.030
+    private var throughput = 1 / 0.030
     private let smoothing = 0.2
     private static let minExplore = 8, maxExplore = 128
     private var explore = SpeculationPolicy.minExplore
@@ -64,7 +64,7 @@ public struct SpeculationPolicy: Sendable {
 
     /// Expected tokens a block of `length` rows yields at the planner's rate:
     /// the anchor's own next token plus each draft whose prefix survives.
-    public func expectedTokens(length: Int) -> Double {
+    private func expectedTokens(length: Int) -> Double {
         let a = min(acceptanceRate, 0.999)
         return (1 - pow(a, Double(length))) / (1 - a)
     }

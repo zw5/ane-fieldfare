@@ -10,7 +10,7 @@ using namespace metal;
 //   biases  : N/64 BF16, one per group of 64.
 //   value   : w[i] = float(q[i]) * scale[i/64] + bias[i/64].
 //
-// Fused dequant + GEMV for the router and shared expert projections.
+// Fused dequant + GEMV for the 8-bit shared expert projections.
 // ============================================================================
 
 constant constexpr uint kInt8GroupSize = 64;
@@ -18,7 +18,6 @@ constant constexpr uint kRowsPerTGInt8 = 8;
 constant uint FC_INT8_M [[function_constant(70)]];
 constant uint FC_INT8_N [[function_constant(71)]];
 constant bool FC_INT8_USE_FC [[function_constant(72)]];
-constant uint FC_SHARED_INT8_ROWS_PER_TG [[function_constant(73)]];
 constant constexpr float kInt8GeluSqrt2OverPi = 0.7978845608028654f;
 constant constexpr float kInt8GeluCubicCoeff  = 0.044715f;
 
@@ -33,11 +32,6 @@ static inline uint int8_fc_n(constant uint& N) {
             FC_INT8_USE_FC &&
             is_function_constant_defined(FC_INT8_N)) ? FC_INT8_N : N;
 }
-static inline uint shared_int8_rows_per_tg() {
-    return is_function_constant_defined(FC_SHARED_INT8_ROWS_PER_TG)
-        ? FC_SHARED_INT8_ROWS_PER_TG
-        : kRowsPerTGInt8;
-}
 
 inline float int8_gelu_pytorch_tanh(float x) {
     float x3 = x * x * x;
@@ -46,13 +40,8 @@ inline float int8_gelu_pytorch_tanh(float x) {
     return 0.5f * x * (1.0f + tanh(inner));
 }
 
-// y[m] = sum_{n} W[m, n] * x[n]. One-SIMD-per-row variant: 32 threads
-// cooperate on a single output row, each handling 2 elements per group of 64.
-// Mirror of `dequant_int4_gemv_simd` but with one byte per element (no nibble
-// unpack). Dispatch: threadgroupsPerGrid=(M,1,1), threadsPerThreadgroup=(32,1,1).
-// See `dequant_int4_gemv_simd` for the multi-row-per-TG rationale; same trick
-// applied here so the M=2112/2816 shared MLP GEMVs and the M=262144 lm_head
-// stay in the GPU's preferred 256-thread/TG zone.
+// y[m] = sum_{n} W[m, n] * x[n]. One SIMD group per output row, each lane
+// handling 2 elements per group of 64; eight rows per 256-thread threadgroup.
 [[kernel, max_total_threads_per_threadgroup(256)]]
 kernel void dequant_int8_gemv_simd(
     device const uint8_t* W      [[buffer(0)]],
@@ -114,7 +103,7 @@ kernel void shared_int8_gate_up_act_simd(
 ) {
     const uint MM = int8_fc_m(M);
     const uint NN = int8_fc_n(N);
-    const uint row = tg_idx * shared_int8_rows_per_tg() + sg_idx;
+    const uint row = tg_idx * kRowsPerTGInt8 + sg_idx;
     if (row >= MM) return;
     const uint n_groups = NN / kInt8GroupSize;
     device const uint8_t* gate_row = gateW + row * NN;

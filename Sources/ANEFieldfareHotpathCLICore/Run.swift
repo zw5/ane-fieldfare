@@ -243,7 +243,13 @@ public func run(args: Args,
             multimodalInput = nil
         }
         var speculative: SpeculativeDecoder?
-        if let drafterPath = args.drafter {
+        if args.drafterOrigin == .missing, !args.quiet {
+            stderr.write(Data(
+                "[no drafter at \(DrafterLocation.candidates(model: args.model).map(\.path).joined(separator: " or ")); decoding without speculation]\n".utf8))
+        }
+        // A drafter found by default steps aside for an image prompt from a
+        // messages file, as it does for --image.
+        if let drafterPath = args.drafter, multimodalInput == nil || args.drafterOrigin == .named {
             guard multimodalInput == nil else {
                 return errored(stderr, "--drafter requires a text prompt", 2)
             }

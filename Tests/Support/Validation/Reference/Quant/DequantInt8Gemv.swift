@@ -2,13 +2,9 @@ import Foundation
 import Accelerate
 public import ANEFieldfareHotpath
 
-/// FP32 reference for the INT8-affine groupwise GEMV `y = W * x`.
-///
-/// Bulk-dequantizes each row to FP32 via `Quantization.dequantizeInt8Affine`,
-/// then computes the inner product with `vDSP_dotpr`. The kernel interleaves
-/// byte unpack + per-group scale + bias + FMA in the inner loop per thread;
-/// this reference splits dequant from accumulation. Different staging,
-/// different summation order.
+/// FP32 reference for the INT8-affine groupwise GEMV `y = W * x`: dequantize
+/// each row, then `vDSP_dotpr`, so staging and summation order differ from
+/// the kernel's fused inner loop.
 public enum DequantInt8GemvRef {
     public static func apply(
         weightRows: [Quantization.Int8AffineRow],

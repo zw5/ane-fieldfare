@@ -439,42 +439,6 @@ static inline float prefill_moe_int4_gemv_row_dev(
     return acc;
 }
 
-static inline float prefill_moe_int4_gemv_row_tg(
-    device const uint8_t* W,
-    device const bfloat* S,
-    device const bfloat* B,
-    threadgroup const half* x,
-    uint row,
-    uint N
-) {
-    const uint groups = N / kPrefillGroupSize;
-    const uint row_bytes = N / 2u;
-    device const uint8_t* W_row = W + row * row_bytes;
-    device const bfloat* s_row = S + row * groups;
-    device const bfloat* b_row = B + row * groups;
-
-    float acc = 0.0f;
-    for (uint g = 0; g < groups; ++g) {
-        const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
-        device const uint8_t* Wg = W_row + g * (kPrefillGroupSize / 2u);
-        threadgroup const half* xg = x + g * kPrefillGroupSize;
-        float dot_qx = 0.0f;
-        float sum_x = 0.0f;
-        for (uint k = 0; k < kPrefillGroupSize / 2u; ++k) {
-            const uint8_t packed = Wg[k];
-            const float x0 = float(xg[2u * k]);
-            const float x1 = float(xg[2u * k + 1u]);
-            dot_qx = fma(float(uint(packed & 0x0Fu)), x0, dot_qx);
-            dot_qx = fma(float(uint(packed >> 4)), x1, dot_qx);
-            sum_x += x0 + x1;
-        }
-        acc = fma(scale, dot_qx, acc);
-        acc = fma(bias, sum_x, acc);
-    }
-    return acc;
-}
-
 kernel void prefill_router_gemma4_block(
     device const uint8_t* W                [[buffer(0)]],
     device const bfloat*  scales           [[buffer(1)]],
@@ -808,29 +772,6 @@ static inline uint prefill_kv_slot(uint logical) {
         : logical;
 }
 
-kernel void prefill_attention_params_smoke(
-    constant PrefillAttentionParams& p [[buffer(0)]],
-    device uint* out [[buffer(1)]],
-    uint id [[thread_position_in_grid]]
-) {
-    if (id >= 13u) return;
-    switch (id) {
-    case 0u: out[id] = p.startPosition; break;
-    case 1u: out[id] = p.queryCount; break;
-    case 2u: out[id] = p.headDim; break;
-    case 3u: out[id] = p.numQHeads; break;
-    case 4u: out[id] = p.numKVHeads; break;
-    case 5u: out[id] = p.kvValidCount; break;
-    case 6u: out[id] = p.slidingWindow; break;
-    case 7u: out[id] = p.kvTokenStrideElements; break;
-    case 8u: out[id] = p.qTokenStrideElements; break;
-    case 9u: out[id] = p.oTokenStrideElements; break;
-    case 10u: out[id] = as_type<uint>(p.scale); break;
-    case 11u: out[id] = p.bidirectionalBlockStart; break;
-    default: out[id] = p.bidirectionalBlockEnd; break;
-    }
-}
-
 static inline float prefill_attention_tg_sum(
     float value,
     uint lane,
@@ -853,20 +794,6 @@ static inline float prefill_attention_tg_sum(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     return partial[0];
-}
-
-static inline float prefill_attention_tg_sum_single_bank(
-    float value,
-    uint lane,
-    uint simd_group,
-    uint simdgroups,
-    threadgroup float* partial
-) {
-    const float result = prefill_attention_tg_sum(
-        value, lane, simd_group, simdgroups, partial);
-    // A single scratch bank needs an explicit reader-to-next-writer edge.
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    return result;
 }
 
 constant uint FC_PREFILL_SIMD_D [[function_constant(77)]];

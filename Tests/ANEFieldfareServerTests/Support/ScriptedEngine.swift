@@ -9,7 +9,6 @@ import ANEFieldfareValidationSupport
 final class EngineProbe: Sendable {
     struct Counts: Sendable, Equatable {
         var started = 0
-        var finished = 0
         var cancelled = 0
     }
 
@@ -81,7 +80,6 @@ final class ScriptedEngine: CompletionEngine {
             let result = try await runRawCompletion(
                 producer: producer, tokenizer: tokenizer, promptIds: promptIDs, config: config,
                 context: context, scratch: scratch, prefillConfig: .off, onProgress: onProgress)
-            probe.record { $0.finished += 1 }
             return EngineCompletion(result: result, decodePath: "scripted")
         } catch {
             if error is CancellationError { probe.record { $0.cancelled += 1 } }

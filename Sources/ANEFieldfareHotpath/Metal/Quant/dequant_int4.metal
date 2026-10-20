@@ -13,8 +13,7 @@ using namespace metal;
 //
 // Affine factoring for GEMV (sum over a group of 64):
 //   sum_k (q_k * s + b) * x_k = s * sum_k(q_k * x_k) + b * sum_k x_k
-// so scale and bias each cost one mul + one FMA per group instead of per
-// element; the per-element inner loop keeps the scalar path's FMA count.
+// so scale and bias each cost one FMA per group instead of per element.
 // ============================================================================
 
 constant constexpr uint kGroupSize = 64;
@@ -62,10 +61,6 @@ static inline uint int4_qkv_fc_n(constant uint& N) {
             is_function_constant_defined(FC_INT4_QKV_N)) ? FC_INT4_QKV_N : N;
 }
 
-inline uint nib_lo(uint8_t b) { return uint(b & 0x0F); }
-inline uint nib_hi(uint8_t b) { return uint(b >> 4); }
-
-
 kernel void embed_lookup_int4(
     device const uint8_t* table     [[buffer(0)]],   // [V, D/2] nibbles
     device const bfloat*  scales    [[buffer(1)]],   // [V, D/64] BF16
@@ -88,14 +83,9 @@ kernel void embed_lookup_int4(
     out[gid] = half((float(q) * s + b) * out_scale);
 }
 
-// y[m] = sum_{n} W[m, n] * x[n]. One-SIMD-per-row variant: 32 threads
-// cooperate on a single output row, each handling 2 elements per group of 64
-// (one byte → two nibbles). simd_sum reduces across the group; lane 0 writes.
-//
-// Requires N % 64 == 0 (per group of 64). Validated at the wrapper.
-// Each threadgroup handles eight consecutive rows, one SIMD per row. The
-// larger work unit gives the scheduler enough independent rows while sharing
-// the L1-cached input-vector reads.
+// y[m] = sum_{n} W[m, n] * x[n]: one SIMD group per output row, reduced with
+// simd_sum, lane 0 writes. Requires N % 64 == 0 (validated by the wrapper).
+// Eight consecutive rows per threadgroup share the L1-cached input reads.
 static inline void dequant_int4_gemv_simd_body(
     device const uint8_t* W,
     device const bfloat*  scales,
@@ -118,24 +108,17 @@ static inline void dequant_int4_gemv_simd_body(
     device const bfloat*  b_row = biases + uint(row) * n_groups;
 
     float acc = 0.0f;
-    // The vectorized row path reads
-    // weights a uint (4 bytes = 8 nibbles) and x as half4 in 4-group (128-byte)
-    // blocks, with a scalar byte-per-lane remainder. Within a block the 32
-    // lanes split 8-per-group, each handling 8 contiguous elements of one
-    // 64-element group, so the affine factoring s·Σqx + b·Σx is preserved
-    // (simd_sum aggregates; s/b are constant within a group). Aligned: row
-    // stride N/2 and weightsOffset are multiples of 4; x is
-    // half4-aligned (lane*8 elements). N=2816/4096/8192 → 44/64/128 groups, all
-    // exact 4-blocks; the remainder covers any non-multiple-of-4 group count.
+    // Weights are read 4 bytes (8 nibbles) and x as half4 in 4-group
+    // (128-byte) blocks, with a byte-per-lane remainder for a group count that
+    // is not a multiple of 4. Within a block the 32 lanes split 8 per group,
+    // each handling 8 contiguous elements of one group, so the affine
+    // factoring s·Σqx + b·Σx holds (s/b are constant within a group).
     const uint full_blocks = n_groups / 4;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
-        // Read the 4-byte weight chunk as two ushorts. The resident weight
-        // tensors are 2-byte aligned but NOT 4-byte aligned (BF16 scale/bias
-        // regions leave a 2-aligned weightsOffset), so a `uint*` load would be
-        // misaligned (undefined → garbage); a `ushort*` load is safe (row stride
-        // N/2, weightsOffset, and byte_base are all even) and halves the loads
-        // vs byte-by-byte.
+        // Two ushort loads: resident weight tensors are 2-byte but not
+        // 4-byte aligned (BF16 scale/bias regions leave a 2-aligned
+        // weightsOffset), so a `uint*` load would be misaligned.
         device const ushort* wp = (device const ushort*)(W_row + byte_base);
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
         const uint g  = blk * 4u + (lane >> 3);
@@ -196,7 +179,6 @@ kernel void dequant_int4_gemv_simd(
                                 rows_per_tg, tg_idx, sg_idx, lane);
 }
 
-
 kernel void dequant_int4_qkv_gemv_simd(
     device const uint8_t* qW      [[buffer(0)]],
     device const bfloat*  qScales [[buffer(1)]],
@@ -248,7 +230,6 @@ kernel void dequant_int4_qkv_gemv_simd(
     dequant_int4_gemv_simd_body(W, scales, biases, x, y, M, NN,
                                 1u, local_row, 0u, lane);
 }
-
 
 // y[r][o] = sum_k W[o, k] * x[r][k] for R <= 16 FP16 or BF16 input rows. The
 // decode GEMV's

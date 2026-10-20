@@ -46,9 +46,7 @@ final class LMHeadChainInt4 {
     private let maxD: Int
     private let maxVocab: Int
 
-    init(context: MetalContext,
-         maxD: Int = 2816,
-         maxVocab: Int = 262144) throws {
+    init(context: MetalContext, maxD: Int, maxVocab: Int) throws {
         self.rms = try RMSNorm(context: context)
         self.rowGreedy = try context.pipeline("lm_head_greedy_int4_rows_chunk_raw")
         self.rowGreedySpecialized = try context.pipeline(
@@ -149,7 +147,7 @@ final class LMHeadChainInt4 {
         }
         // FP32 logits from the multi-row GEMV, which streams the table once
         // and keeps every row's accumulators in registers, then an argmax per
-        // row. The fused tiled kernel this replaced cost ~3 ms per row.
+        // row.
         try rowsProjection.encodeRows(commandBuffer: commandBuffer,
                                   weights: weights, weightsOffset: weightsOffset,
                                   scales: scales, scalesOffset: scalesOffset,

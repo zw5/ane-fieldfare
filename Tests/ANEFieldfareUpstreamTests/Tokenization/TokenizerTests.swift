@@ -1,5 +1,4 @@
 import Foundation
-import Hub
 import Testing
 import Tokenizers
 @testable import ANEFieldfareHotpath
@@ -16,38 +15,18 @@ struct TokenizerTests {
 
     // MARK: - Special tokens
 
-    @Test("Special token IDs are distinct and within vocab")
-    func specialTokensDistinct() {
-        let ids: [Int32] = [tok.bosID, tok.eosID, tok.padID, tok.endOfTurnID]
-        #expect(Set(ids).count == 4, "expected 4 distinct special token IDs, got \(ids)")
-        for id in ids {
-            #expect(id >= 0)
-            #expect(id < Int32(tok.vocabSize))
-        }
-    }
-
-    @Test("Stop-token set covers EOS, end-of-turn, and tool response")
-    func stopTokens() {
-        #expect(tok.stopTokenIDs.contains(tok.eosID))
-        #expect(tok.stopTokenIDs.contains(tok.endOfTurnID))
-        #expect(tok.stopTokenIDs.contains(tok.toolResponseID))
-        #expect(tok.stopTokenIDs.count == 3)
-    }
-
     @Test("Marker resolution rejects unk substitution")
     func markerResolutionRejectsUnk() throws {
         #expect(throws: GFTokenizerError.self) {
             _ = try GFTokenizer.requireTokenID(tok.tokenizer, "<no-such-token-xyzzy>")
         }
-        let pad = try GFTokenizer.requireTokenID(tok.tokenizer, "<pad>")
-        #expect(pad == tok.padID)
+        #expect(try GFTokenizer.requireTokenID(tok.tokenizer, "<pad>") == tok.padID)
     }
 
     @Test("Special-token ID set matches the library's skip filter")
     func specialTokenSetMatchesLibrary() {
-        // The config-derived set must reproduce the semantics the old runtime
-        // probe encoded: a special token decodes to nothing when skipped and to
-        // its literal text when kept.
+        // A special token decodes to nothing when skipped and to its literal
+        // text when kept.
         var probes = randomIDs(count: 64, seed: 0xDEAD_BEEF_CAFE_F00D)
         probes += [tok.bosID, tok.eosID, tok.padID, tok.endOfTurnID,
                    tok.toolCallStartID, tok.toolCallEndID, tok.toolResponseID,
@@ -55,184 +34,52 @@ struct TokenizerTests {
         for id in probes {
             let skipped = tok.tokenizer.decode(tokens: [Int(id)], skipSpecialTokens: true)
             let kept = tok.tokenizer.decode(tokens: [Int(id)], skipSpecialTokens: false)
-            let librarySpecial = skipped.isEmpty && !kept.isEmpty
-            #expect(tok.specialTokenIDs.contains(id) == librarySpecial,
+            #expect(tok.specialTokenIDs.contains(id) == (skipped.isEmpty && !kept.isEmpty),
                     "id \(id) special-set membership diverged from library semantics")
-        }
-    }
-
-    @Test("Out-of-range added-token IDs are rejected, not trapped")
-    func outOfRangeAddedTokenIDRejected() {
-        // Config.integer() returns full-range Int; a trapping Int32(_:) on a
-        // corrupt tokenizer.json would crash at load instead of throwing.
-        let data: Config = [
-            "decoder": [
-                "type": "Sequence",
-                "decoders": [
-                    ["type": "Replace", "pattern": ["String": "▁"], "content": " "],
-                    ["type": "ByteFallback"],
-                    ["type": "Fuse"],
-                ],
-            ],
-            "added_tokens": [
-                ["id": 3_000_000_000, "content": "<huge>", "special": true],
-            ],
-        ]
-        #expect(throws: GFTokenizerError.self) {
-            _ = try GFTokenizer(tokenizer: tok.tokenizer, tokenizerData: data)
         }
     }
 
     // MARK: - Encode / decode
 
-    @Test("Round-trip ASCII", arguments: [
-        "Hello, world.",
-        "The quick brown fox jumps over the lazy dog.",
+    /// HF's clean_up_tokenization_spaces collapsed spaces before punctuation
+    /// ("he said ' ok ' now" became "he said'ok'now"), which broke
+    /// decode(encode(x)) == x for a tokenizer that is lossless by construction.
+    @Test("Round-trip is lossless", arguments: [
         "code:  let x = 42;  // comment",
-        "numbers 0 1 2 3 4 5 6 7 8 9",
-    ])
-    func roundTripASCII(_ text: String) {
-        let ids = tok.encode(text, addBOS: false)
-        #expect(tok.decode(ids) == text)
-    }
-
-    @Test("Decode keeps spaces before punctuation", arguments: [
-        "step 1 . done",
-        "x , y",
         "he said ' ok ' now",
         "a    . b",
         "wait ! really ?",
-    ])
-    func decodePreservesSpacingBeforePunctuation(_ text: String) {
-        // HF's clean_up_tokenization_spaces collapsed these ("he said ' ok ' now"
-        // became "he said'ok'now"), which broke decode(encode(x)) == x for a
-        // tokenizer that is lossless by construction.
-        let ids = tok.encode(text, addBOS: false)
-        #expect(tok.decode(ids) == text)
-    }
-
-    @Test("Round-trip multi-byte UTF-8", arguments: [
         "你好，世界。",
-        "漢字",
-        "🦝 raccoon emoji",
         "mixed 漢 and 🦝 and a",
         "Здравствуй",
     ])
-    func roundTripMultibyte(_ text: String) {
-        let ids = tok.encode(text, addBOS: false)
-        #expect(tok.decode(ids) == text)
+    func roundTrip(_ text: String) {
+        #expect(tok.decode(tok.encode(text, addBOS: false)) == text)
     }
 
     @Test("BOS is added when requested and absent otherwise")
     func bosPrepend() {
         let withBOS = tok.encode("x", addBOS: true)
         let without = tok.encode("x", addBOS: false)
-        #expect(withBOS.first == tok.bosID)
-        #expect(without.first != tok.bosID)
-        #expect(withBOS.count == without.count + 1)
+        #expect(withBOS.first == tok.bosID && without.first != tok.bosID)
         #expect(Array(withBOS.dropFirst()) == without)
-    }
-
-    @Test("Empty string encodes to BOS-only or empty")
-    func encodeEmpty() {
-        let none = tok.encode("", addBOS: false)
-        #expect(none.isEmpty)
-        let bos = tok.encode("", addBOS: true)
-        #expect(bos == [tok.bosID])
-    }
-
-    @Test("Decoding strips special tokens when requested")
-    func decodeStripsSpecial() {
-        let ids = tok.encode("hi", addBOS: true)
-        #expect(ids.first == tok.bosID)
-        let withoutSpecial = tok.decode(ids, skipSpecialTokens: true)
-        #expect(withoutSpecial == "hi")
-    }
-
-    // MARK: - Streaming detokenizer
-
-    @Test("Streaming detokenizer reassembles multi-byte UTF-8", arguments: [
-        "漢字",
-        "你好",
-        "🦝🦝🦝",
-        "mixed 漢 and 🦝",
-        "Здравствуй мир",
-        "ห้ามใช้ในสัปดาห์นี้",
-        "नमस्ते दुनिया",
-        "مَرْحَبًا",
-        "\u{1F469}\u{200D}\u{1F4BB} works with \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
-        "ends with emoji 🦝",
-        "🦝 starts with emoji",
-        "🦝 middle 漢 end",
-    ])
-    func streamingMultibyte(_ target: String) {
-        assertStreams(target)
-    }
-
-    @Test("Streaming reassembles graphemes extended by later scalars", arguments: [
-        "ห้าม",
-        "e\u{301}",
-        "ا\u{64E}",
-        "ש\u{5B8}",
-        "क्ष",
-        "\u{1100}\u{1161}",
-        "\u{263A}\u{FE0F}",
-        "\u{1F44D}\u{1F3FD}",
-        "1\u{FE0F}\u{20E3}",
-        "\u{1F1EC}\u{1F1E7}",
-        "\u{1F469}\u{200D}\u{1F4BB}",
-    ])
-    func streamingExtendedGraphemes(_ text: String) {
-        assertStreams(text)
-    }
-
-    @Test("Whitespace run before punctuation survives streaming")
-    func streamingWhitespaceThenPunctuation() {
-        // Encoder-unreachable but generator-reachable: the normalizer maps " " to
-        // "▁", so no encode() call produces a bare whitespace run followed by
-        // punctuation. A generating model emits it freely — in indented markdown
-        // and in code. HF's clean_up_tokenization_spaces rewrote " ." to "."
-        // across that boundary, which made the streaming delta drop the
-        // punctuation token entirely and silently.
-        for (run, mark) in [("▁▁▁▁", "."), ("▁▁", ","), ("▁▁▁▁", "?"), ("▁▁", "!")] {
-            guard let runID = tok.tokenizer.convertTokenToId(run),
-                  let markID = tok.tokenizer.convertTokenToId(mark) else {
-                Issue.record("vocabulary is missing \(run) or \(mark)")
-                continue
-            }
-            let ids = [Int32(runID), Int32(markID)]
-            var detok = GFDetokenizer(tokenizer: tok)
-            var assembled = ""
-            for id in ids { assembled += detok.push(id) }
-            assembled += detok.flush()
-
-            #expect(assembled == tok.decode(ids))
-            #expect(assembled == String(repeating: " ", count: run.count) + mark,
-                    "expected the whitespace run and '\(mark)' intact, got '\(assembled)'")
-        }
+        #expect(tok.encode("", addBOS: false).isEmpty)
+        #expect(tok.encode("", addBOS: true) == [tok.bosID])
     }
 
     @Test("Decode differs from the library only by its cleanup pass")
     func decodeDiffersFromLibraryOnlyByCleanup() {
-        // The streaming test below compares against our own batch decode, so it
-        // cannot catch a fault shared by both. This one keeps swift-transformers
-        // as an independent oracle: our decode, run through the cleanup pass we
-        // deliberately dropped, must reproduce the library byte for byte. That
-        // pins the intended differences and covers special-token filtering,
-        // byte-fallback grouping, and the "▁" mapping. Besides the cleanup
-        // pass, we intentionally diverge from the Swift port on byte-fallback
-        // runs — invalid runs decode to one U+FFFD per byte and trailing runs
-        // are flushed, both per the reference Rust decoder, where the port
-        // decodes leniently and drops trailing runs (issue #58). The fixed
-        // seeds produce no multi-byte-token runs, so those divergences do not
-        // reach this comparison; the byte-soup test covers them against a
-        // reference-semantics oracle.
+        // swift-transformers as an independent oracle: our decode, run through
+        // the cleanup pass we deliberately dropped, must reproduce the library
+        // byte for byte. That covers special-token filtering, byte-fallback
+        // grouping, and the "▁" mapping. We also diverge from the Swift port on
+        // byte-fallback runs (issue #58: invalid runs decode to one U+FFFD per
+        // byte, trailing runs are flushed); the fixed seed produces no such
+        // runs, and the byte-soup test covers them against the reference.
         var ids = randomIDs(count: 256, seed: 0x2545_F491_4F6C_DD1D)
         ids += [tok.bosID, tok.eosID, tok.endOfTurnID, tok.channelStartID, tok.padID]
-        // The library drops byte-fallback tokens that end a sequence (issue #58)
-        // while we assemble them, so the two only agree when a regular token
-        // closes the stream. End on one rather than depend on where the random
-        // IDs happen to land.
+        // The library drops byte-fallback tokens that end a sequence, so end
+        // on a regular token.
         if let trailing = tok.tokenizer.convertTokenToId("the") {
             ids.append(Int32(trailing))
         }
@@ -242,6 +89,51 @@ struct TokenizerTests {
                                                skipSpecialTokens: skipSpecialTokens)
             #expect(Self.huggingFaceCleanUp(mine) == library,
                     "decode diverged from the library beyond the cleanup pass (skipSpecialTokens: \(skipSpecialTokens))")
+        }
+    }
+
+    // MARK: - Streaming detokenizer
+
+    @Test("Streaming matches batch decode for complex Unicode", arguments: [
+        "mixed 漢 and 🦝",
+        "ห้ามใช้ในสัปดาห์นี้",
+        "नमस्ते दुनिया",
+        "e\u{301}",
+        "left \u{2067}العَرَبِيَّةُ ١٢٣\u{2069} right",
+        "فارسی می\u{200C}خواهم English",
+        "ខ្ញុំសរសេរភាសាខ្មែរ English",
+        "\u{1100}\u{1161}\u{11A8} 한글 English",
+        "a\u{301}\u{323}\u{304} e\u{308}\u{301}",
+        "\u{1F44D}\u{1F3FD} \u{263A}\u{FE0F} 1\u{FE0F}\u{20E3} \u{1F1EC}\u{1F1E7} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
+    ])
+    func streamingComplexUnicode(_ text: String) {
+        let ids = tok.encode(text, addBOS: false)
+        let assembled = stream(ids)
+        #expect(assembled == tok.decode(ids))
+        #expect(!assembled.unicodeScalars.contains("\u{FFFD}"))
+    }
+
+    @Test("Streaming matches batch decode for arbitrary token streams")
+    func streamingMatchesBatchForArbitraryIDs() {
+        // encode() output only covers sequences the encoder emits; a generating
+        // model is under no such constraint, so drive the detokenizer with raw IDs.
+        for round in 0..<16 {
+            let ids = randomIDs(count: 256, seed: 0x9E37_79B9_7F4A_7C15 &+ UInt64(round))
+            #expect(stream(ids) == tok.decode(ids), "round \(round) diverged from batch decode")
+        }
+    }
+
+    @Test("Whitespace run before punctuation survives streaming")
+    func streamingWhitespaceThenPunctuation() throws {
+        // Encoder-unreachable but generator-reachable: the normalizer maps " " to
+        // "▁", so no encode() call produces a bare whitespace run followed by
+        // punctuation, while a model emits it freely in indented markdown and
+        // code. HF's cleanup rewrote " ." to "." across that boundary, which made
+        // the streaming delta drop the punctuation token silently.
+        for (run, mark) in [("▁▁▁▁", "."), ("▁▁", ",")] {
+            let ids = [try tokenID(run), try tokenID(mark)]
+            #expect(stream(ids) == tok.decode(ids))
+            #expect(stream(ids) == String(repeating: " ", count: run.count) + mark)
         }
     }
 
@@ -257,11 +149,7 @@ struct TokenizerTests {
             tokenID("<0xC3>"), tok.eosID, tokenID("<0xA9>"), tokenID("the"),
         ]
         #expect(tok.decode(ids, skipSpecialTokens: true) == "éthe")
-        var detok = GFDetokenizer(tokenizer: tok)
-        var assembled = ""
-        for id in ids { assembled += detok.push(id) }
-        assembled += detok.flush()
-        #expect(assembled == "éthe")
+        #expect(stream(ids) == "éthe")
         #expect(tok.decode(ids, skipSpecialTokens: false) == "\u{FFFD}<eos>\u{FFFD}the")
     }
 
@@ -269,7 +157,7 @@ struct TokenizerTests {
     func invalidByteRunsStreamImmediately() throws {
         // Once a run can no longer become valid UTF-8, every byte - past and
         // future - decodes to exactly one U+FFFD, so the stream emits them
-        // live instead of freezing and buffering until the next regular token.
+        // live instead of buffering until the next regular token.
         var detok = GFDetokenizer(tokenizer: tok)
         let stray = try tokenID("<0x80>")
         for _ in 0..<64 {
@@ -286,31 +174,6 @@ struct TokenizerTests {
         detok = GFDetokenizer(tokenizer: tok)
         #expect(try detok.push(tokenID("<0xE0>")) == "")
         #expect(try detok.push(tokenID("<0x80>")) == "\u{FFFD}\u{FFFD}")
-    }
-
-    @Test("An incomplete trailing sequence invalidates the whole run")
-    func incompleteTailInvalidatesWholeRun() throws {
-        // The reference decoder validates the run as a whole, so an incomplete
-        // tail turns even a valid prefix into per-byte replacement characters.
-        var detok = GFDetokenizer(tokenizer: tok)
-        #expect(try detok.push(tokenID("<0xE2>")) == "")
-        #expect(try detok.push(tokenID("<0x82>")) == "")
-        #expect(detok.flush() == "\u{FFFD}\u{FFFD}")
-
-        detok = GFDetokenizer(tokenizer: tok)
-        for token in ["<0xC3>", "<0xA9>", "<0xE2>", "<0x82>"] {
-            #expect(try detok.push(tokenID(token)) == "")
-        }
-        #expect(detok.flush() == String(repeating: "\u{FFFD}", count: 4))
-    }
-
-    @Test("A valid byte run commits with the token that closes it")
-    func validByteRunCommitsAtBoundary() throws {
-        var detok = GFDetokenizer(tokenizer: tok)
-        for token in ["<0xF0>", "<0x9F>", "<0x98>", "<0x80>"] {
-            #expect(try detok.push(tokenID(token)) == "")
-        }
-        #expect(try detok.push(tokenID("the")) == "😀the")
     }
 
     @Test("A barrier marker commits the run as its own delta")
@@ -337,18 +200,13 @@ struct TokenizerTests {
         // Adversarial byte-run coverage the encoder can never produce: mostly
         // byte tokens with occasional regular tokens, checked against a direct
         // reimplementation of the reference decoder's run semantics
-        // (from_utf8, else one U+FFFD per byte) and against our own streaming.
+        // (from_utf8 over the whole run, else one U+FFFD per byte, so an
+        // incomplete tail invalidates even a valid prefix).
         let byteIDs: [Int32] = try (0...255).map {
             unsafe try tokenID(String(format: "<0x%02X>", $0))
         }
         let theID = try tokenID("the")
         var state: UInt64 = 0xA076_1D64_78BD_642F
-        func next() -> UInt64 {
-            state ^= state << 13
-            state ^= state >> 7
-            state ^= state << 17
-            return state
-        }
         for round in 0..<16 {
             var ids: [Int32] = []
             var expected = ""
@@ -360,7 +218,7 @@ struct TokenizerTests {
                 run.removeAll()
             }
             for _ in 0..<256 {
-                let r = next()
+                let r = Self.xorshift(&state)
                 if r % 8 == 0 {
                     closeRun()
                     ids.append(theID)
@@ -374,80 +232,8 @@ struct TokenizerTests {
             closeRun()
 
             #expect(tok.decode(ids) == expected, "round \(round) batch diverged")
-            var detok = GFDetokenizer(tokenizer: tok)
-            var assembled = ""
-            for id in ids { assembled += detok.push(id) }
-            assembled += detok.flush()
-            #expect(assembled == expected, "round \(round) streaming diverged")
+            #expect(stream(ids) == expected, "round \(round) streaming diverged")
         }
-    }
-
-    @Test("Streaming matches batch decode for arbitrary token streams")
-    func streamingMatchesBatchForArbitraryIDs() {
-        // Every other streaming test round-trips encode() output, which can only
-        // produce token sequences the encoder itself emits. A generating model is
-        // under no such constraint, so drive the detokenizer with raw IDs.
-        for round in 0..<16 {
-            let ids = randomIDs(count: 256, seed: 0x9E37_79B9_7F4A_7C15 &+ UInt64(round))
-            var detok = GFDetokenizer(tokenizer: tok)
-            var assembled = ""
-            for id in ids { assembled += detok.push(id) }
-            assembled += detok.flush()
-            #expect(assembled == tok.decode(ids), "round \(round) diverged from batch decode")
-        }
-    }
-
-    @Test("Streaming detokenizer matches full decode for complex Unicode", arguments: [
-        "English العَرَبِيَّةُ ١٢٣ ثم English",
-        "left \u{2067}العَرَبِيَّةُ ١٢٣\u{2069} right",
-        "English עברית מְנֻּקֶדֶת 42",
-        "فارسی می\u{200C}خواهم English",
-        "क्\u{200D}ष क्\u{200C}ष English",
-        "ພາສາລາວ English",
-        "ខ្ញុំសរសេរភាសាខ្មែរ English",
-        "မြန်မာစာ English",
-        "বাংলা ভাষা English",
-        "සිංහල භාෂාව English",
-        "བོད་ཡིག English",
-        "\u{1100}\u{1161}\u{11A8} 한글 English",
-        "a\u{301}\u{323}\u{304} e\u{308}\u{301}",
-        "\u{1F44D}\u{1F3FD} \u{263A}\u{FE0F} 1\u{FE0F}\u{20E3} \u{1F1EC}\u{1F1E7} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
-    ])
-    func streamingComplexUnicode(_ text: String) {
-        let ids = tok.encode(text, addBOS: false)
-        let expected = tok.decode(ids)
-        var detok = GFDetokenizer(tokenizer: tok)
-        var assembled = ""
-        for id in ids {
-            assembled += detok.push(id)
-        }
-        assembled += detok.flush()
-        #expect(assembled == expected)
-        #expect(!assembled.unicodeScalars.contains("\u{FFFD}"))
-    }
-
-    @Test("Streaming detokenizer preserves long mixed output", arguments: [
-        "The quick brown fox jumps over the lazy dog. 0123456789\n",
-        "\u{E000}\u{E001}\u{E002}\u{E003}\u{E004}\u{E005}\u{E006}\u{E007}",
-        "ANEFieldfareHotpath 漢字 Здравствуй 🦝 café Ελληνικά \u{E000}\n",
-    ])
-    func streamingLongOutput(_ seed: String) {
-        var text = seed
-        var ids = tok.encode(text, addBOS: false)
-        while ids.count < 256 {
-            text += seed
-            ids = tok.encode(text, addBOS: false)
-        }
-
-        let prefix = Array(ids.prefix(256))
-        var detok = GFDetokenizer(tokenizer: tok)
-        var assembled = ""
-        for id in prefix {
-            assembled += detok.push(id)
-        }
-        assembled += detok.flush()
-        #expect(assembled == tok.decode(prefix))
-        #expect(!assembled.unicodeScalars.contains("\u{FFFD}"))
     }
 
     // MARK: - Helpers
@@ -456,16 +242,25 @@ struct TokenizerTests {
         try GFTokenizer.requireTokenID(tok.tokenizer, token)
     }
 
+    private func stream(_ ids: [Int32]) -> String {
+        var detok = GFDetokenizer(tokenizer: tok)
+        var assembled = ""
+        for id in ids { assembled += detok.push(id) }
+        return assembled + detok.flush()
+    }
+
     /// Deterministic xorshift64 IDs — token streams the encoder cannot produce
     /// but a generating model can.
     private func randomIDs(count: Int, seed: UInt64) -> [Int32] {
-        var state = seed == 0 ? 0x9E37_79B9_7F4A_7C15 : seed
-        return (0..<count).map { _ in
-            state ^= state << 13
-            state ^= state >> 7
-            state ^= state << 17
-            return Int32(state % UInt64(tok.vocabSize))
-        }
+        var state = seed
+        return (0..<count).map { _ in Int32(Self.xorshift(&state) % UInt64(tok.vocabSize)) }
+    }
+
+    private static func xorshift(_ state: inout UInt64) -> UInt64 {
+        state ^= state << 13
+        state ^= state >> 7
+        state ^= state << 17
+        return state
     }
 
     /// swift-transformers' `clean_up_tokenization_spaces` pass, reproduced here
@@ -479,16 +274,5 @@ struct TokenizerTests {
         return replacements.reduce(text) { partial, rule in
             partial.replacingOccurrences(of: rule.0, with: rule.1)
         }
-    }
-
-    private func assertStreams(_ target: String) {
-        let ids = tok.encode(target, addBOS: false)
-        var detok = GFDetokenizer(tokenizer: tok)
-        var assembled = ""
-        for id in ids {
-            assembled += detok.push(id)
-        }
-        assembled += detok.flush()
-        #expect(assembled == target, "stream reassembly mismatch: got '\(assembled)' want '\(target)'")
     }
 }

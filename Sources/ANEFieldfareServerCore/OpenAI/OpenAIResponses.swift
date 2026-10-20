@@ -179,10 +179,6 @@ public enum OpenAIErrorResponse {
                                             param: error.param, code: error.code)))
     }
 
-    public static func response(status: Int, type: String, code: String?, message: String) -> HTTPResponse {
-        response(APIError(status: status, type: type, code: code, message: message))
-    }
-
     public static func response(_ error: APIError, headers extra: HTTPHeaders = HTTPHeaders()) -> HTTPResponse {
         var headers = extra
         headers.set("Content-Type", "application/json")

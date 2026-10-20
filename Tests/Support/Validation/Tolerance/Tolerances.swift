@@ -2,9 +2,6 @@
 /// a *relative* error bar against an FP32 reference, sized to the accumulation
 /// depth and dtype of the kernel under test.
 public enum Tolerance {
-    /// FP32 identity / pass-through. Bit-exact-ish.
-    public static let identity: Float = 1e-5
-
     /// FP16 single-reduction kernels (RMSNorm, one GEMV, short-axis softmax).
     /// Comfortably above the FP16-accumulation-in-FP32 ULP floor.
     public static let fp16Reduction: Float = 5e-3

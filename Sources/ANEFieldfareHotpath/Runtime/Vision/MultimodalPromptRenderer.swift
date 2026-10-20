@@ -59,10 +59,9 @@ public enum MultimodalPromptRenderer {
             }
             return GFTokenizer.Message(role: message.role, content: text)
         }
-        guard Set(orderedImages.map(\.0)) == Set(featuresByID.keys) else {
-            let used = Set(orderedImages.map(\.0))
-            throw MultimodalPromptRendererError.unexpectedImage(
-                featuresByID.keys.first { !used.contains($0) }!)
+        let used = Set(orderedImages.map(\.0))
+        if let unused = featuresByID.keys.first(where: { !used.contains($0) }) {
+            throw MultimodalPromptRendererError.unexpectedImage(unused)
         }
 
         let usesToolTemplate = tokenizerMessages.contains {

@@ -1,11 +1,7 @@
 import Foundation
 import Metal
 
-/// Generation knobs threaded from the caller through the `Generator` into the
-/// sampler. Pure value type; one per `generate(...)` call.
-///
-/// Canonical home is here (the sampler is the primary consumer); `Generator`
-/// reuses the same type rather than redeclaring it.
+/// Generation knobs for one generation.
 public struct GenerationConfig: Sendable {
     public var maxNewTokens: Int = 256
     public var temperature: Float = 1.0
@@ -43,12 +39,6 @@ public struct GenerationConfig: Sendable {
             throw GeneratorError.invalidGenerationConfig(
                 "temperature must be finite and nonnegative")
         }
-        // Its sibling above has been checked since this method existed; this one
-        // never was, so an infinite penalty reached the kernel and quietly
-        // degraded the output instead of refusing. Every CLI float guard without
-        // an upper bound admits infinity, and the result was a count that broke
-        // into another language and then apologised for itself, where the
-        // baseline counted correctly to eight.
         guard repetitionPenalty.isFinite, repetitionPenalty > 0 else {
             throw GeneratorError.invalidGenerationConfig(
                 "repetitionPenalty must be finite and greater than zero")
@@ -100,13 +90,6 @@ public struct TokenSampling: Sendable, Equatable {
     }
 }
 
-/// Which path a `sample(...)` call took.
-enum SamplePath: Sendable, Equatable {
-    case greedyGPU
-    case gpuSampled
-    case hostPenalty
-}
-
 /// Turns `GenerationConfig` + a logits buffer into one token id, staying
 /// GPU-resident wherever the kernels allow.
 ///
@@ -129,34 +112,31 @@ final class Sampler {
     private let sampleKernel: Sample
     private let topK64Kernel: SampleTopK64
     let vocab: Int
-    private let logitSoftcap: Float
+    /// Gemma 4's final logit softcap.
+    private let logitSoftcap: Float = 30
 
-    init(context: MetalContext, vocab: Int = 262_144,
-                logitSoftcap: Float = 30.0) throws {
+    init(context: MetalContext, vocab: Int) throws {
         self.softcap = try LogitSoftcapSoftmax(context: context)
         self.sampleKernel = try Sample(context: context)
         self.topK64Kernel = try SampleTopK64(context: context, vocab: vocab)
         self.vocab = vocab
-        self.logitSoftcap = logitSoftcap
     }
 
     /// Encode the sampler onto `commandBuffer`. `logits` is FP16 [vocab],
     /// post-lm_head and pre-softcap, in a `.storageModeShared` buffer (the
     /// repetition-penalty path edits it in place). `probs` is a preallocated
     /// FP16 [vocab] scratch. `outToken` holds one UInt32. `position` indexes the
-    /// per-position seed advance. Returns the path taken.
-    @discardableResult
+    /// per-position seed advance.
     func sample(commandBuffer: any MTLCommandBuffer,
-                       logits: any MTLBuffer,
-                       probs: any MTLBuffer,
-                       history: [Int32],
-                       config: GenerationConfig,
-                       position: Int,
-                       outToken: any MTLBuffer) -> SamplePath {
+                logits: any MTLBuffer,
+                probs: any MTLBuffer,
+                history: [Int32],
+                config: GenerationConfig,
+                position: Int,
+                outToken: any MTLBuffer) {
         let v = UInt32(vocab)
 
-        let appliedPenalty = config.repetitionPenalty != 1.0 && !history.isEmpty
-        if appliedPenalty {
+        if config.repetitionPenalty != 1.0 && !history.isEmpty {
             applyRepetitionPenaltyInPlace(logits: logits,
                                           history: history,
                                           penalty: config.repetitionPenalty)
@@ -184,9 +164,6 @@ final class Sampler {
                                 seed: seed,
                                 position: UInt32(position))
         }
-
-        if appliedPenalty { return .hostPenalty }
-        return isGreedy ? .greedyGPU : .gpuSampled
     }
 
     // MARK: - Repetition penalty (host, in place)
@@ -214,20 +191,13 @@ final class Sampler {
             guard id >= 0 && Int(id) < vocab, seen.insert(id).inserted else { continue }
             let i = Int(id)
             let z = unsafe Float(ptr[i])
-            let penalized: Float
-            if logitSoftcap > 0 {
-                let capped = logitSoftcap * tanhf(z / logitSoftcap)
-                let cappedPenalized = capped > 0 ? capped / penalty : capped * penalty
-                // A saturated negative logit times the penalty can leave the
-                // softcap's open interval; clamp inside it so atanh stays
-                // finite.
-                let limit = logitSoftcap * 0.9999
-                let clamped = max(min(cappedPenalized, limit), -limit)
-                penalized = logitSoftcap * atanhf(clamped / logitSoftcap)
-            } else {
-                penalized = z > 0 ? z / penalty : z * penalty
-            }
-            unsafe ptr[i] = Float16(penalized)
+            let capped = logitSoftcap * tanhf(z / logitSoftcap)
+            let cappedPenalized = capped > 0 ? capped / penalty : capped * penalty
+            // A saturated negative logit times the penalty can leave the
+            // softcap's open interval; clamp inside it so atanh stays finite.
+            let limit = logitSoftcap * 0.9999
+            let clamped = max(min(cappedPenalized, limit), -limit)
+            unsafe ptr[i] = Float16(logitSoftcap * atanhf(clamped / logitSoftcap))
         }
     }
 

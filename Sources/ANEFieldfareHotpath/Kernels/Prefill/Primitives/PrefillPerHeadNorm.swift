@@ -11,17 +11,15 @@ final class PrefillPerHeadNorm {
     }
 
     func encodeBF16W(commandBuffer: any MTLCommandBuffer,
-                            x: any MTLBuffer,
-                            xOffset: Int = 0,
-                            weight: any MTLBuffer,
-                            weightOffset: Int = 0,
-                            out: any MTLBuffer,
-                            outOffset: Int = 0,
-                            queryCount: UInt32,
-                            headDim: UInt32,
-                            numHeads: UInt32,
-                            tokenStrideElements: UInt32,
-                            eps: Float) {
+                     x: any MTLBuffer,
+                     weight: any MTLBuffer,
+                     weightOffset: Int,
+                     out: any MTLBuffer,
+                     queryCount: UInt32,
+                     headDim: UInt32,
+                     numHeads: UInt32,
+                     tokenStrideElements: UInt32,
+                     eps: Float) {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(headDim > 0, "headDim must be positive")
         precondition(numHeads > 0, "numHeads must be positive")
@@ -29,19 +27,14 @@ final class PrefillPerHeadNorm {
                      "token stride is too small")
         guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(psoBF16W)
-        enc.setBuffer(x, offset: xOffset, index: 0)
+        enc.setBuffer(x, offset: 0, index: 0)
         enc.setBuffer(weight, offset: weightOffset, index: 1)
-        enc.setBuffer(out, offset: outOffset, index: 2)
-        let t = queryCount
-        let hd = headDim
-        let heads = numHeads
-        let stride = tokenStrideElements
-        let epsVar = eps
-        enc.setValue(t, index: 3)
-        enc.setValue(hd, index: 4)
-        enc.setValue(heads, index: 5)
-        enc.setValue(stride, index: 6)
-        enc.setValue(epsVar, index: 7)
+        enc.setBuffer(out, offset: 0, index: 2)
+        enc.setValue(queryCount, index: 3)
+        enc.setValue(headDim, index: 4)
+        enc.setValue(numHeads, index: 5)
+        enc.setValue(tokenStrideElements, index: 6)
+        enc.setValue(eps, index: 7)
         let threads = min(psoBF16W.maxTotalThreadsPerThreadgroup, 256)
         enc.dispatchThreadgroups(MTLSize(width: Int(numHeads), height: Int(queryCount), depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
@@ -49,15 +42,13 @@ final class PrefillPerHeadNorm {
     }
 
     func encodeNoScale(commandBuffer: any MTLCommandBuffer,
-                              x: any MTLBuffer,
-                              xOffset: Int = 0,
-                              out: any MTLBuffer,
-                              outOffset: Int = 0,
-                              queryCount: UInt32,
-                              headDim: UInt32,
-                              numHeads: UInt32,
-                              tokenStrideElements: UInt32,
-                              eps: Float) {
+                       x: any MTLBuffer,
+                       out: any MTLBuffer,
+                       queryCount: UInt32,
+                       headDim: UInt32,
+                       numHeads: UInt32,
+                       tokenStrideElements: UInt32,
+                       eps: Float) {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(headDim > 0, "headDim must be positive")
         precondition(numHeads > 0, "numHeads must be positive")
@@ -65,18 +56,13 @@ final class PrefillPerHeadNorm {
                      "token stride is too small")
         guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
         enc.setComputePipelineState(psoNoScale)
-        enc.setBuffer(x, offset: xOffset, index: 0)
-        enc.setBuffer(out, offset: outOffset, index: 1)
-        let t = queryCount
-        let hd = headDim
-        let heads = numHeads
-        let stride = tokenStrideElements
-        let epsVar = eps
-        enc.setValue(t, index: 2)
-        enc.setValue(hd, index: 3)
-        enc.setValue(heads, index: 4)
-        enc.setValue(stride, index: 5)
-        enc.setValue(epsVar, index: 6)
+        enc.setBuffer(x, offset: 0, index: 0)
+        enc.setBuffer(out, offset: 0, index: 1)
+        enc.setValue(queryCount, index: 2)
+        enc.setValue(headDim, index: 3)
+        enc.setValue(numHeads, index: 4)
+        enc.setValue(tokenStrideElements, index: 5)
+        enc.setValue(eps, index: 6)
         let threads = min(psoNoScale.maxTotalThreadsPerThreadgroup, 256)
         enc.dispatchThreadgroups(MTLSize(width: Int(numHeads), height: Int(queryCount), depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))

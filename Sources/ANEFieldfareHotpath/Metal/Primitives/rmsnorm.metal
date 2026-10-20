@@ -63,9 +63,7 @@ static inline float rms_block_inv(
     return partial[0];
 }
 
-// Gemma 4 RMS norms ship as BF16 weight vectors (all 30 layers' input /
-// post-attn / pre-FFN / post-FFN norms, plus q/k_norm). Math is identical to
-// the no-scale form below, with a learned weight applied after normalization.
+// Gemma 4 RMS norms ship as BF16 weight vectors, applied after normalization.
 [[kernel, max_total_threads_per_threadgroup(256)]]
 void rmsnorm_bf16w(
     device const half*   x          [[buffer(0)]],   // [D] FP16
@@ -89,87 +87,5 @@ void rmsnorm_bf16w(
         float xv = float(x[i]);
         float wv = float(weight[i]);
         out[i] = half(xv * inv * wv);
-    }
-}
-
-// Gemma 4 applies q_norm/k_norm
-// (BF16 weight, shared across heads) and v_norm (no-scale) to each attention
-// head independently. These kernels process all heads in one dispatch, with
-// one threadgroup per head, avoiding a chain of tiny serialized encoders.
-// Math is identical to the single-row kernels applied per head.
-[[kernel, max_total_threads_per_threadgroup(256)]]
-void rmsnorm_bf16w_perhead(
-    device const half*   x          [[buffer(0)]],   // [numHeads * headDim] FP16
-    device const bfloat* weight     [[buffer(1)]],   // [headDim] BF16, shared per head
-    device       half*   out        [[buffer(2)]],   // [numHeads * headDim] FP16
-    constant     uint&   headDim    [[buffer(3)]],
-    constant     float&  eps        [[buffer(4)]],
-    uint  head             [[threadgroup_position_in_grid]],
-    uint  lid              [[thread_position_in_threadgroup]],
-    uint  lsize            [[threads_per_threadgroup]],
-    uint  simd_lane_id     [[thread_index_in_simdgroup]],
-    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
-    uint  simdgroups       [[simdgroups_per_threadgroup]]
-) {
-    threadgroup float partial[kRmsMaxSimdGroups];
-    const uint HD = rms_fc_d(headDim);
-    device const half* xh = x   + head * HD;
-    device       half* oh = out + head * HD;
-    const float inv = rms_block_inv(xh, HD, eps, lid, lsize,
-                                    simd_lane_id, simd_group_id, simdgroups, partial);
-    for (uint i = lid; i < HD; i += lsize) {
-        float xv = float(xh[i]);
-        float wv = float(weight[i]);
-        oh[i] = half(xv * inv * wv);
-    }
-}
-
-[[kernel, max_total_threads_per_threadgroup(256)]]
-void rmsnorm_no_scale_perhead(
-    device const half*  x          [[buffer(0)]],   // [numHeads * headDim] FP16
-    device       half*  out        [[buffer(1)]],   // [numHeads * headDim] FP16
-    constant     uint&  headDim    [[buffer(2)]],
-    constant     float& eps        [[buffer(3)]],
-    uint  head             [[threadgroup_position_in_grid]],
-    uint  lid              [[thread_position_in_threadgroup]],
-    uint  lsize            [[threads_per_threadgroup]],
-    uint  simd_lane_id     [[thread_index_in_simdgroup]],
-    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
-    uint  simdgroups       [[simdgroups_per_threadgroup]]
-) {
-    threadgroup float partial[kRmsMaxSimdGroups];
-    const uint HD = rms_fc_d(headDim);
-    device const half* xh = x   + head * HD;
-    device       half* oh = out + head * HD;
-    const float inv = rms_block_inv(xh, HD, eps, lid, lsize,
-                                    simd_lane_id, simd_group_id, simdgroups, partial);
-    for (uint i = lid; i < HD; i += lsize) {
-        oh[i] = half(float(xh[i]) * inv);
-    }
-}
-
-// Gemma 4 v_norm and the MoE router's internal norm are no-scale RMSNorm:
-// y[i] = x[i] * rsqrt(mean(x^2) + eps). There is no resident weight tensor.
-[[kernel, max_total_threads_per_threadgroup(256)]]
-void rmsnorm_no_scale(
-    device const half*  x          [[buffer(0)]],   // [D] FP16
-    device       half*  out        [[buffer(1)]],   // [D] FP16
-    constant     uint&  D          [[buffer(2)]],
-    constant     float& eps        [[buffer(3)]],
-    uint  lid              [[thread_position_in_threadgroup]],
-    uint  lsize            [[threads_per_threadgroup]],
-    uint  simd_lane_id     [[thread_index_in_simdgroup]],
-    uint  simd_group_id    [[simdgroup_index_in_threadgroup]],
-    uint  simdgroups       [[simdgroups_per_threadgroup]]
-) {
-    threadgroup float partial[kRmsMaxSimdGroups];
-    const uint DD = rms_fc_d(D);
-    const float inv = rms_block_inv(x, DD, eps, lid, lsize,
-                                    simd_lane_id, simd_group_id, simdgroups,
-                                    partial);
-
-    for (uint i = lid; i < DD; i += lsize) {
-        float xv = float(x[i]);
-        out[i] = half(xv * inv);
     }
 }

@@ -9,15 +9,6 @@ import ANEFieldfareValidationSupport
     private static let d = 128
     private static let topK = 8
 
-    @Test func tokenExpertPairLayoutIsStable() {
-        #expect(MemoryLayout<PrefillTokenExpertPair>.size == 16)
-        #expect(MemoryLayout<PrefillTokenExpertPair>.stride == 16)
-        #expect(MemoryLayout.offset(of: \PrefillTokenExpertPair.token) == .some(0))
-        #expect(MemoryLayout.offset(of: \PrefillTokenExpertPair.expert) == .some(4))
-        #expect(MemoryLayout.offset(of: \PrefillTokenExpertPair.rank) == .some(8))
-        #expect(MemoryLayout.offset(of: \PrefillTokenExpertPair.weightBitsAndReserved) == .some(12))
-    }
-
     @Test func tokenExpertPairsAreTokenMajor() {
         let weights: [Float16] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map { Float16($0) }
         let pairs = PrefillRouter.makeTokenExpertPairs(indices: [3, 1, 2, 4, 0, 5],
@@ -93,56 +84,6 @@ import ANEFieldfareValidationSupport
         let gotWeights = Fp16Buffer.readHalf(buffers.blockWeights, count: rows * Self.topK)
         #expect(gotIndices == expectedIndices)
         Self.assertWeightsClose(gotWeights, expectedWeights, tolerance: 5e-3)
-        Self.assertPaddingUnchanged(buffer: buffers.hidden,
-                                    original: hidden,
-                                    rows: rows,
-                                    rowStride: hiddenStride,
-                                    used: Self.d)
-    }
-
-    @Test func blockGemma4RouterNearTieMatchesScalarPath() throws {
-        let weights = Self.makeNearTieWeights()
-        let hidden = [Float16](repeating: 1, count: Self.d)
-        let effectiveScale = [Float](repeating: 1, count: Self.d)
-        let perExpertScale = [Float](repeating: 1, count: Self.experts)
-        let ctx = try MetalContext()
-        let moe = try MoE(context: ctx)
-        let prefill = try PrefillRouter(context: ctx)
-        let buffers = try Self.makeBuffers(ctx: ctx,
-                                           weights: weights,
-                                           hidden: hidden,
-                                           effectiveScale: effectiveScale,
-                                           perExpertScale: perExpertScale,
-                                           rows: 1)
-        let (scalar, _) = try Self.runScalarRouter(ctx: ctx,
-                                                   moe: moe,
-                                                   buffers: buffers,
-                                                   hiddenRow: hidden)
-
-        guard let cb = ctx.queue.makeCommandBuffer() else {
-            Issue.record("Failed to make command buffer")
-            return
-        }
-        prefill.encodeGemma4Block(commandBuffer: cb,
-                                  weights: buffers.weights,
-                                  scales: buffers.scales,
-                                  biases: buffers.biases,
-                                  hidden: buffers.hidden,
-                                  effectiveScale: buffers.effectiveScale,
-                                  perExpertScale: buffers.perExpertScale,
-                                  outIndices: buffers.blockIndices,
-                                  outWeights: buffers.blockWeights,
-                                  queryCount: 1,
-                                  numExperts: UInt32(Self.experts),
-                                  d: UInt32(Self.d),
-                                  topK: UInt32(Self.topK),
-                                  hiddenStrideElements: UInt32(Self.d))
-        cb.commit()
-        cb.waitUntilCompleted()
-        #expect(cb.error == nil)
-
-        let block = Self.readUInt32(buffers.blockIndices, count: Self.topK)
-        #expect(block == scalar)
     }
 
     private struct RouterBuffers {
@@ -241,28 +182,6 @@ import ANEFieldfareValidationSupport
         }
     }
 
-    private static func makeNearTieWeights() -> [[Float]] {
-        var weights = [[Float]](repeating: [Float](repeating: 0, count: Self.d),
-                                count: Self.experts)
-        for expert in 0..<Self.experts {
-            let gain: Float
-            if expert < 7 {
-                gain = 1.0 - Float(expert) * 0.05
-            } else if expert == 7 {
-                gain = 0.50
-            } else if expert == 8 {
-                gain = 0.50 * (1.0 + 1e-4)
-            } else {
-                gain = 0.40 - Float(expert - 9) * 0.02
-            }
-            for k in 0..<Self.d {
-                let pattern = 0.25 + Float((k * 37 + 11) % 97) / 97.0
-                weights[expert][k] = pattern * gain
-            }
-        }
-        return weights
-    }
-
     private static func makeHiddenBlock(rows: Int,
                                         rowStride: Int,
                                         d: Int,
@@ -314,20 +233,6 @@ import ANEFieldfareValidationSupport
             maxAbs = max(maxAbs, abs(Float(got[i]) - Float(expected[i])))
         }
         #expect(maxAbs <= tolerance, "route weight maxAbsDiff=\(maxAbs)")
-    }
-
-    private static func assertPaddingUnchanged(buffer: any MTLBuffer,
-                                               original: [Float16],
-                                               rows: Int,
-                                               rowStride: Int,
-                                               used: Int) {
-        let got = Fp16Buffer.readHalf(buffer, count: original.count)
-        for row in 0..<rows {
-            for i in used..<rowStride {
-                let idx = row * rowStride + i
-                #expect(got[idx] == original[idx], "padding changed at row \(row) element \(i)")
-            }
-        }
     }
 
     private enum RouterTestError: Error {

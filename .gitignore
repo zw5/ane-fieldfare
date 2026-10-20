@@ -10,3 +10,7 @@ results/
 docs/
 LOCAL_NOTES.md
 *.logits.f16
+
+# Local research notes
+reports/
+notes/

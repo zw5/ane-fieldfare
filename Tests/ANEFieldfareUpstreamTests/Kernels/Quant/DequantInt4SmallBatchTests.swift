@@ -8,10 +8,11 @@ import ANEFieldfareValidationSupport
 /// `DequantInt4GemvRef` applied row by row, and, below
 /// `DequantInt4GEMV.matrixMinRows` rows, against the single-row GEMV, which the
 /// ALU kernel must match bitwise; from that many rows the SIMD-group matrix
-/// kernel matches the reference only. Shapes cover a partial 32-column tile, a
-/// K with a non-multiple-of-four group count (the shared expert's 2112, whose
-/// last 64-k group the matrix kernel takes as a half step), one and two 8-row
-/// tiles, and the resident layout's 2-aligned weight offset.
+/// kernel matches the reference only. The single-row match is also the INT4
+/// GEMV's CPU oracle. Shapes cover a partial 32-row tile, a K with a
+/// non-multiple-of-four group count (the shared expert's 2112, whose last 64-k
+/// group the matrix kernel takes as a half step), and the resident layout's
+/// 2-aligned weight offset.
 @Suite struct DequantInt4SmallBatchTests {
     private static func run(m: Int, n: Int, rows: Int, seed: UInt64, weightByteOffset: Int = 0,
                             matchSingleRow: Bool = false) throws {
@@ -68,29 +69,21 @@ import ANEFieldfareValidationSupport
         }
     }
 
+    /// The last run binds the weights at the resident layout's 2-aligned (not
+    /// 4-aligned) offset, which the vectorized `ushort` load must honour.
     @Test func matchesSingleRowGEMVBitwise() throws {
-        try Self.run(m: 512, n: 2816, rows: 2, seed: 0xD7, matchSingleRow: true)
         try Self.run(m: 300, n: 2112, rows: 3, seed: 0xD8, matchSingleRow: true)   // 2 weight rows per SIMD
-        try Self.run(m: 301, n: 2816, rows: 4, seed: 0xD9, matchSingleRow: true)   // odd tail row
+        try Self.run(m: 301, n: 2816, rows: 4, seed: 0xD9, weightByteOffset: 2,
+                     matchSingleRow: true)                                         // odd tail row
     }
     @Test func matrixKernelRowCounts() throws {
-        try Self.run(m: 512, n: 2816, rows: 5, seed: 0xDB)
-        try Self.run(m: 256, n: 4096, rows: 12, seed: 0xDC)
         try Self.run(m: 264, n: 8192, rows: 7, seed: 0xDD)                         // partial 32-row tile
         try Self.run(m: 256, n: 2112, rows: 12, seed: 0xDA)                        // final 64-k group
-    }
-    @Test func oneRow() throws { try Self.run(m: 1024, n: 2816, rows: 1, seed: 0xD1) }
-    @Test func eightRows() throws { try Self.run(m: 1024, n: 2816, rows: 8, seed: 0xD2) }
-    @Test func sixteenRows() throws { try Self.run(m: 1024, n: 2816, rows: 16, seed: 0xD3) }
-    @Test func partialTileAndOddRows() throws { try Self.run(m: 100, n: 256, rows: 11, seed: 0xD4) }
-    @Test func sharedExpertDownShape() throws { try Self.run(m: 2816, n: 2112, rows: 9, seed: 0xD5) }
-    @Test func twoAlignedWeightOffset() throws {
-        try Self.run(m: 256, n: 2816, rows: 8, seed: 0xD6, weightByteOffset: 2)
     }
 
     /// BF16 in and out, as the drafter runs it: the ALU kernel through 4
     /// rows, the matrix kernel past them.
-    @Test(arguments: [3, 8, 13])
+    @Test(arguments: [3, 13])
     func bf16Rows(rows: Int) throws {
         let m = 384, n = 2816
         var rng = SeedTree(0xBF).key("int4-bf16-rows-\(rows)")

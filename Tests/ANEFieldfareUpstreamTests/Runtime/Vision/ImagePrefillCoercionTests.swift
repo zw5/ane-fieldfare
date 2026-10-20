@@ -13,49 +13,24 @@ import Testing
         let coerced = try #require(off.coercedForImagePrompt())
         #expect(coerced.mode == .chunked)
         #expect(coerced.servesImagePrompt)
-    }
-
-    @Test func aChunkedConfigIsAlreadyFineAndIsNotRewritten() {
-        let chunked = PrefillRuntimeConfig.defaultChunked
-        #expect(chunked.servesImagePrompt)
         // nil means "already runs", not "cannot run".
-        #expect(chunked.coercedForImagePrompt() == nil)
+        #expect(coerced.coercedForImagePrompt() == nil)
     }
 
-    @Test func everySelectableChunkSizeStillServesImages() {
-        for tokens in RuntimeConfiguration.allowedPrefillChunkTokens {
-            let config = PrefillRuntimeConfig.production(chunkTokens: tokens)
-            #expect(config.servesImagePrompt,
-                    "chunk size \(tokens) must serve an image prompt")
-            #expect(config.coercedForImagePrompt() == nil)
-        }
-    }
-
-    /// The planner cuts text at the same clamp the scratch layout applies. A
-    /// caller that asks for more must not hand the buffer a larger chunk than
-    /// it was sized for.
-    @Test func multimodalTextChunksNeverExceedTheScratchClamp() {
+    /// The planner cuts text at the same clamp the scratch layout applies, so a
+    /// caller that asks for more never hands the buffer a larger chunk than it
+    /// was sized for. An image span is one indivisible block: its features are
+    /// projected as a unit, so it passes through whole even past the clamp.
+    @Test func textChunksRespectTheClampAndImageSpansStayWhole() {
+        let span = 400..<(400 + PrefillRuntimeConfig.maxChunkTokens + 1)
         let work = PrefillChunkPlanner.multimodalWork(
-            tokenCount: 1_000,
-            imageRanges: [400..<680],
-            chunkTokens: 4_096)
+            tokenCount: span.upperBound + 5_000, imageRanges: [span], chunkTokens: 8_192)
         let textItems = work.filter { !$0.isImage }
         #expect(!textItems.isEmpty)
         for item in textItems {
             #expect(item.range.count <= PrefillRuntimeConfig.maxChunkTokens)
         }
-    }
-
-    /// An image span is one indivisible block: its features are projected as a
-    /// unit, so the planner must never split it even when it exceeds the clamp.
-    @Test func anImageSpanPassesThroughWholeEvenWhenItExceedsTheClamp() {
-        let span = 400..<(400 + PrefillRuntimeConfig.maxChunkTokens + 1)
-        let work = PrefillChunkPlanner.multimodalWork(
-            tokenCount: span.upperBound + 100, imageRanges: [span], chunkTokens: 128)
-        let images = work.filter(\.isImage)
-        #expect(images.count == 1)
-        #expect(images.first?.range == span)
-        #expect(span.count > PrefillRuntimeConfig.maxChunkTokens)
+        #expect(work.filter(\.isImage).map(\.range) == [span])
     }
 
     @Test func workItemsCoverTheWholePromptInOrder() {

@@ -5,15 +5,10 @@ import Metal
 @testable import ANEFieldfareHotpath
 import ANEFieldfareValidationSupport
 
-/// End-to-end: write a synthetic .gturbo blob containing one "expert" worth of
-/// affine-quantized weights (packed nibbles + BF16 scales + BF16 biases), open
-/// it through `MappedExpertLayer`, read it into the page cache, run
-/// `dequant_int4_gemv`, and compare against an FP32 reference computed on the
-/// CPU.
-///
-/// This is the smoke test for the streaming → kernel data path on the affine
-/// decode hot path. No real Gemma weights, no model — just proof that the
-/// pipe works end-to-end with the new layout.
+/// End-to-end: write one synthetic affine-quantized expert blob (packed
+/// nibbles + BF16 scales + BF16 biases), open it through `MappedExpertLayer`,
+/// read it into the page cache, run `dequant_int4_gemv`, and compare against
+/// an FP32 CPU reference. Covers the streaming -> kernel data path.
 @Suite struct StreamingKernelIntegrationTests {
 
     /// Layout for a single "expert blob" used in this test.
@@ -44,34 +39,29 @@ import ANEFieldfareValidationSupport
         precondition(weightsFp32.count == Sizes.M)
         precondition(weightsFp32[0].count == Sizes.N)
 
-        var packed = [UInt8]( repeating: 0, count: Sizes.packedBytes)
-        var scales = [UInt16](repeating: 0, count: Sizes.M * Sizes.groupsPerRow)
-        var biases = [UInt16](repeating: 0, count: Sizes.M * Sizes.groupsPerRow)
-        for m in 0..<Sizes.M {
-            let q = Quantization.quantizeInt4Affine(weightsFp32[m])
-            for i in 0..<q.packed.count { packed[m * (Sizes.N / 2) + i] = q.packed[i] }
-            for g in 0..<Sizes.groupsPerRow {
-                scales[m * Sizes.groupsPerRow + g] = q.scales[g]
-                biases[m * Sizes.groupsPerRow + g] = q.biases[g]
-            }
+        var packed: [UInt8] = []
+        var scales: [UInt16] = []
+        var biases: [UInt16] = []
+        for row in weightsFp32 {
+            let q = Quantization.quantizeInt4Affine(row)
+            packed += q.packed
+            scales += q.scales
+            biases += q.biases
         }
 
         let scalesOffset = roundUp(Sizes.packedBytes, to: pageSize)
         let biasesOffset = roundUp(scalesOffset + Sizes.scalesBytes, to: pageSize)
         let blobSize     = roundUp(biasesOffset + Sizes.biasesBytes, to: pageSize)
 
-        var blob = [UInt8](repeating: 0, count: blobSize)
-        blob.withUnsafeMutableBufferPointer { ptr in
-            _ = unsafe memcpy(ptr.baseAddress!, packed, Sizes.packedBytes)
-            scales.withUnsafeBufferPointer { sptr in
-                _ = unsafe memcpy(ptr.baseAddress!.advanced(by: scalesOffset),
-                           sptr.baseAddress!, Sizes.scalesBytes)
-            }
-            biases.withUnsafeBufferPointer { bptr in
-                _ = unsafe memcpy(ptr.baseAddress!.advanced(by: biasesOffset),
-                           bptr.baseAddress!, Sizes.biasesBytes)
-            }
+        func littleEndian(_ values: [UInt16]) -> [UInt8] {
+            values.flatMap { [UInt8(truncatingIfNeeded: $0), UInt8(truncatingIfNeeded: $0 >> 8)] }
         }
+        var blob = [UInt8](repeating: 0, count: blobSize)
+        blob.replaceSubrange(0..<Sizes.packedBytes, with: packed)
+        blob.replaceSubrange(scalesOffset..<(scalesOffset + Sizes.scalesBytes),
+                             with: littleEndian(scales))
+        blob.replaceSubrange(biasesOffset..<(biasesOffset + Sizes.biasesBytes),
+                             with: littleEndian(biases))
         return (blob, scalesOffset, biasesOffset, blobSize)
     }
 
@@ -92,7 +82,6 @@ import ANEFieldfareValidationSupport
     }
 
     @Test func endToEnd_streamFromFile_runKernel_matchesCpuReference() throws {
-        // ----- Setup: random weights + input -----
         var rng = SeedTree(0x51A7_1002).key("streaming-kernel-integration")
         var weights = [[Float]](repeating: [], count: Sizes.M)
         for m in 0..<Sizes.M {
@@ -101,7 +90,6 @@ import ANEFieldfareValidationSupport
         let xFp32: [Float] = (0..<Sizes.N).map { _ in rng.uniform(-1.0, 1.0) }
         let xFp16: [Float16] = xFp32.map { Float16($0) }
 
-        // ----- Build fake .gturbo on disk -----
         let pageSize = Int(getpagesize())
         let (blob, scalesOffset, biasesOffset, blobSize) =
             Self.buildExpertBlob(weightsFp32: weights, pageSize: pageSize)
@@ -170,6 +158,5 @@ import ANEFieldfareValidationSupport
 
         #expect(relErr < 5e-3,
                 "kernel vs CPU ref relErr=\(relErr) maxAbsDiff=\(maxAbsDiff) refNorm=\(refNorm)")
-
     }
 }

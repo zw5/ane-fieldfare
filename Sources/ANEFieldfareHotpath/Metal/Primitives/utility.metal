@@ -1,8 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Kept in the shared library so both INT4 and INT8 shared-expert paths use
-// the same Gemma activation without compiling a private shader module.
+// out = gelu_pytorch_tanh(gate) * up, for prefill's unfused shared expert.
 [[kernel, max_total_threads_per_threadgroup(256)]]
 void gelu_mul_fp16(
     device const half* gate [[buffer(0)]],

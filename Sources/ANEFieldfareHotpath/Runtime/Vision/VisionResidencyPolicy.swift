@@ -1,13 +1,9 @@
-public enum VisionResidencyPolicy: String, Sendable, CaseIterable, Codable {
+public enum VisionResidencyPolicy: String, Sendable {
     case onDemand = "on-demand"
     case keepReady = "keep-ready"
 
-    /// The default every entry point uses. It is one constant because the four
-    /// entry points — runtime, conversation, session, CLI — each wrote their own
-    /// default, and one of them drifted to `keepReady`, so a conversation held
-    /// 1.1 GB of tower mappings open for the life of the process while the CLI
-    /// released them. Measured, keeping them costs ~5 MB of footprint and saves
-    /// ~105 ms of remapping, which is not worth pinning by default.
+    /// Keeping the tower mapped costs ~5 MB of footprint and saves ~105 ms of
+    /// remapping per image, not worth pinning by default.
     public static let defaultPolicy: VisionResidencyPolicy = .onDemand
 }
 

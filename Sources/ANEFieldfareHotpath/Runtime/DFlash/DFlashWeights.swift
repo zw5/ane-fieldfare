@@ -115,7 +115,7 @@ struct DFlashWeights {
     let layers: [Layer]
 
     /// The installed file's tensor table, as `install` leaves it.
-    struct Layout: Sendable, Codable {
+    struct Layout: Sendable {
         var tensors: [String: Int]
         var dataBytes: Int
     }

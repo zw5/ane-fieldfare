@@ -70,32 +70,25 @@ public struct GFTokenizer: Sendable {
     /// the filter the library's own decode applies before its decoder chain.
     let specialTokenIDs: Set<Int32>
 
-    @usableFromInline
     let tokenizer: any Tokenizer
 
     public static func load() async throws -> GFTokenizer {
         try await GFTokenizerLoadCoordinator.shared.load(.pretrained(modelID))
     }
 
-    public static func load(from folder: URL) async throws -> GFTokenizer {
-        try await GFTokenizerLoadCoordinator.shared.load(.local(folder.standardizedFileURL.path))
-    }
-
-    public static func load(forModelDirectory modelDirectory: URL,
-                            environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> GFTokenizer {
-        if let folder = tokenizerFolder(forModelDirectory: modelDirectory, environment: environment) {
-            return try await load(from: folder)
+    public static func load(forModelDirectory modelDirectory: URL) async throws -> GFTokenizer {
+        if let folder = tokenizerFolder(forModelDirectory: modelDirectory) {
+            return try await GFTokenizerLoadCoordinator.shared.load(.local(folder.path))
         }
         return try await load()
     }
 
     public static func tokenizerFolder(forModelDirectory modelDirectory: URL,
-                                       environment: [String: String] = ProcessInfo.processInfo.environment,
-                                       fileManager: FileManager = .default) -> URL? {
+                                       environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
         let sidecar = modelDirectory
             .standardizedFileURL
             .appendingPathComponent("tokenizer", isDirectory: true)
-        if hasTokenizerJSON(in: sidecar, fileManager: fileManager) {
+        if hasTokenizerJSON(in: sidecar) {
             return sidecar
         }
 
@@ -103,10 +96,10 @@ public struct GFTokenizer: Sendable {
             return nil
         }
         let overrideURL = URL(fileURLWithPath: override).standardizedFileURL
-        return hasTokenizerJSON(in: overrideURL, fileManager: fileManager) ? overrideURL : nil
+        return hasTokenizerJSON(in: overrideURL) ? overrideURL : nil
     }
 
-    static func loadUncached(pretrained modelID: String = Self.modelID) async throws -> GFTokenizer {
+    static func loadUncached(pretrained modelID: String) async throws -> GFTokenizer {
         try await make(from: LanguageModelConfigurationFromHub(modelName: modelID))
     }
 
@@ -127,8 +120,8 @@ public struct GFTokenizer: Sendable {
         return try GFTokenizer(tokenizer: underlying, tokenizerData: tokenizerData)
     }
 
-    private static func hasTokenizerJSON(in folder: URL, fileManager: FileManager) -> Bool {
-        fileManager.fileExists(atPath: folder.appendingPathComponent("tokenizer.json").path)
+    private static func hasTokenizerJSON(in folder: URL) -> Bool {
+        FileManager.default.fileExists(atPath: folder.appendingPathComponent("tokenizer.json").path)
     }
 
     /// Reject a tokenizer whose declared decoder is not the pinned Gemma 4

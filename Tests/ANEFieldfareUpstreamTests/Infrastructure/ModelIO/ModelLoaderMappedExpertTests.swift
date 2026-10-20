@@ -21,15 +21,19 @@ import Metal
         let (dir, model) = try Self.loadToy()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        #expect(model.openLayerFileCount() == 0)
-        let view = try model.routedExpert(layer: 1, expert: 4)
-        #expect(model.openLayerFileCount() == 1)
+        #expect(model.routedLayers.openLayerCount == 0)
+        let view = try model.routedExpertViews(layer: 1, experts: [4])[0]
+        #expect(model.routedLayers.openLayerCount == 1)
+        _ = try model.routedExpertViews(layer: 1, experts: [0])[0]
+        #expect(model.routedLayers.openLayerCount == 1)
+        _ = try model.routedExpertViews(layer: 0, experts: [0])[0]
+        #expect(model.routedLayers.openLayerCount == 2)
 
         // Each expert is its own buffer over the mapping, so offset is 0.
         #expect(view.offset == 0)
         #expect(Int(view.length) == model.routedExpertBytes)
 
-        // Same tagged-byte contract as ModelLoaderTests.routedExpertBytesRoundTrip.
+        // Tagged bytes written by ModelLoaderTests.writeToySynthetic.
         let b = Self.readBytes(view)
         #expect(b[0] == 1)       // layer 1
         #expect(b[1] == 4)       // expert 4
@@ -42,7 +46,8 @@ import Metal
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let first = try model.routedExpertViews(layer: 1, experts: [2, 4])
-        let fetched = try await model.fetchRoutedExperts(layer: 1, experts: [2, 4])
+        try await model.readRoutedExperts(layer: 1, experts: [2, 4])
+        let fetched = try model.routedExpertViews(layer: 1, experts: [2, 4])
         #expect(try model.nonResidentRoutedExperts(layer: 1, experts: [2, 4]).isEmpty)
         for (a, b) in zip(first, fetched) { #expect(a.buffer === b.buffer) }
         #expect(Self.readBytes(fetched[0])[1] == 2)
@@ -51,23 +56,10 @@ import Metal
         #expect(throws: (any Error).self) { _ = try model.routedExpertViews(layer: 1, experts: [10_000]) }
     }
 
-    @Test func beginOpeningRoutedExpertLayerIsCompatibleWithLazyFetch() throws {
-        let (dir, model) = try Self.loadToy()
-        defer { try? FileManager.default.removeItem(at: dir) }
-
-        model.beginOpeningRoutedExpertLayer(layer: 1)
-        let view = try model.routedExpert(layer: 1, expert: 4)
-
-        #expect(model.openLayerFileCount() == 1)
-        let b = Self.readBytes(view)
-        #expect(b[0] == 1)
-        #expect(b[1] == 4)
-    }
-
     @Test func visionResidencyModesReleaseOrRetainExpertLayers() throws {
         let (dir, model) = try Self.loadToy()
         defer { try? FileManager.default.removeItem(at: dir) }
-        _ = try model.routedExpert(layer: 1, expert: 4)
+        _ = try model.routedExpertViews(layer: 1, experts: [4])[0]
 
         let retained = model.prepareExpertResidencyForVision(.keepReady)
         #expect(retained.releasedLayerCount == 0)
@@ -78,11 +70,10 @@ import Metal
         #expect(released.gpuDrainNanoseconds == 123)
         #expect(released.releasedLayerCount == 1)
         #expect(released.remainingOpenLayerCount == 0)
-        #expect(model.openLayerFileCount() == 0)
+        #expect(model.routedLayers.openLayerCount == 0)
 
-        let view = try model.routedExpert(layer: 1, expert: 4)
-        #expect(model.openLayerFileCount() == 1)
+        let view = try model.routedExpertViews(layer: 1, experts: [4])[0]
+        #expect(model.routedLayers.openLayerCount == 1)
         #expect(Self.readBytes(view)[1] == 4)
     }
-
 }

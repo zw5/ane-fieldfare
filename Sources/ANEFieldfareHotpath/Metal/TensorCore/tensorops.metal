@@ -112,106 +112,6 @@ constant constexpr int kMPPAffineApple10TileM = 64;
 constant constexpr int kMPPAffineApple10TileN = 64;
 constant constexpr int kMPPAffineApple10TileK = 128;
 
-kernel void mpp_prefill_affine_threadgroup_f16_apple10_v1(
-    device const uint8_t* packedWeights [[buffer(0)]],
-    device const bfloat* scales         [[buffer(1)]],
-    device const bfloat* biases         [[buffer(2)]],
-    device half* activations            [[buffer(3)]],
-    device half* output                 [[buffer(4)]],
-    constant uint& M                    [[buffer(5)]],
-    constant uint& N                    [[buffer(6)]],
-    constant uint& K                    [[buffer(7)]],
-    uint3 tgid                          [[threadgroup_position_in_grid]],
-    uint3 lid3                          [[thread_position_in_threadgroup]],
-    uint3 threads3                      [[threads_per_threadgroup]]) {
-    constexpr auto descriptor = matmul2d_descriptor(
-        kMPPAffineApple10TileM, kMPPAffineApple10TileN,
-        kMPPAffineApple10TileK, false, true, false);
-    matmul2d<descriptor, execution_simdgroups<4>> operation;
-
-    using device_half_tensor = tensor<device half, dextents<int32_t, 2>, tensor_inline>;
-    using threadgroup_half_tensor = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
-
-    threadgroup half weightTile[
-        kMPPAffineApple10TileN * kMPPAffineApple10TileK];
-    threadgroup_half_tensor tileB(
-        weightTile,
-        dextents<int32_t, 2>(kMPPAffineApple10TileK, kMPPAffineApple10TileN),
-        array<int32_t, 2>({1, kMPPAffineApple10TileK}));
-    device_half_tensor firstA(
-        activations,
-        dextents<int32_t, 2>(kMPPAffineApple10TileK, M),
-        array<int32_t, 2>({1, int32_t(K)}));
-    auto firstTileA = firstA.slice(
-        0, int32_t(tgid.y) * kMPPAffineApple10TileM);
-    auto accumulator = operation.get_destination_cooperative_tensor<
-        decltype(firstTileA), decltype(tileB), float>();
-    auto groupProduct = operation.get_destination_cooperative_tensor<
-        decltype(firstTileA), decltype(tileB), float>();
-    for (int element = 0; element < accumulator.get_capacity(); ++element) {
-        accumulator[element] = 0.0f;
-    }
-
-    const uint rowBytes = K / 2u;
-    const uint groupsPerRow = K / kW4A8GroupSize;
-    const uint lid = lid3.x;
-    const uint threads = threads3.x;
-    for (uint tileKStart = 0; tileKStart < K;
-         tileKStart += uint(kMPPAffineApple10TileK)) {
-        for (int element = 0; element < groupProduct.get_capacity(); ++element) {
-            groupProduct[element] = 0.0f;
-        }
-        for (uint linear = lid;
-             linear < uint(kMPPAffineApple10TileN * kMPPAffineApple10TileK);
-             linear += threads) {
-            const uint localN = linear / uint(kMPPAffineApple10TileK);
-            const uint localK = linear % uint(kMPPAffineApple10TileK);
-            const uint globalN = tgid.x * uint(kMPPAffineApple10TileN) + localN;
-            if (globalN < N) {
-                const uint globalK = tileKStart + localK;
-                const uint8_t packed = packedWeights[
-                    globalN * rowBytes + (globalK >> 1)];
-                const uint q = (globalK & 1u) == 0u
-                    ? uint(packed & 0x0fu)
-                    : uint(packed >> 4);
-                const uint affineGroup = globalK / uint(kW4A8GroupSize);
-                const float scale = float(scales[
-                    globalN * groupsPerRow + affineGroup]);
-                const float bias = float(biases[
-                    globalN * groupsPerRow + affineGroup]);
-                weightTile[linear] = half(fma(float(q), scale, bias));
-            } else {
-                weightTile[linear] = half(0.0f);
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        device_half_tensor groupA(
-            activations + tileKStart,
-            dextents<int32_t, 2>(kMPPAffineApple10TileK, M),
-            array<int32_t, 2>({1, int32_t(K)}));
-        auto tileA = groupA.slice(
-            0, int32_t(tgid.y) * kMPPAffineApple10TileM);
-        operation.run(tileA, tileB, groupProduct);
-        for (int element = 0; element < accumulator.get_capacity(); ++element) {
-            accumulator[element] += groupProduct[element];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    for (int element = 0; element < accumulator.get_capacity(); ++element) {
-        if (!accumulator.is_valid_element(element)) continue;
-        const auto position = accumulator.get_multidimensional_index(element);
-        const uint globalN = tgid.x * uint(kMPPAffineApple10TileN)
-            + uint(position[0]);
-        const uint globalM = tgid.y * uint(kMPPAffineApple10TileM)
-            + uint(position[1]);
-        if (globalM < M && globalN < N) {
-            output[globalM * N + globalN] = half(accumulator[element]);
-        }
-    }
-}
-
 kernel void mpp_prefill_affine_threadgroup_bf16_apple10_v1(
     device const uint8_t* packedWeights [[buffer(0)]],
     device const bfloat* scales         [[buffer(1)]],
@@ -325,19 +225,14 @@ constant constexpr int kVisionAttentionHeadDim = 80;
 // outputs were discarded anyway.
 constant constexpr int kVisionAttentionRealHeadDim = 72;
 
-/// `inputRowStride` is the per-head row count of the padded Q/K/V buffers, which
-/// may exceed `sequenceLength` when the projections write every padded GEMM row.
-/// `unpaddedOutputHeadDim` of 0 keeps the padded head-major output store; a
-/// nonzero value stores row-major `(row * numHeads + head) * headDim + lane`
-/// directly, which removes the separate unpad dispatch.
+/// Mirrors `VisionAttentionLayout` in VisionAttention.swift. `inputRowStride`
+/// (nonzero) is the per-head row count of the padded Q/K/V buffers, which may
+/// exceed `sequenceLength` when the projections write every padded GEMM row.
+/// The output is stored row-major `(row * numHeads + head) * headDim + lane`
+/// for lanes below `unpaddedOutputHeadDim`.
 struct VisionAttentionLayout {
     uint inputRowStride;
     uint unpaddedOutputHeadDim;
-    /// Softmax phase: 0 runs the original 16-thread serial phase; 1 spreads
-    /// max, exp and sum across all 128 threads, which makes the tile sum a tree
-    /// reduction and is therefore not bit-identical; 2 spreads max and exp but
-    /// keeps the tile sum sequential per query, which is bit-identical to 0.
-    uint parallelSoftmax;
 };
 
 /// `PVOutputDim` is how many head lanes the PV matmul produces. Threadgroup
@@ -380,9 +275,8 @@ inline void mpp_vision_attention_bf16_impl(
     const uint validQueries = min(
         uint(kVisionAttentionQueries), sequenceLength - queryStart);
 
-    const uint inputRows = layout.inputRowStride == 0u
-        ? sequenceLength : layout.inputRowStride;
-    const uint headBase = head * inputRows * uint(kVisionAttentionHeadDim);
+    const uint headBase =
+        head * layout.inputRowStride * uint(kVisionAttentionHeadDim);
     device_bfloat_tensor queryTensor(
         Q + headBase,
         dextents<int32_t, 2>(kVisionAttentionHeadDim, int32_t(sequenceLength)),
@@ -440,7 +334,7 @@ inline void mpp_vision_attention_bf16_impl(
 
         const uint visible = min(
             uint(kVisionAttentionKeys), sequenceLength - keyStart);
-        if (layout.parallelSoftmax != 0u) {
+        {
             // Eight lanes per query, eight consecutive keys each. The lane groups
             // sit inside one simdgroup, so an XOR butterfly over masks 1, 2 and 4
             // reduces within a group without touching its neighbours.
@@ -461,81 +355,34 @@ inline void mpp_vision_attention_bf16_impl(
             for (uint mask = 1u; mask < 8u; mask <<= 1) {
                 tileMax = max(tileMax, simd_shuffle_xor(tileMax, ushort(mask)));
             }
-            const float previousMax = rowMax[query];
-            const float previousSum = rowSum[query];
-            const float nextMax = max(previousMax, tileMax);
-            const float scale = previousSum > 0.0f
-                ? fast::exp(previousMax - nextMax)
-                : 0.0f;
-            // Mode 2 hands the running max to the serial summation threads, which
-            // own different queries than the lanes that computed it.
-            if (layout.parallelSoftmax == 2u && lane % 8u == 0u) {
+            const float nextMax = max(rowMax[query], tileMax);
+            // The serial summation threads below own different queries than
+            // the lanes that computed the running max.
+            if (lane % 8u == 0u) {
                 nextMaxTile[query] = nextMax;
             }
-            float tileSum = 0.0f;
             for (uint offset = 0; offset < keysPerLane; ++offset) {
                 const uint key = keyBase + offset;
                 const float weight = query < validQueries && key < visible
                     ? fast::exp(scoreTile[row + key] - nextMax)
                     : 0.0f;
                 weightTile[row + key] = weight;
-                tileSum += weight;
             }
-            if (layout.parallelSoftmax == 1u) {
-                for (uint mask = 1u; mask < 8u; mask <<= 1) {
-                    tileSum += simd_shuffle_xor(tileSum, ushort(mask));
-                }
-                simdgroup_barrier(mem_flags::mem_threadgroup);
-                if (lane % 8u == 0u) {
-                    oldScale[query] = scale;
-                    rowSum[query] = previousSum * scale + tileSum;
-                    rowMax[query] = nextMax;
-                }
-            } else {
-                // Mode 2: the weights are already written, so re-sum them in the
-                // original key order. Identical addends in identical order keep
-                // this bit-identical to the serial phase.
-                threadgroup_barrier(mem_flags::mem_threadgroup);
-                if (lid < uint(kVisionAttentionQueries)) {
-                    const uint serialRow = lid * uint(kVisionAttentionKeys);
-                    float serialSum = 0.0f;
-                    for (uint key = 0; key < uint(kVisionAttentionKeys); ++key) {
-                        serialSum += weightTile[serialRow + key];
-                    }
-                    oldScale[lid] = rowSum[lid] > 0.0f
-                        ? fast::exp(rowMax[lid] - nextMaxTile[lid])
-                        : 0.0f;
-                    rowSum[lid] = rowSum[lid] * oldScale[lid] + serialSum;
-                    rowMax[lid] = nextMaxTile[lid];
-                }
-            }
-        } else if (lid < uint(kVisionAttentionQueries)) {
-            const uint query = lid;
-            float tileMax = -INFINITY;
-            if (query < validQueries) {
-                for (uint key = 0; key < visible; ++key) {
-                    tileMax = max(
-                        tileMax,
-                        scoreTile[query * uint(kVisionAttentionKeys) + key]);
-                }
-            }
-            const float nextMax = max(rowMax[query], tileMax);
-            const float scale = rowSum[query] > 0.0f
-                ? fast::exp(rowMax[query] - nextMax)
-                : 0.0f;
-            float tileSum = 0.0f;
+        }
+        // Sum the weights serially in key order, so the tile sum does not
+        // depend on the lane split above.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (lid < uint(kVisionAttentionQueries)) {
+            const uint serialRow = lid * uint(kVisionAttentionKeys);
+            float serialSum = 0.0f;
             for (uint key = 0; key < uint(kVisionAttentionKeys); ++key) {
-                const float weight = query < validQueries && key < visible
-                    ? fast::exp(
-                        scoreTile[query * uint(kVisionAttentionKeys) + key]
-                        - nextMax)
-                    : 0.0f;
-                weightTile[query * uint(kVisionAttentionKeys) + key] = weight;
-                tileSum += weight;
+                serialSum += weightTile[serialRow + key];
             }
-            oldScale[query] = scale;
-            rowSum[query] = rowSum[query] * scale + tileSum;
-            rowMax[query] = nextMax;
+            oldScale[lid] = rowSum[lid] > 0.0f
+                ? fast::exp(rowMax[lid] - nextMaxTile[lid])
+                : 0.0f;
+            rowSum[lid] = rowSum[lid] * oldScale[lid] + serialSum;
+            rowMax[lid] = nextMaxTile[lid];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -574,15 +421,8 @@ inline void mpp_vision_attention_bf16_impl(
             outputAccumulator.get_multidimensional_index(element);
         const uint dimension = uint(position[0]);
         const uint query = uint(position[1]);
-        if (query >= validQueries) continue;
         const uint outputHeadDim = layout.unpaddedOutputHeadDim;
-        if (outputHeadDim == 0u) {
-            if (dimension < uint(kVisionAttentionHeadDim)) {
-                O[(head * sequenceLength + queryStart + query) * rowStride
-                  + dimension] =
-                    bfloat(outputAccumulator[element] / rowSum[query]);
-            }
-        } else if (dimension < outputHeadDim) {
+        if (query < validQueries && dimension < outputHeadDim) {
             O[(queryStart + query) * numHeads * outputHeadDim
               + head * outputHeadDim + dimension] =
                 bfloat(outputAccumulator[element] / rowSum[query]);

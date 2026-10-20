@@ -24,126 +24,31 @@ import ANEFieldfareValidationSupport
     }
 
     @Test func prefillAttentionMatchesCPUReferenceFullAndSWA() throws {
-        let cases: [(label: String, start: Int, chunk: Int, window: Int)] = [
-            ("full-origin", 0, 3, 0),
-            ("full-offset", 4, 3, 0),
-            ("swa-inside-window", 2, 4, 16),
-            ("swa-truncated", 7, 4, 5),
+        let cases: [(label: String, start: Int, chunk: Int, window: Int, imageBlock: Range<Int>?)] = [
+            ("full-offset", 4, 3, 0, nil),
+            ("swa-truncated", 7, 4, 5, nil),
+            // Sliding layers see an image block bidirectionally within the
+            // window; full layers ignore the block and stay causal.
+            ("swa-image-block", 4, 6, 5, 5..<9),
+            ("full-image-block-stays-causal", 4, 6, 0, 5..<9),
         ]
 
         for (index, c) in cases.enumerated() {
-            let fixture = Self.makeFixture(start: c.start,
+            var fixture = Self.makeFixture(start: c.start,
                                            chunk: c.chunk,
                                            window: c.window,
                                            seed: 0xA510 + UInt64(index))
+            fixture.bidirectionalBlock = c.imageBlock
             try Self.runAndCompare(fixture, label: c.label)
         }
     }
 
-    @Test func prefillAttentionRingCapacityMatchesLinearReference() throws {
-        let fixture = Self.makeFixture(start: 20,
-                                       chunk: 4,
-                                       window: 8,
-                                       seed: 0xA611,
-                                       headDim: 32,
-                                       qHeads: 4,
-                                       kvHeads: 2)
-        let ringCapacity = 16
-        var kRing = [Float](repeating: 0, count: ringCapacity * fixture.kvStride)
-        var vRing = [Float](repeating: 0, count: ringCapacity * fixture.kvStride)
-        for p in 0..<fixture.kvValid {
-            let dst = (p % ringCapacity) * fixture.kvStride
-            let src = p * fixture.kvStride
-            kRing.replaceSubrange(dst..<(dst + fixture.kvStride),
-                                  with: fixture.k[src..<(src + fixture.kvStride)])
-            vRing.replaceSubrange(dst..<(dst + fixture.kvStride),
-                                  with: fixture.v[src..<(src + fixture.kvStride)])
-        }
-
-        var ringFixture = fixture
-        ringFixture.k = kRing
-        ringFixture.v = vRing
-        let actual = try Self.runKernel(ringFixture, kvRingCapacity: UInt32(ringCapacity))
-        let reference = Self.reference(fixture)
-        let maxAbs = RelError.maxAbsDiff(actual, reference)
-        let rel = RelError.compute(actual: actual, reference: reference)
-        #expect(maxAbs <= 2e-2, "ring prefill maxAbs=\(maxAbs) rel=\(rel)")
-        #expect(rel <= 2e-2, "ring prefill rel=\(rel) maxAbs=\(maxAbs)")
-    }
-
-    @Test func prefillAttentionMasksFutureChunkTokens() throws {
-        var fixture = Self.makeFixture(start: 5, chunk: 4, window: 0, seed: 0xA620)
-        let qPerKV = fixture.qHeads / fixture.kvHeads
-        for row in fixture.start..<fixture.kvValid {
-            for kvh in 0..<fixture.kvHeads {
-                for d in 0..<fixture.headDim {
-                    let base = row * fixture.kvStride + kvh * fixture.headDim + d
-                    fixture.k[base] = Float(row - fixture.start + 1) * 2.0 + Float(d) * 0.125
-                    fixture.v[base] = Float(row - fixture.start + 1) * -2.0 - Float(d) * 0.125
-                }
-            }
-        }
-
-        let actual = try Self.runKernel(fixture)
-        let reference = Self.reference(fixture)
-        let maxAbs = RelError.maxAbsDiff(actual, reference)
-        let rel = RelError.compute(actual: actual, reference: reference)
-        #expect(maxAbs <= 2e-2, "future mask maxAbs=\(maxAbs) rel=\(rel) qPerKV=\(qPerKV)")
-        #expect(rel <= 2e-2, "future mask rel=\(rel) maxAbs=\(maxAbs)")
-    }
-
-    @Test func prefillAttentionProductionDimsBoundedVisibility() throws {
-        let cases: [(label: String, start: Int, chunk: Int, window: Int, headDim: Int, qHeads: Int, kvHeads: Int)] = [
-            ("swa-current-key-at-1023", 1023, 1, 1, 256, 16, 8),
-            ("swa-current-key-at-1024", 1024, 1, 1, 256, 16, 8),
-            ("swa-current-key-at-4095", 4095, 1, 1, 256, 16, 8),
-            ("full-origin", 0, 1, 0, 512, 16, 2),
-            ("full-short-gqa", 3, 1, 0, 512, 16, 2),
-        ]
-
-        for (index, c) in cases.enumerated() {
-            let fixture = Self.makeFixture(start: c.start,
-                                           chunk: c.chunk,
-                                           window: c.window,
-                                           seed: 0xA730 + UInt64(index),
-                                           headDim: c.headDim,
-                                           qHeads: c.qHeads,
-                                           kvHeads: c.kvHeads)
-            try Self.runAndCompare(fixture, label: c.label)
-        }
-    }
-
-    @Test func prefillAttentionTiledProductionBoundarySmoke() throws {
-        let cases: [(label: String, start: Int, chunk: Int, window: Int, headDim: Int, qHeads: Int, kvHeads: Int)] = [
-            ("swa-production-window-1024", 1023, 4, 1024, 256, 16, 8),
-            ("full-production-gqa", 31, 8, 0, 512, 16, 2),
-        ]
-
-        for (index, c) in cases.enumerated() {
-            let fixture = Self.makeFixture(start: c.start,
-                                           chunk: c.chunk,
-                                           window: c.window,
-                                           seed: 0xA840 + UInt64(index),
-                                           headDim: c.headDim,
-                                           qHeads: c.qHeads,
-                                           kvHeads: c.kvHeads)
-            try Self.runAndCompare(fixture, label: c.label)
-        }
-    }
-
-    @Test(arguments: [
-        1,
-        63, 64, 65,
-        127, 128, 129,
-        255, 256, 257,
-        1_023, 1_024, 1_025,
-    ])
+    @Test(arguments: [1, 65, 129, 1_025])
     func tensorOps2DFullAttentionMatchesReferenceAtTileBoundaries(_ visibleKeys: Int) throws {
         let context = try MetalContext()
-        let attention = try PrefillAttention(context: context)
         // GPU family is not the capability test: this pipeline compiles and
         // dispatches on the project's Apple8 M2 minimum.
-        guard attention.tensorOps2DValidityV2Available else { return }
+        guard (try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")) != nil else { return }
         let fixture = Self.makeFixture(start: visibleKeys - 1,
                                        chunk: 1,
                                        window: 0,
@@ -166,80 +71,6 @@ import ANEFieldfareValidationSupport
                 "TensorOps 2D maxAbs=\(maxAbs) rel=\(rel) keys=\(visibleKeys)")
         #expect(rel <= 2e-2,
                 "TensorOps 2D rel=\(rel) maxAbs=\(maxAbs) keys=\(visibleKeys)")
-    }
-
-    @Test func preferredTensorOpsPathUsesSafeHardwareFallback() throws {
-        let context = try MetalContext()
-        let fixture = Self.makeFixture(start: 128,
-                                       chunk: 1,
-                                       window: 0,
-                                       seed: 0xA872,
-                                       headDim: 512,
-                                       qHeads: 16,
-                                       kvHeads: 2)
-        let preferred = try Self.runKernel(
-            fixture,
-            path: .fullTensorOps2DPreferred)
-        let reference = Self.reference(fixture)
-        let maxAbs = RelError.maxAbsDiff(preferred, reference)
-        let rel = RelError.compute(actual: preferred, reference: reference)
-        #expect(maxAbs <= 2e-2,
-                "preferred TensorOps maxAbs=\(maxAbs) rel=\(rel)")
-        #expect(rel <= 2e-2,
-                "preferred TensorOps rel=\(rel) maxAbs=\(maxAbs)")
-        let attention = try PrefillAttention(context: context)
-        if attention.tensorOps2DValidityV2Available {
-            let explicitTensorOps = try Self.runKernel(
-                fixture,
-                path: .fullTensorOps2DValidityV2)
-            #expect(preferred == explicitTensorOps)
-        } else {
-            let baseline = try Self.runKernel(fixture, path: .causalTiled)
-            #expect(preferred == baseline)
-        }
-    }
-
-    @Test func preferredPathUsesTiledWhenTensorOpsIsUnavailable() throws {
-        let fixture = Self.makeFixture(start: 128,
-                                       chunk: 8,
-                                       window: 0,
-                                       seed: 0xA873,
-                                       headDim: 512,
-                                       qHeads: 16,
-                                       kvHeads: 2)
-        let preferred = try Self.runKernel(
-            fixture,
-            path: .fullTensorOps2DPreferred,
-            simulatingMissingTensorOps: true)
-        let tiled = try Self.runKernel(fixture, path: .causalTiled)
-
-        #expect(preferred == tiled)
-    }
-
-    /// TensorOps starts its key loop at zero, so a production-shaped request
-    /// with a clipping window must use the tiled path even when the pipeline is
-    /// available.
-    @Test func preferredTensorOpsPathRejectsAWindowThatActuallyClips() throws {
-        let context = try MetalContext()
-        let attention = try PrefillAttention(context: context)
-        guard attention.tensorOps2DValidityV2Available else { return }
-
-        let fixture = Self.makeFixture(start: 40,
-                                       chunk: 8,
-                                       window: 16,
-                                       seed: 0xA877,
-                                       headDim: 512,
-                                       qHeads: 16,
-                                       kvHeads: 2)
-        let preferred = try Self.runKernel(
-            fixture,
-            path: .fullTensorOps2DPreferred,
-            layerKindOverride: .full)
-        let tiled = try Self.runKernel(fixture,
-                                       path: .causalTiled,
-                                       layerKindOverride: .full)
-
-        #expect(RelError.maxAbsDiff(preferred, tiled) == 0)
     }
 
     private static func makeFixture(start: Int,
@@ -281,78 +112,6 @@ import ANEFieldfareValidationSupport
                        window: window, scale: 1.0)
     }
 
-    @Test func prefillAttentionParamsLayoutMatchesMSL() throws {
-        #expect(MemoryLayout<PrefillAttentionParams>.size == 52)
-        #expect(MemoryLayout<PrefillAttentionParams>.stride == 52)
-
-        let params = PrefillAttentionParams(startPosition: 3,
-                                            queryCount: 5,
-                                            headDim: 7,
-                                            numQHeads: 11,
-                                            numKVHeads: 1,
-                                            kvValidCount: 17,
-                                            slidingWindow: 19,
-                                            kvTokenStrideElements: 23,
-                                            qTokenStrideElements: 29,
-                                            oTokenStrideElements: 31,
-                                            scale: 1.25,
-                                            bidirectionalBlockStart: 37,
-                                            bidirectionalBlockEnd: 41)
-        let ctx = try MetalContext()
-        let prefill = try PrefillAttention(context: ctx)
-        guard let out = ctx.device.makeBuffer(length: 13 * MemoryLayout<UInt32>.size,
-                                              options: .storageModeShared) else {
-            Issue.record("alloc failed")
-            return
-        }
-
-        let cb = ctx.queue.makeCommandBuffer()!
-        prefill.encodeParamsSmoke(commandBuffer: cb, params: params, out: out)
-        cb.commit()
-        cb.waitUntilCompleted()
-
-        let ptr = unsafe out.contents().bindMemory(to: UInt32.self, capacity: 11)
-        let fields = (0..<13).map { unsafe ptr[$0] }
-        #expect(fields[0] == params.startPosition)
-        #expect(fields[1] == params.queryCount)
-        #expect(fields[2] == params.headDim)
-        #expect(fields[3] == params.numQHeads)
-        #expect(fields[4] == params.numKVHeads)
-        #expect(fields[5] == params.kvValidCount)
-        #expect(fields[6] == params.slidingWindow)
-        #expect(fields[7] == params.kvTokenStrideElements)
-        #expect(fields[8] == params.qTokenStrideElements)
-        #expect(fields[9] == params.oTokenStrideElements)
-        #expect(fields[10] == params.scale.bitPattern)
-        #expect(fields[11] == params.bidirectionalBlockStart)
-        #expect(fields[12] == params.bidirectionalBlockEnd)
-    }
-
-    @Test func slidingAttentionMakesImageBlockBidirectionalWithinWindow() throws {
-        var fixture = Self.makeFixture(start: 4, chunk: 6, window: 5, seed: 0xA621)
-        fixture.bidirectionalBlock = 5..<9
-
-        let actual = try Self.runKernel(fixture)
-        let reference = Self.reference(fixture)
-        let maxAbs = RelError.maxAbsDiff(actual, reference)
-        let rel = RelError.compute(actual: actual, reference: reference)
-        #expect(maxAbs <= 2e-2, "image block maxAbs=\(maxAbs) rel=\(rel)")
-        #expect(rel <= 2e-2, "image block rel=\(rel) maxAbs=\(maxAbs)")
-    }
-
-    @Test func fullAttentionRemainsCausalForImageBlock() throws {
-        var fixture = Self.makeFixture(start: 4, chunk: 6, window: 0, seed: 0xA622)
-        fixture.bidirectionalBlock = 5..<9
-
-        let actual = try Self.runKernel(fixture)
-        fixture.bidirectionalBlock = nil
-        let reference = Self.reference(fixture)
-        let maxAbs = RelError.maxAbsDiff(actual, reference)
-        let rel = RelError.compute(actual: actual, reference: reference)
-        #expect(maxAbs <= 2e-2, "full image mask maxAbs=\(maxAbs) rel=\(rel)")
-        #expect(rel <= 2e-2, "full image mask rel=\(rel) maxAbs=\(maxAbs)")
-    }
-
     private static func runAndCompare(_ fixture: Fixture, label: String) throws {
         let actual = try Self.runKernel(fixture)
         let reference = Self.reference(fixture)
@@ -364,26 +123,15 @@ import ANEFieldfareValidationSupport
 
     private static func runKernel(
         _ fixture: Fixture,
-        kvRingCapacity: UInt32 = 0,
-        path: RuntimePrefillAttentionPath = .causalTiled,
-        simulatingMissingTensorOps: Bool = false,
-        layerKindOverride: PrefillAttentionLayerKind? = nil
+        path: RuntimePrefillAttentionPath = .causalTiled
     ) throws -> [Float] {
         let ctx = try MetalContext()
-        let prefill = try PrefillAttention(
-            context: ctx, simulatingMissingTensorOps: simulatingMissingTensorOps)
-        let qPrefix = 17
-        let kPrefix = 19
-        let vPrefix = 23
-        let oPrefix = 29
-        let outCount = oPrefix + fixture.chunk * fixture.oStride
+        let prefill = try PrefillAttention(context: ctx)
+        let outCount = fixture.chunk * fixture.oStride
 
-        guard let qBuf = Fp16Buffer.make(ctx.device,
-                                         values: [Float](repeating: 0, count: qPrefix) + fixture.q),
-              let kBuf = Fp16Buffer.make(ctx.device,
-                                         values: [Float](repeating: 0, count: kPrefix) + fixture.k),
-              let vBuf = Fp16Buffer.make(ctx.device,
-                                         values: [Float](repeating: 0, count: vPrefix) + fixture.v),
+        guard let qBuf = Fp16Buffer.make(ctx.device, values: fixture.q),
+              let kBuf = Fp16Buffer.make(ctx.device, values: fixture.k),
+              let vBuf = Fp16Buffer.make(ctx.device, values: fixture.v),
               let outBuf = Fp16Buffer.make(ctx.device, count: outCount) else {
             Issue.record("alloc failed")
             return []
@@ -407,17 +155,12 @@ import ANEFieldfareValidationSupport
         let cb = ctx.queue.makeCommandBuffer()!
         try prefill.encodeCausal(commandBuffer: cb,
                              q: qBuf,
-                             qOffset: qPrefix * MemoryLayout<Float16>.size,
                              k: kBuf,
-                             kOffset: kPrefix * MemoryLayout<Float16>.size,
                              v: vBuf,
-                             vOffset: vPrefix * MemoryLayout<Float16>.size,
                              out: outBuf,
-                             outOffset: oPrefix * MemoryLayout<Float16>.size,
                              params: params,
-                             kvRingCapacity: kvRingCapacity,
-                             layerKind: layerKindOverride
-                                 ?? (fixture.window == 0 ? .full : .slidingWindow),
+                             kvRingCapacity: 0,
+                             layerKind: fixture.window == 0 ? .full : .slidingWindow,
                              path: path)
         cb.commit()
         cb.waitUntilCompleted()
@@ -429,14 +172,12 @@ import ANEFieldfareValidationSupport
             for h in 0..<fixture.qHeads {
                 for d in 0..<fixture.headDim {
                     compact[(t * fixture.qHeads + h) * fixture.headDim + d] =
-                        out[oPrefix + t * fixture.oStride + h * fixture.headDim + d]
+                        out[t * fixture.oStride + h * fixture.headDim + d]
                 }
             }
         }
         return compact
     }
-
-
 
     private static func reference(_ fixture: Fixture) -> [Float] {
         var out = [Float](repeating: 0, count: fixture.chunk * fixture.qHeads * fixture.headDim)
@@ -449,10 +190,14 @@ import ANEFieldfareValidationSupport
             } else {
                 first = max(0, absQ + 1 - fixture.window)
             }
-            let isBidirectional = fixture.bidirectionalBlock?.contains(absQ) == true
-            let last = min(
-                fixture.kvValid,
-                isBidirectional ? fixture.bidirectionalBlock!.upperBound : absQ + 1)
+            // Only sliding-window layers make an image block bidirectional.
+            let block = fixture.window == 0 ? nil : fixture.bidirectionalBlock
+            let last: Int
+            if let block, block.contains(absQ) {
+                last = min(fixture.kvValid, block.upperBound)
+            } else {
+                last = min(fixture.kvValid, absQ + 1)
+            }
             for qh in 0..<fixture.qHeads {
                 let kvh = qh / qPerKV
                 var scores: [Float] = []

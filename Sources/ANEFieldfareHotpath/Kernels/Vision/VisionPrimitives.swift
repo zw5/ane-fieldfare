@@ -49,15 +49,15 @@ package final class VisionPrimitives {
     package func encodeRMSNorm(commandBuffer: any MTLCommandBuffer,
                                input: any MTLBuffer, output: any MTLBuffer,
                                weightBuffer: any MTLBuffer, weightOffset: Int,
-                               rows: Int, width: Int = 1_152) {
+                               rows: Int) {
         guard let encoder = commandBuffer.makeTracedComputeEncoder() else { return }
         encoder.setComputePipelineState(rmsnorm)
         encoder.setBuffer(input, offset: 0, index: 0)
         encoder.setBuffer(weightBuffer, offset: weightOffset, index: 1)
         encoder.setBuffer(output, offset: 0, index: 2)
-        let rowCount = UInt32(rows), dimension = UInt32(width)
+        let rowCount = UInt32(rows), width: UInt32 = 1_152
         encoder.setValue(rowCount, index: 3)
-        encoder.setValue(dimension, index: 4)
+        encoder.setValue(width, index: 4)
         encoder.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 288, height: 1, depth: 1))
         encoder.endEncoding()
@@ -145,5 +145,4 @@ package final class VisionPrimitives {
                                 threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
         encoder.endEncoding()
     }
-
 }

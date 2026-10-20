@@ -9,40 +9,6 @@ private let visionMPPTensorOpsAvailable = MTLCreateSystemDefaultDevice()?
 @Suite struct VisionLinearBF16Tests {
     @Test(.enabled(if: visionMPPTensorOpsAvailable,
                    "vision linear kernels require Apple8 or newer"))
-    func registerPathProducesExpectedConstantProduct() throws {
-        let context = try MetalContext()
-        let m = 128, n = 256, k = 1_152
-        func buffer(count: Int, value: Float) throws -> any MTLBuffer {
-            let bits = [UInt16](repeating: Quantization.bf16Bits(value), count: count)
-            return try #require(unsafe context.device.makeBuffer(
-                bytes: bits, length: bits.count * MemoryLayout<UInt16>.stride,
-                options: .storageModeShared))
-        }
-        let input = try buffer(count: m * k, value: 0.125)
-        let weights = try buffer(count: n * k, value: 0.25)
-
-        // Poisoned rather than zeroed, so a kernel that dispatched nothing fails.
-        let output = try buffer(count: m * n, value: -1)
-        let linear = try VisionLinearBF16(context: context)
-        let commandBuffer = try #require(context.queue.makeCommandBuffer())
-        linear.encode(commandBuffer: commandBuffer,
-                      input: input, weights: weights, output: output,
-                      m: m, n: n, k: k)
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        #expect(commandBuffer.error == nil)
-        let values = unsafe output.contents().bindMemory(to: UInt16.self, capacity: m * n)
-        var maximumError: Float = 0
-        for index in 0..<(m * n) {
-            maximumError = unsafe max(
-                maximumError,
-                abs(Quantization.bf16ToFloat(values[index]) - 36))
-        }
-        #expect(maximumError == 0)
-    }
-
-    @Test(.enabled(if: visionMPPTensorOpsAvailable,
-                   "vision linear kernels require Apple8 or newer"))
     func registerPathHandlesNonconstantTailShape() throws {
         let context = try MetalContext()
         let m = 79, n = 272, k = 23

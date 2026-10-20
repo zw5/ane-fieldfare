@@ -1,12 +1,10 @@
 import Foundation
 import Metal
 
-/// Single-kernel Gemma 4 Q/K/V epilogue.
-///
-/// Equivalent to:
-///   Q = rmsnorm_bf16w_perhead(Q, q_norm); rope_neox(Q)
-///   K = rmsnorm_bf16w_perhead(K, k_norm); rope_neox(K)
-///   V = rmsnorm_no_scale_perhead(V)
+/// Single-kernel Gemma 4 Q/K/V epilogue, per head:
+///   Q = rope_neox(rmsnorm(Q) * q_norm)
+///   K = rope_neox(rmsnorm(K) * k_norm)
+///   V = rmsnorm(V)
 final class FusedQKVEpilogue {
     private struct Shape: Hashable {
         var headDim: UInt32

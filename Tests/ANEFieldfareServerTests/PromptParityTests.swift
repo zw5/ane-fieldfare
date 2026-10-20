@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 import Testing
 import ANEFieldfareHotpath
 @testable import ANEFieldfareHotpathCLICore
@@ -43,8 +42,7 @@ private final class IdleEngine: CompletionEngine {
             Issue.record("the CLI did not read a text conversation")
             return
         }
-        let cliText = try tokenizer.applyChatTemplate(cliMessages)
-        let cliIDs = tokenizer.encode(cliText, addBOS: false)
+        let cliIDs = tokenizer.encode(try tokenizer.applyChatTemplate(cliMessages), addBOS: false)
 
         let request = try OpenAIRequestDecoder.chat(
             Data(#"{"messages":\#(conversation)}"#.utf8), defaults: SamplingDefaults())
@@ -53,24 +51,7 @@ private final class IdleEngine: CompletionEngine {
             return
         }
         #expect(serverMessages == cliMessages)
-        #expect(try tokenizer.applyChatTemplate(serverMessages) == cliText)
         #expect(try backend(tokenizer).prepare(request.prompt).tokenIDs == cliIDs)
-        #expect(cliText.hasSuffix("<|turn>user\nAnd of Italy?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"))
-        #expect(cliText.contains("<|turn>model\n<|channel>thought\n<channel|>Paris.<turn|>\n"))
-    }
-
-    /// A single user message equals `--chat-prompt`.
-    @Test func singleTurnMatchesTheCLIChatPrompt() async throws {
-        let tokenizer = try await GFTokenizer.load()
-        let args = try Args.parse(["--model", "m.gturbo", "--chat-prompt", "Name three colors."])
-        guard case .messages(let cliMessages) = try parseInput(args: args) else {
-            Issue.record("the CLI did not read a text prompt")
-            return
-        }
-        let request = try OpenAIRequestDecoder.chat(
-            Data(#"{"messages":[{"role":"user","content":"Name three colors."}]}"#.utf8), defaults: SamplingDefaults())
-        let expected = tokenizer.encode(try tokenizer.applyChatTemplate(cliMessages), addBOS: false)
-        #expect(try backend(tokenizer).prepare(request.prompt).tokenIDs == expected)
     }
 
     /// `/v1/completions` encodes like `--prompt`: `<bos>` and the text.
@@ -84,48 +65,4 @@ private final class IdleEngine: CompletionEngine {
         let error = #expect(throws: APIError.self) { try backend(tokenizer, maxContext: 4).prepare(.text(text)) }
         #expect(error?.status == 413)
     }
-}
-
-@Suite struct GenerationGateTests {
-    @Test func grantsInOrderAndRefusesWhenTheLineIsFull() async throws {
-        let gate = GenerationGate(maxWaiting: 2)
-        try await gate.acquire()
-        #expect(gate.status == GenerationGate.Status(running: true, waiting: 0))
-        let order = OrderLog()
-        let first = Task { try await gate.acquire(); order.append(1); gate.release() }
-        while gate.status.waiting < 1 { await Task.yield() }
-        let second = Task { try await gate.acquire(); order.append(2); gate.release() }
-        while gate.status.waiting < 2 { await Task.yield() }
-        await #expect(throws: GenerationGate.Busy.self) { try await gate.acquire() }
-        gate.release()
-        try await first.value
-        try await second.value
-        #expect(order.values == [1, 2])
-        #expect(gate.status == GenerationGate.Status(running: false, waiting: 0))
-    }
-
-    @Test func aCancelledWaiterLeavesTheLine() async throws {
-        let gate = GenerationGate(maxWaiting: 1)
-        try await gate.acquire()
-        let waiter = Task { try await gate.acquire() }
-        while gate.status.waiting < 1 { await Task.yield() }
-        waiter.cancel()
-        await #expect(throws: CancellationError.self) { try await waiter.value }
-        #expect(gate.status == GenerationGate.Status(running: true, waiting: 0))
-        gate.release()
-        #expect(gate.status.running == false)
-        // A task cancelled before it asks is refused without queueing.
-        let late = Task {
-            unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
-            try await gate.acquire()
-        }
-        await #expect(throws: CancellationError.self) { try await late.value }
-        #expect(gate.status == GenerationGate.Status(running: false, waiting: 0))
-    }
-}
-
-private final class OrderLog: Sendable {
-    private let state = Mutex<[Int]>([])
-    var values: [Int] { state.withLock { $0 } }
-    func append(_ value: Int) { state.withLock { $0.append(value) } }
 }

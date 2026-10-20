@@ -3,7 +3,6 @@ package import Foundation
 import ANEFieldfareImportedFormat
 
 package final class GTurboModelDirectory: Sendable {
-    package let rootURL: URL
     private let rootFD: Int32
 
     package init(rootURL: URL) throws {
@@ -12,7 +11,6 @@ package final class GTurboModelDirectory: Sendable {
         guard fd >= 0 else {
             throw ModelError.posixFailed(call: "open(\(standardized.path))", errno: errno)
         }
-        self.rootURL = standardized
         self.rootFD = fd
     }
 
@@ -111,5 +109,4 @@ package final class GTurboModelDirectory: Sendable {
         }
         return ModelError.posixFailed(call: "openat(\(relativePath))", errno: errno)
     }
-
 }

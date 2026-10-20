@@ -10,12 +10,9 @@ public struct VisionImageLimits: Sendable, Equatable {
     /// without this a request labelled `image/png` can reach the camera-RAW or
     /// EXR decoder — a far larger surface than the formats actually supported.
     public let allowedTypeIdentifiers: Set<String>
-    /// Decoded bytes, not pixels. The pixel cap alone lets a 16-bit image expand
-    /// about four times further than an 8-bit one at the same pixel count.
-    /// Ceiling on one decoded surface. The 50-million-pixel source contract
-    /// needs 200,000,000 bytes for an 8-bit RGBA surface, including an 8,000 by
-    /// 6,000 camera image. ImageIO's decoded image and our drawing surface can
-    /// overlap, so the M2 acceptance gate measures the resulting transient.
+    /// Ceiling on one decoded surface, in bytes rather than pixels, since a
+    /// 16-bit image decodes to about four times an 8-bit one. 200,000,000
+    /// bytes is an 8-bit RGBA surface at the 50-million-pixel source limit.
     public let maximumDecodedBytes: Int
 
     public init(
@@ -40,21 +37,14 @@ public struct VisionImageLimits: Sendable, Equatable {
 }
 
 public struct VisionImageMetadata: Sendable, Equatable {
-    public let encodedBytes: Int
-    public let encodedWidth: Int
-    public let encodedHeight: Int
     public let orientedWidth: Int
     public let orientedHeight: Int
-    public let orientation: Int
-    public let bitsPerComponent: Int?
-    public let colorModel: String?
-    public let typeIdentifier: String?
 }
 
 public struct ImageMetadataReader: Sendable {
     public let limits: VisionImageLimits
 
-    public init(limits: VisionImageLimits = VisionImageLimits()) {
+    public init(limits: VisionImageLimits) {
         self.limits = limits
     }
 
@@ -82,8 +72,7 @@ public struct ImageMetadataReader: Sendable {
             throw VisionImageError.invalidMetadata(
                 "JPEG scan is not terminated: the file is truncated")
         }
-        // PNG fails the same way and used to pass: the undecoded remainder
-        // reads as black and the answer describes a black square.
+        // A truncated PNG decodes its missing rows as black.
         if sourceType.conforms(to: .png),
            !opened.hasCompletePNGStream() {
             throw VisionImageError.invalidMetadata(
@@ -113,12 +102,8 @@ public struct ImageMetadataReader: Sendable {
         // ImageIO materialises before the thumbnail conversion.
         let (depthBytes, depthOverflow) = pixels.multipliedReportingOverflow(
             by: max(1, depth / 8) * 4)
-        // One ceiling, because every format is now decoded at native size:
-        // the reduction belongs to our own filter, so ImageIO no longer gets to
-        // subsample JPEG or HEIF. The split that gave those formats 320 MB
-        // rested on a shortcut this path deliberately gave up, and the cost is
-        // two full surfaces live at once — the decoded CGImage and the one we
-        // draw into — so the bound has to cover both.
+        // Every format decodes at native size (the reduction is our filter's),
+        // so one ceiling covers them all.
         guard !depthOverflow, depthBytes <= limits.maximumDecodedBytes else {
             throw VisionImageError.decodedBytesTooLarge(
                 width: width, height: height, byteLimit: limits.maximumDecodedBytes)
@@ -127,20 +112,9 @@ public struct ImageMetadataReader: Sendable {
         guard (1...8).contains(orientation) else {
             throw VisionImageError.invalidMetadata("unsupported EXIF orientation \(orientation)")
         }
-        let bitsPerComponent = (dictionary[kCGImagePropertyDepth] as? NSNumber)?.intValue
-        let colorModel = dictionary[kCGImagePropertyColorModel] as? String
-        // The bounded ImageIO thumbnail decode converts source depth and color space
-        // into the preprocessor's RGBA8 sRGB context.
         let swapsAxes = (5...8).contains(orientation)
         return VisionImageMetadata(
-            encodedBytes: opened.encodedBytes,
-            encodedWidth: width,
-            encodedHeight: height,
             orientedWidth: swapsAxes ? height : width,
-            orientedHeight: swapsAxes ? width : height,
-            orientation: orientation,
-            bitsPerComponent: bitsPerComponent,
-            colorModel: colorModel,
-            typeIdentifier: typeIdentifier)
+            orientedHeight: swapsAxes ? width : height)
     }
 }

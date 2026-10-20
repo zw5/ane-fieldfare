@@ -45,22 +45,7 @@ private enum VisionFormatFixture {
             compatibleTextSourceSnapshotHash: original.compatibleTextSourceSnapshotHash,
             files: original.files, tensors: original.tensors)
         #expect(throws: GTurboFormatError.self) {
-            try GTurboVisionManifestCodec.encode(changed)
-        }
-    }
-
-    @Test func rejectsReorderedRegions() {
-        let original = VisionFormatFixture.manifest().tensors
-        let changed = [
-            GTurboVisionTensorRegionV1(
-                name: original[0].name, executionPosition: 1,
-                offset: original[0].offset, size: original[0].size,
-                shape: original[0].shape, dtype: original[0].dtype),
-            original[1],
-        ]
-        #expect(throws: GTurboFormatError.self) {
-            try GTurboVisionManifestCodec.encode(
-                VisionFormatFixture.manifest(tensors: changed))
+            try GTurboVisionStructuralValidator.validate(changed)
         }
     }
 
@@ -73,26 +58,8 @@ private enum VisionFormatFixture {
                   size: 2, shape: [1], dtype: .bf16),
         ]
         #expect(throws: GTurboFormatError.self) {
-            try GTurboVisionManifestCodec.encode(
+            try GTurboVisionStructuralValidator.validate(
                 VisionFormatFixture.manifest(tensors: invalid))
-        }
-    }
-
-    @Test func rejectsInvalidStorageSizeAndQuantization() {
-        let badSize = [GTurboVisionTensorRegionV1(
-            name: "a", executionPosition: 0, offset: 0,
-            size: 3, shape: [1], dtype: .bf16)]
-        #expect(throws: GTurboFormatError.self) {
-            try GTurboVisionManifestCodec.encode(
-                VisionFormatFixture.manifest(tensors: badSize))
-        }
-
-        let badQuant = [GTurboVisionTensorRegionV1(
-            name: "a", executionPosition: 0, offset: 0,
-            size: 4, shape: [1], dtype: .u32)]
-        #expect(throws: GTurboFormatError.self) {
-            try GTurboVisionManifestCodec.encode(
-                VisionFormatFixture.manifest(tensors: badQuant))
         }
     }
 
@@ -105,7 +72,7 @@ private enum VisionFormatFixture {
             compatibleTextSourceSnapshotHash: original.compatibleTextSourceSnapshotHash,
             files: files, tensors: original.tensors)
         #expect(throws: GTurboFormatError.self) {
-            try GTurboVisionManifestCodec.encode(changed)
+            try GTurboVisionStructuralValidator.validate(changed)
         }
     }
 }

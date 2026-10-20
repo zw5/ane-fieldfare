@@ -1,14 +1,8 @@
 import Foundation
 import Metal
 
-/// 4-bit affine embedding lookup with fused output scale.
-///
-/// Gemma 4 ships a tied 4-bit MLX-affine embedding table (`embed_tokens.weight`
-/// is `U32`/packed 4-bit with `weightBits=4` in the manifest). The same table
-/// also drives the lm_head GEMV via `DequantInt4GEMV` over the transposed
-/// access pattern. The `outScale` parameter fuses the `sqrt(hidden_size)`
-/// post-embedding scale so the per-token dequant + scale
-/// is one pass.
+/// 4-bit MLX-affine embedding lookup of one token. `outScale` fuses Gemma's
+/// `sqrt(hidden_size)` post-embedding scale into the dequant pass.
 final class EmbedLookupInt4 {
     private let pso: any MTLComputePipelineState
 
@@ -48,5 +42,4 @@ final class EmbedLookupInt4 {
         enc.dispatchThreads(gridSize, threadsPerThreadgroup: tgSize)
         enc.endEncoding()
     }
-
 }

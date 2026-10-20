@@ -37,14 +37,11 @@ public final class HTTPConnection: Sendable {
 
     private let connection: NWConnection
     private let state = Mutex(State())
-    private let highWater: Int
+    private static let highWater = 1 << 20
 
-    public init(_ connection: NWConnection, highWater: Int = 1 << 20) {
+    public init(_ connection: NWConnection) {
         self.connection = connection
-        self.highWater = highWater
     }
-
-    public var remoteDescription: String { "\(connection.endpoint)" }
 
     func start() {
         connection.stateUpdateHandler = { [weak self] state in
@@ -64,7 +61,7 @@ public final class HTTPConnection: Sendable {
 
     private func pump() {
         let start = state.withLock { state -> Bool in
-            guard !state.receiving, !state.closed, state.buffer.count < highWater else { return false }
+            guard !state.receiving, !state.closed, state.buffer.count < Self.highWater else { return false }
             state.receiving = true
             return true
         }

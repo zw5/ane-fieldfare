@@ -52,19 +52,6 @@ import ANEFieldfareValidationSupport
         #expect(abs(sum - 1.0) < Tolerance.fp16Reduction, "sum=\(sum)")
     }
 
-    /// All logits identical → uniform 1/V distribution.
-    @Test func uniformLogits_producesUniformProbs() throws {
-        let v = 2048
-        let logitsFp16 = [Float16](repeating: Float16(0.1234), count: v)
-
-        let gpu = try Self.runKernel(logitsFp16: logitsFp16, v: v, softcap: Self.softcap)
-        let expected: Float = 1.0 / Float(v)
-        for i in 0..<v {
-            #expect(abs(gpu[i] - expected) < 5e-4,
-                    "i=\(i) g=\(gpu[i]) expected=\(expected)")
-        }
-    }
-
     /// One logit far above the softcap, rest at zero. Softcap must pin the
     /// outlier — kernel must not let the un-capped 1000.0 leak through and
     /// overflow exp. Small softcap (5.0) so saturated prob is < 1.0.

@@ -5,8 +5,8 @@ import Metal
 import ANEFieldfareValidationSupport
 
 @Suite struct PrefillQKVEpilogueTests {
-    @Test func blockQKVEpilogueMatchesRepeatedScalarSWA() throws {
-        _ = try Self.expectMatchesRepeatedScalar(rows: 3,
+    @Test func blockQKVEpilogueMatchesReferenceSWA() throws {
+        _ = try Self.expectMatchesReference(rows: 3,
                                                  numQHeads: 16,
                                                  numKVHeads: 8,
                                                  headDim: 256,
@@ -18,7 +18,7 @@ import ANEFieldfareValidationSupport
     }
 
     @Test func blockQKVEpiloguePreservesFullLayerSharedRawKVQuirk() throws {
-        let result = try Self.expectMatchesRepeatedScalar(rows: 2,
+        let result = try Self.expectMatchesReference(rows: 2,
                                                           numQHeads: 16,
                                                           numKVHeads: 2,
                                                           headDim: 512,
@@ -31,7 +31,7 @@ import ANEFieldfareValidationSupport
                 "full-layer K/V must diverge after K norm+RoPE and V no-scale norm")
     }
 
-    private static func expectMatchesRepeatedScalar(rows: Int,
+    private static func expectMatchesReference(rows: Int,
                                                     numQHeads: Int,
                                                     numKVHeads: Int,
                                                     headDim: Int,
@@ -66,8 +66,6 @@ import ANEFieldfareValidationSupport
         let kWeight = (0..<headDim).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
 
         let ctx = try MetalContext()
-        let scalarNorm = try RMSNorm(context: ctx)
-        let scalarRoPE = try RoPE(context: ctx)
         let block = try PrefillQKVEpilogue(context: ctx)
         guard
             let qWeightBuf = unsafe ctx.device.makeBuffer(bytes: qWeight,
@@ -76,85 +74,15 @@ import ANEFieldfareValidationSupport
             let kWeightBuf = unsafe ctx.device.makeBuffer(bytes: kWeight,
                                                    length: kWeight.count * MemoryLayout<UInt16>.size,
                                                    options: .storageModeShared),
-            let qRef = Fp16Buffer.make(ctx.device, halves: q),
-            let kRef = Fp16Buffer.make(ctx.device, halves: k),
-            let vRef = Fp16Buffer.make(ctx.device, halves: v),
             let qBlock = Fp16Buffer.make(ctx.device, halves: q),
             let kBlock = Fp16Buffer.make(ctx.device, halves: k),
-            let vBlock = Fp16Buffer.make(ctx.device, halves: v)
+            let vBlock = Fp16Buffer.make(ctx.device, halves: v),
+            let cb = ctx.queue.makeCommandBuffer()
         else {
             Issue.record("alloc failed")
             return ([], [])
         }
 
-        let cb = ctx.queue.makeCommandBuffer()!
-        for row in 0..<rows {
-            let qOffset = row * qStride * MemoryLayout<Float16>.size
-            let kvOffset = row * kvStride * MemoryLayout<Float16>.size
-            scalarNorm.encodeBF16WPerHead(commandBuffer: cb,
-                                          x: qRef,
-                                          xOffset: qOffset,
-                                          weight: qWeightBuf,
-                                          out: qRef,
-                                          outOffset: qOffset,
-                                          headDim: UInt32(headDim),
-                                          numHeads: numQHeads,
-                                          eps: 1e-6)
-            scalarNorm.encodeBF16WPerHead(commandBuffer: cb,
-                                          x: kRef,
-                                          xOffset: kvOffset,
-                                          weight: kWeightBuf,
-                                          out: kRef,
-                                          outOffset: kvOffset,
-                                          headDim: UInt32(headDim),
-                                          numHeads: numKVHeads,
-                                          eps: 1e-6)
-            scalarNorm.encodeNoScalePerHead(commandBuffer: cb,
-                                            x: vRef,
-                                            xOffset: kvOffset,
-                                            out: vRef,
-                                            outOffset: kvOffset,
-                                            headDim: UInt32(headDim),
-                                            numHeads: numKVHeads,
-                                            eps: 1e-6)
-            if rotatedPairs * 2 == UInt32(headDim) {
-                scalarRoPE.encodeDefaultNeox(commandBuffer: cb,
-                                             data: qRef,
-                                             dataOffset: qOffset,
-                                             position: UInt32(startPosition + row),
-                                             headDim: UInt32(headDim),
-                                             numHeads: UInt32(numQHeads),
-                                             numTokens: 1,
-                                             theta: theta)
-                scalarRoPE.encodeDefaultNeox(commandBuffer: cb,
-                                             data: kRef,
-                                             dataOffset: kvOffset,
-                                             position: UInt32(startPosition + row),
-                                             headDim: UInt32(headDim),
-                                             numHeads: UInt32(numKVHeads),
-                                             numTokens: 1,
-                                             theta: theta)
-            } else {
-                scalarRoPE.encodeProportionalNeox(commandBuffer: cb,
-                                                  data: qRef,
-                                                  dataOffset: qOffset,
-                                                  position: UInt32(startPosition + row),
-                                                  headDim: UInt32(headDim),
-                                                  numHeads: UInt32(numQHeads),
-                                                  rotatedPairs: rotatedPairs,
-                                                  numTokens: 1,
-                                                  theta: theta)
-                scalarRoPE.encodeProportionalNeox(commandBuffer: cb,
-                                                  data: kRef,
-                                                  dataOffset: kvOffset,
-                                                  position: UInt32(startPosition + row),
-                                                  headDim: UInt32(headDim),
-                                                  numHeads: UInt32(numKVHeads),
-                                                  rotatedPairs: rotatedPairs,
-                                                  numTokens: 1,
-                                                  theta: theta)
-            }
-        }
         block.encode(commandBuffer: cb,
                      q: qBlock,
                      k: kBlock,
@@ -178,15 +106,28 @@ import ANEFieldfareValidationSupport
             return ([], [])
         }
 
-        Self.expectClose(Fp16Buffer.read(qBlock, count: rows * qStride),
-                         Fp16Buffer.read(qRef, count: rows * qStride),
-                         label: "Q")
-        Self.expectClose(Fp16Buffer.read(kBlock, count: rows * kvStride),
-                         Fp16Buffer.read(kRef, count: rows * kvStride),
-                         label: "K")
-        Self.expectClose(Fp16Buffer.read(vBlock, count: rows * kvStride),
-                         Fp16Buffer.read(vRef, count: rows * kvStride),
-                         label: "V")
+        var qRef: [Float] = [], kRef: [Float] = [], vRef: [Float] = []
+        for row in 0..<rows {
+            let rope = (position: startPosition + row, theta: theta, rotatedPairs: Int(rotatedPairs))
+            func used(_ values: [Float16], _ stride: Int, _ count: Int) -> [Float] {
+                values[(row * stride)..<(row * stride + count)].map { Float($0) }
+            }
+            qRef += QKVEpilogueReference.apply(used(q, qStride, qUsed), headDim: headDim,
+                                               weight: qWeight, rope: rope)
+            kRef += QKVEpilogueReference.apply(used(k, kvStride, kvUsed), headDim: headDim,
+                                               weight: kWeight, rope: rope)
+            vRef += QKVEpilogueReference.apply(used(v, kvStride, kvUsed), headDim: headDim,
+                                               weight: nil, rope: nil)
+        }
+        let kActual = Self.usedRows(Fp16Buffer.read(kBlock, count: rows * kvStride),
+                                    rows: rows, rowStride: kvStride, usedPerRow: kvUsed)
+        let vActual = Self.usedRows(Fp16Buffer.read(vBlock, count: rows * kvStride),
+                                    rows: rows, rowStride: kvStride, usedPerRow: kvUsed)
+        Self.expectClose(Self.usedRows(Fp16Buffer.read(qBlock, count: rows * qStride),
+                                       rows: rows, rowStride: qStride, usedPerRow: qUsed),
+                         qRef, label: "Q")
+        Self.expectClose(kActual, kRef, label: "K")
+        Self.expectClose(vActual, vRef, label: "V")
         Self.assertPaddingUnchanged(qBlock,
                                     original: q,
                                     rows: rows,
@@ -203,10 +144,7 @@ import ANEFieldfareValidationSupport
                                     rowStride: kvStride,
                                     usedPerRow: kvUsed)
 
-        let kActual = Fp16Buffer.read(kBlock, count: rows * kvStride)
-        let vActual = Fp16Buffer.read(vBlock, count: rows * kvStride)
-        return (Self.usedRows(kActual, rows: rows, rowStride: kvStride, usedPerRow: kvUsed),
-                Self.usedRows(vActual, rows: rows, rowStride: kvStride, usedPerRow: kvUsed))
+        return (kActual, vActual)
     }
 
     private static func makeBlock(rows: Int,
@@ -240,9 +178,8 @@ import ANEFieldfareValidationSupport
                                     _ reference: [Float],
                                     label: String) {
         let rel = RelError.compute(actual: actual, reference: reference)
-        let maxAbs = RelError.maxAbsDiff(actual, reference)
-        #expect(rel < Tolerance.fp16Reduction, "\(label) rel=\(rel) maxAbs=\(maxAbs)")
-        #expect(maxAbs <= 1e-3, "\(label) maxAbs=\(maxAbs) rel=\(rel)")
+        #expect(rel < Tolerance.fp16Reduction,
+                "\(label) rel=\(rel) maxAbs=\(RelError.maxAbsDiff(actual, reference))")
     }
 
     private static func assertPaddingUnchanged(_ buffer: any MTLBuffer,

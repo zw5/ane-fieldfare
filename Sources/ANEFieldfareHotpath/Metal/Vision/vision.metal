@@ -3,161 +3,6 @@ using namespace metal;
 
 constant constexpr uint kVisionHeadDim = 72;
 constant constexpr uint kVisionPaddedHeadDim = 80;
-constant constexpr uint kVisionMaxQueryTile = 16;
-constant constexpr uint kVisionKeyTile = 32;
-constant constexpr uint kVisionThreads = 128;
-
-template <uint ComputeDim, uint QueryTile>
-inline void vision_attention_online_impl(
-    device const bfloat* q,
-    device const bfloat* k,
-    device const bfloat* v,
-    device bfloat* output,
-    constant uint& sequenceLength,
-    constant uint& numHeads,
-    uint2 group,
-    uint tid,
-    threadgroup bfloat* qTile,
-    threadgroup bfloat* kTile,
-    threadgroup bfloat* vTile,
-    threadgroup float* probabilities,
-    threadgroup float* accumulator,
-    threadgroup float* oldScale,
-    threadgroup float* rowSum,
-    threadgroup float* rowMax) {
-
-    const uint head = group.y;
-    const uint queryBase = group.x * QueryTile;
-    if (head >= numHeads) return;
-
-    for (uint index = tid; index < QueryTile * kVisionHeadDim;
-         index += kVisionThreads) {
-        const uint localQuery = index / kVisionHeadDim;
-        const uint dimension = index % kVisionHeadDim;
-        const uint query = queryBase + localQuery;
-        qTile[index] = query < sequenceLength
-            ? q[(query * numHeads + head) * kVisionHeadDim + dimension]
-            : bfloat(0.0f);
-    }
-    for (uint index = tid; index < QueryTile * kVisionPaddedHeadDim;
-         index += kVisionThreads) {
-        accumulator[index] = 0.0f;
-    }
-    if (tid < QueryTile) {
-        rowMax[tid] = -INFINITY;
-        rowSum[tid] = 0.0f;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for (uint keyBase = 0; keyBase < sequenceLength; keyBase += kVisionKeyTile) {
-        for (uint index = tid; index < kVisionKeyTile * kVisionHeadDim;
-             index += kVisionThreads) {
-            const uint localKey = index / kVisionHeadDim;
-            const uint dimension = index % kVisionHeadDim;
-            const uint keyIndex = keyBase + localKey;
-            const uint source = (keyIndex * numHeads + head) * kVisionHeadDim + dimension;
-            kTile[index] = keyIndex < sequenceLength ? k[source] : bfloat(0.0f);
-            vTile[index] = keyIndex < sequenceLength ? v[source] : bfloat(0.0f);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        for (uint pair = tid; pair < QueryTile * kVisionKeyTile;
-             pair += kVisionThreads) {
-            const uint localQuery = pair / kVisionKeyTile;
-            const uint localKey = pair % kVisionKeyTile;
-            const uint query = queryBase + localQuery;
-            const uint keyIndex = keyBase + localKey;
-            float score = -INFINITY;
-            if (query < sequenceLength && keyIndex < sequenceLength) {
-                score = 0.0f;
-                for (uint dimension = 0; dimension < ComputeDim; ++dimension) {
-                    const float qValue = dimension < kVisionHeadDim
-                        ? float(qTile[localQuery * kVisionHeadDim + dimension]) : 0.0f;
-                    const float kValue = dimension < kVisionHeadDim
-                        ? float(kTile[localKey * kVisionHeadDim + dimension]) : 0.0f;
-                    score = fma(qValue, kValue, score);
-                }
-            }
-            probabilities[pair] = score;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        if (tid < QueryTile) {
-            float tileMax = -INFINITY;
-            for (uint localKey = 0; localKey < kVisionKeyTile; ++localKey) {
-                tileMax = max(tileMax,
-                              probabilities[tid * kVisionKeyTile + localKey]);
-            }
-            const float nextMax = max(rowMax[tid], tileMax);
-            const float scale = rowMax[tid] == -INFINITY
-                ? 0.0f : exp(rowMax[tid] - nextMax);
-            float tileSum = 0.0f;
-            for (uint localKey = 0; localKey < kVisionKeyTile; ++localKey) {
-                const uint keyIndex = keyBase + localKey;
-                const float probability = keyIndex < sequenceLength
-                    ? exp(probabilities[tid * kVisionKeyTile + localKey] - nextMax)
-                    : 0.0f;
-                probabilities[tid * kVisionKeyTile + localKey] = probability;
-                tileSum += probability;
-            }
-            oldScale[tid] = scale;
-            rowSum[tid] = rowSum[tid] * scale + tileSum;
-            rowMax[tid] = nextMax;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        for (uint index = tid; index < QueryTile * kVisionPaddedHeadDim;
-             index += kVisionThreads) {
-            const uint localQuery = index / kVisionPaddedHeadDim;
-            const uint dimension = index % kVisionPaddedHeadDim;
-            float value = accumulator[index] * oldScale[localQuery];
-            if (dimension < kVisionHeadDim) {
-                for (uint localKey = 0; localKey < kVisionKeyTile; ++localKey) {
-                    value = fma(
-                        probabilities[localQuery * kVisionKeyTile + localKey],
-                        float(vTile[localKey * kVisionHeadDim + dimension]), value);
-                }
-            }
-            accumulator[index] = value;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    for (uint index = tid; index < QueryTile * kVisionHeadDim;
-         index += kVisionThreads) {
-        const uint localQuery = index / kVisionHeadDim;
-        const uint dimension = index % kVisionHeadDim;
-        const uint query = queryBase + localQuery;
-        if (query < sequenceLength) {
-            output[(query * numHeads + head) * kVisionHeadDim + dimension] =
-                bfloat(accumulator[localQuery * kVisionPaddedHeadDim + dimension]
-                       / rowSum[localQuery]);
-        }
-    }
-}
-
-kernel void vision_attention_online_72(
-    device const bfloat* q [[buffer(0)]],
-    device const bfloat* k [[buffer(1)]],
-    device const bfloat* v [[buffer(2)]],
-    device bfloat* output [[buffer(3)]],
-    constant uint& sequenceLength [[buffer(4)]],
-    constant uint& numHeads [[buffer(5)]],
-    uint3 group [[threadgroup_position_in_grid]],
-    uint3 threadPosition [[thread_position_in_threadgroup]]) {
-    threadgroup bfloat qTile[kVisionMaxQueryTile * kVisionHeadDim];
-    threadgroup bfloat kTile[kVisionKeyTile * kVisionHeadDim];
-    threadgroup bfloat vTile[kVisionKeyTile * kVisionHeadDim];
-    threadgroup float probabilities[kVisionMaxQueryTile * kVisionKeyTile];
-    threadgroup float accumulator[kVisionMaxQueryTile * kVisionPaddedHeadDim];
-    threadgroup float oldScale[kVisionMaxQueryTile];
-    threadgroup float rowSum[kVisionMaxQueryTile];
-    threadgroup float rowMax[kVisionMaxQueryTile];
-    vision_attention_online_impl<kVisionHeadDim, 8>(
-        q, k, v, output, sequenceLength, numHeads, group.xy, threadPosition.x,
-        qTile, kTile, vTile, probabilities, accumulator,
-        oldScale, rowSum, rowMax);
-}
 
 kernel void vision_normalize_patches(
     device const bfloat* input [[buffer(0)]],
@@ -305,10 +150,10 @@ inline float2 vision_rope_pair(float2 value, int position, uint pairInAxis) {
                   value.y * cosine + value.x * sine);
 }
 
-/// Same arithmetic as `vision_qkv_norm_rope` on the head-major padded layout the
-/// QKV projections now write: vector `(head, row)` starts at
-/// `(head * rowStride + row) * 80`. Threads walk rows within a head so the
-/// strided-by-80 accesses stay coalesced.
+/// Per-head RMSNorm of Q and K (weighted) and V (unweighted), then 2-D RoPE
+/// of Q and K, in place on the head-major padded layout the QKV projections
+/// write: vector `(head, row)` starts at `(head * rowStride + row) * 80`.
+/// Threads walk rows within a head so the strided-by-80 accesses coalesce.
 kernel void vision_qkv_norm_rope_padded(
     device bfloat* q [[buffer(0)]],
     device bfloat* k [[buffer(1)]],

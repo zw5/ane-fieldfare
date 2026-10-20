@@ -1,6 +1,6 @@
 import Foundation
 
-/// Error-measurement helpers. Every test computed these inline; centralize.
+/// Error-measurement helpers.
 public enum RelError {
     /// Standard relative error used across the test suite:
     ///   max_i |actual[i] - reference[i]|  /  max(max_i |reference[i]|, 1e-6)

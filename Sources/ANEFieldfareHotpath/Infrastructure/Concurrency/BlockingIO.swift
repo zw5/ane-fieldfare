@@ -9,9 +9,8 @@ import Dispatch
 enum BlockingIO {
     // SAFETY: a GCD queue is the point of this type. Work submitted here is
     // `@Sendable` and its result crosses back through a checked continuation.
-    // The global queue directly, as the reads used before: the work items are
-    // independent and short-lived, so a private queue would add a hop and
-    // nothing else.
+    // The work items are independent and short-lived, so a private queue
+    // would add a hop and nothing else.
     private static var queue: DispatchQueue { .global(qos: .userInitiated) }
 
     static func run<Value: Sendable>(

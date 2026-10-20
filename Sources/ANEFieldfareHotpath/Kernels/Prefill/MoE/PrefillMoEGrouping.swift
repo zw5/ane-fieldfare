@@ -30,23 +30,8 @@ public struct PrefillMoETile: Equatable, Sendable {
 
 public struct PrefillMoEGroupedRoutes: Equatable, Sendable {
     public let sortedPairs: [PrefillTokenExpertPair]
-    public let perExpertOffsets: [UInt32]
-    public let perExpertCounts: [UInt32]
     public let groups: [PrefillMoEGroup]
     public let tiles: [PrefillMoETile]
-    public let queryCount: Int
-
-    public var maxPairsPerExpert: Int {
-        groups.map { Int($0.pairCount) }.max() ?? 0
-    }
-
-    public var maxPairsPerTile: Int {
-        tiles.map { Int($0.pairCount) }.max() ?? 0
-    }
-
-    public var maxLiveExpertsPerTile: Int {
-        tiles.map { Int($0.groupCount) }.max() ?? 0
-    }
 }
 
 enum PrefillMoEGroupingError: Error, Equatable, CustomStringConvertible {
@@ -93,7 +78,7 @@ enum PrefillMoEGrouping {
         queryCount: Int,
         topK: Int,
         numExperts: Int,
-        tileExpertCount: Int = 16,
+        tileExpertCount: Int,
         expertSortKeys: [UInt64]? = nil
     ) throws -> PrefillMoEGroupedRoutes {
         guard queryCount >= 0 else {
@@ -148,8 +133,6 @@ enum PrefillMoEGrouping {
             return $0.rank < $1.rank
         }
 
-        var offsets = Array(repeating: UInt32.max, count: numExperts)
-        var counts = Array(repeating: UInt32(0), count: numExperts)
         var groups: [PrefillMoEGroup] = []
         groups.reserveCapacity(min(numExperts, sortedPairs.count))
 
@@ -160,12 +143,9 @@ enum PrefillMoEGrouping {
             while i < sortedPairs.count, sortedPairs[i].expert == expert {
                 i += 1
             }
-            let count = i - start
-            offsets[Int(expert)] = UInt32(start)
-            counts[Int(expert)] = UInt32(count)
             groups.append(PrefillMoEGroup(expert: expert,
                                           pairStart: UInt32(start),
-                                          pairCount: UInt32(count)))
+                                          pairCount: UInt32(i - start)))
         }
 
         var tiles: [PrefillMoETile] = []
@@ -184,10 +164,7 @@ enum PrefillMoEGrouping {
         }
 
         return PrefillMoEGroupedRoutes(sortedPairs: sortedPairs,
-                                       perExpertOffsets: offsets,
-                                       perExpertCounts: counts,
                                        groups: groups,
-                                       tiles: tiles,
-                                       queryCount: queryCount)
+                                       tiles: tiles)
     }
 }

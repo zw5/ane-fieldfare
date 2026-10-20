@@ -1,16 +1,8 @@
 import Foundation
 import Accelerate
 
-/// FP32 reference for `softmax(softcap * tanh(x / softcap))`.
-///
-/// The kernel runs a single-pass online safe softmax with the softcap
-/// fused into the running-max update. This reference is deliberately
-/// *two-pass*: apply the softcap to a temp buffer, find the max, subtract,
-/// exp via `vForce.exp`, sum via `vDSP_sve`, divide. Different staging,
-/// different summation order — any bug that depends on the kernel's online
-/// (m, d) merge logic won't replicate here.
-///
-/// Softcap is `c * tanh(x / c)` with c=30.0 by default for Gemma 4.
+/// FP32 two-pass reference for `softmax(softcap * tanh(x / softcap))`; the
+/// kernel is single-pass online softmax, so its merge logic is not mirrored.
 public enum LogitSoftcapSoftmaxRef {
     public static func apply(x: [Float], softcap: Float) -> [Float] {
         let v = x.count

@@ -15,13 +15,6 @@ public struct PrefillTokenExpertPair: Equatable, Sendable {
         self.weightBitsAndReserved = UInt32(weight.bitPattern)
     }
 
-    public init(token: UInt32, expert: UInt32, rank: UInt32, weightBitsAndReserved: UInt32) {
-        self.token = token
-        self.expert = expert
-        self.rank = rank
-        self.weightBitsAndReserved = weightBitsAndReserved
-    }
-
     public var weight: Float16 {
         Float16(bitPattern: UInt16(truncatingIfNeeded: weightBitsAndReserved))
     }
@@ -35,27 +28,23 @@ final class PrefillRouter {
     }
 
     func encodeGemma4Block(commandBuffer: any MTLCommandBuffer,
-                                  weights: any MTLBuffer,
-                                  weightsOffset: Int = 0,
-                                  scales: any MTLBuffer,
-                                  scalesOffset: Int = 0,
-                                  biases: any MTLBuffer,
-                                  biasesOffset: Int = 0,
-                                  hidden: any MTLBuffer,
-                                  hiddenOffset: Int = 0,
-                                  effectiveScale: any MTLBuffer,
-                                  effectiveScaleOffset: Int = 0,
-                                  perExpertScale: any MTLBuffer,
-                                  perExpertScaleOffset: Int = 0,
-                                  outIndices: any MTLBuffer,
-                                  outIndicesOffset: Int = 0,
-                                  outWeights: any MTLBuffer,
-                                  outWeightsOffset: Int = 0,
-                                  queryCount: UInt32,
-                                  numExperts: UInt32,
-                                  d: UInt32,
-                                  topK: UInt32,
-                                  hiddenStrideElements: UInt32) {
+                           weights: any MTLBuffer,
+                           weightsOffset: Int = 0,
+                           scales: any MTLBuffer,
+                           scalesOffset: Int = 0,
+                           biases: any MTLBuffer,
+                           biasesOffset: Int = 0,
+                           hidden: any MTLBuffer,
+                           effectiveScale: any MTLBuffer,
+                           perExpertScale: any MTLBuffer,
+                           perExpertScaleOffset: Int = 0,
+                           outIndices: any MTLBuffer,
+                           outWeights: any MTLBuffer,
+                           queryCount: UInt32,
+                           numExperts: UInt32,
+                           d: UInt32,
+                           topK: UInt32,
+                           hiddenStrideElements: UInt32) {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(numExperts <= 256, "numExperts > 256 is not supported")
         precondition(topK > 0 && topK <= 64, "topK must be in 1...64")
@@ -67,21 +56,16 @@ final class PrefillRouter {
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(scales, offset: scalesOffset, index: 1)
         enc.setBuffer(biases, offset: biasesOffset, index: 2)
-        enc.setBuffer(hidden, offset: hiddenOffset, index: 3)
-        enc.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 4)
+        enc.setBuffer(hidden, offset: 0, index: 3)
+        enc.setBuffer(effectiveScale, offset: 0, index: 4)
         enc.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 5)
-        enc.setBuffer(outIndices, offset: outIndicesOffset, index: 6)
-        enc.setBuffer(outWeights, offset: outWeightsOffset, index: 7)
-        let tVar = queryCount
-        let neVar = numExperts
-        let dVar = d
-        let topKVar = topK
-        let strideVar = hiddenStrideElements
-        enc.setValue(tVar, index: 8)
-        enc.setValue(neVar, index: 9)
-        enc.setValue(dVar, index: 10)
-        enc.setValue(topKVar, index: 11)
-        enc.setValue(strideVar, index: 12)
+        enc.setBuffer(outIndices, offset: 0, index: 6)
+        enc.setBuffer(outWeights, offset: 0, index: 7)
+        enc.setValue(queryCount, index: 8)
+        enc.setValue(numExperts, index: 9)
+        enc.setValue(d, index: 10)
+        enc.setValue(topK, index: 11)
+        enc.setValue(hiddenStrideElements, index: 12)
         let tgWidth = min(max(Int(numExperts), 32), pso.maxTotalThreadsPerThreadgroup)
         enc.dispatchThreadgroups(MTLSize(width: Int(queryCount), height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: tgWidth, height: 1, depth: 1))
@@ -89,9 +73,9 @@ final class PrefillRouter {
     }
 
     static func makeTokenExpertPairs(indices: [UInt32],
-                                            weights: [Float16],
-                                            queryCount: Int,
-                                            topK: Int) -> [PrefillTokenExpertPair] {
+                                     weights: [Float16],
+                                     queryCount: Int,
+                                     topK: Int) -> [PrefillTokenExpertPair] {
         precondition(queryCount >= 0, "queryCount must be non-negative")
         precondition(topK >= 0, "topK must be non-negative")
         precondition(indices.count == queryCount * topK, "indices count mismatch")

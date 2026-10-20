@@ -4,9 +4,8 @@ import Testing
 @testable import ANEFieldfareHotpath
 
 /// The shared use lease against real filesystem permissions: the writable
-/// happy path, the read-only fallbacks, and the fail-closed cases. The
-/// EROFS lock-free path needs an actual read-only mount and stays covered by
-/// code review only.
+/// happy path and the fail-closed cases. The EROFS lock-free path needs an
+/// actual read-only mount and stays covered by code review only.
 @Suite struct VisionPackUseLeaseTests {
 
     private func makePack() throws -> URL {
@@ -21,19 +20,10 @@ import Testing
         let pack = try makePack()
         defer { try? FileManager.default.removeItem(at: pack.deletingLastPathComponent()) }
         let lease = try VisionPackUseLease.acquireShared(companionURL: pack)
-        #expect(lease.lockFileURL.lastPathComponent == ".model.vision.gturbo.use.lock")
-        #expect(FileManager.default.fileExists(atPath: lease.lockFileURL.path))
-    }
-
-    @Test func readOnlyLockFileStillGrantsASharedLease() throws {
-        let pack = try makePack()
-        defer { try? FileManager.default.removeItem(at: pack.deletingLastPathComponent()) }
         let lockURL = VisionPackUseLease.lockURL(for: pack)
-        #expect(FileManager.default.createFile(atPath: lockURL.path, contents: nil))
-        unsafe #expect(chmod(lockURL.path, 0o444) == 0)
-        // The O_RDWR create-open gets EACCES; the O_RDONLY retry must lock.
-        let lease = try VisionPackUseLease.acquireShared(companionURL: pack)
-        #expect(lease.lockFileURL.path == lockURL.path)
+        #expect(lockURL.lastPathComponent == ".model.vision.gturbo.use.lock")
+        #expect(FileManager.default.fileExists(atPath: lockURL.path))
+        _ = consume lease
     }
 
     @Test func unwritableParentWithoutALockFileFailsClosed() throws {

@@ -30,27 +30,18 @@ import ANEFieldfareValidationSupport
             ups.append(matrix(rows: Self.intermediate, columns: Self.dimension))
             downs.append(matrix(rows: Self.dimension, columns: Self.intermediate))
         }
-        let x = (0..<Self.dimension).map { _ in
-            Float(Float16(rng.uniform(-0.5, 0.5)))
-        }
-        let residual = (0..<Self.dimension).map { _ in
-            Float(Float16(rng.uniform(-0.5, 0.5)))
-        }
-        let routingWeights = (0..<Self.topK).map {
-            Float(Float16(0.04 + Float($0) * 0.015))
+        let x = (0..<Self.dimension).map { _ in Float(Float16(rng.uniform(-0.5, 0.5))) }
+        let residual = (0..<Self.dimension).map { _ in Float(Float16(rng.uniform(-0.5, 0.5))) }
+        let routingWeights = (0..<Self.topK).map { Float(Float16(0.04 + Float($0) * 0.015)) }
+        func quantized(_ experts: [[[Float]]]) -> [[Quantization.Int4AffineRow]] {
+            experts.map { rows in rows.map { Quantization.quantizeInt4Affine($0) } }
         }
         let expected = MoeRef.applyStreamedRouted(
             x: x,
             residual: residual,
-            routedGate: gates.map { rows in
-                rows.map { Quantization.quantizeInt4Affine($0) }
-            },
-            routedUp: ups.map { rows in
-                rows.map { Quantization.quantizeInt4Affine($0) }
-            },
-            routedDown: downs.map { rows in
-                rows.map { Quantization.quantizeInt4Affine($0) }
-            },
+            routedGate: quantized(gates),
+            routedUp: quantized(ups),
+            routedDown: quantized(downs),
             indices: Array(0..<Self.topK),
             routingWeights: routingWeights,
             d: Self.dimension,
@@ -61,37 +52,33 @@ import ANEFieldfareValidationSupport
 
         let context = try MetalContext()
         let kernel = try MoE(context: context)
-        let routedBuffers = blobs.compactMap {
-            unsafe context.device.makeBuffer(bytes: $0.bytes,
-                                      length: $0.bytes.count,
-                                      options: .storageModeShared)
+        func buffer<T: BitwiseCopyable>(_ values: [T]) throws -> any MTLBuffer {
+            try #require(unsafe context.device.makeBuffer(bytes: values,
+                                                          length: values.count * MemoryLayout<T>.stride,
+                                                          options: .storageModeShared))
         }
-        guard routedBuffers.count == Self.topK,
-              let xBuffer = Fp16Buffer.make(context.device, values: x),
-              let residualBuffer = Fp16Buffer.make(context.device, values: residual),
-              let routingBuffer = Fp16Buffer.make(context.device, values: routingWeights),
-              let fullActs = Fp16Buffer.make(
-                context.device, count: Self.topK * Self.intermediate),
-              let splitActs = Fp16Buffer.make(
-                context.device, count: Self.topK * Self.intermediate),
-              let fullOutput = Fp16Buffer.make(context.device, count: Self.dimension),
-              let splitOutput = Fp16Buffer.make(context.device, count: Self.dimension),
-              let lowSlots = unsafe context.device.makeBuffer(
-                bytes: [UInt32](0...3),
-                length: 4 * MemoryLayout<UInt32>.stride,
-                options: .storageModeShared),
-              let highSlots = unsafe context.device.makeBuffer(
-                bytes: [UInt32](4...7),
-                length: 4 * MemoryLayout<UInt32>.stride,
-                options: .storageModeShared),
-              let argumentBuffer = kernel.makeRoutedArgumentBuffer(
-                routedBlobs: routedBuffers,
-                topK: UInt32(Self.topK)) else {
-            Issue.record("buffer allocation failed")
-            return
+        func output(_ count: Int) throws -> any MTLBuffer {
+            try #require(Fp16Buffer.make(context.device, count: count))
         }
+        let routedBuffers = try blobs.map { try buffer($0.bytes) }
+        let xBuffer = try #require(Fp16Buffer.make(context.device, values: x))
+        let residualBuffer = try #require(Fp16Buffer.make(context.device, values: residual))
+        let routingBuffer = try #require(Fp16Buffer.make(context.device, values: routingWeights))
+        let fullActs = try output(Self.topK * Self.intermediate)
+        let splitActs = try output(Self.topK * Self.intermediate)
+        let fullOutput = try output(Self.dimension)
+        let splitOutput = try output(Self.dimension)
+        let lowSlots = try buffer([UInt32](0...3))
+        let highSlots = try buffer([UInt32](4...7))
+        // Decode binds the routed experts through tensor views into the reused
+        // argument buffer.
+        let views = routedBuffers.map {
+            TensorView(buffer: $0, offset: 0, length: UInt64($0.length), scaleOffset: 0, scaleLength: 0,
+                       biasOffset: 0, biasLength: 0, shape: (0, 0, 0, 0), dtype: 0)
+        }
+        let argumentBuffer = kernel.makeReusedRoutedArgumentBuffer(routedViews: views, topK: UInt32(Self.topK))
 
-        let fullCommand = context.queue.makeCommandBuffer()!
+        let fullCommand = try #require(context.queue.makeCommandBuffer())
         kernel.encodeRoutedPersistentPhase1U16Load(
             commandBuffer: fullCommand,
             routedArgBuffer: argumentBuffer,
@@ -118,7 +105,7 @@ import ANEFieldfareValidationSupport
         fullCommand.waitUntilCompleted()
         #expect(fullCommand.error == nil)
 
-        let splitCommand = context.queue.makeCommandBuffer()!
+        let splitCommand = try #require(context.queue.makeCommandBuffer())
         for (slots, activeSlots) in [([UInt32](0...3), lowSlots),
                                      ([UInt32](4...7), highSlots)] {
             kernel.encodeRoutedPersistentPhase1SubsetU16Load(

@@ -207,22 +207,9 @@ public struct Model {
 
     // MARK: - Routed expert (lazy)
 
-    /// One expert's weights, bound zero-copy from the page cache. Absent
-    /// pages fault in when the GPU first touches them.
-    public func routedExpert(layer L: Int, expert E: Int) throws -> TensorView {
-        let views = try routedExpertViews(layer: L, experts: [E])
-        guard let view = views.first else { throw ExpertStoreError.expertOutOfRange(E) }
-        return view
-    }
-
     /// Layer L's mapping, opening its file on first touch.
     func expertLayer(_ L: Int) throws -> MappedExpertLayer {
         try routedLayers.layer(L)
-    }
-
-    /// Open layer L's file and check its size, idempotent.
-    func ensureLayerOpened(_ L: Int) throws {
-        _ = try expertLayer(L)
     }
 
     /// Best-effort overlap hook for prefill: starts the same lazy layer open in
@@ -234,18 +221,13 @@ public struct Model {
         }
     }
 
-    /// Test hook: how many layer files have been opened so far.
-    public func openLayerFileCount() -> Int {
-        routedLayers.openLayerCount
-    }
-
 }
 
 extension Model {
 
     /// Open a `.gturbo/` directory and return a typed handle. File sizes are
     /// checked against the manifest; layer files are opened lazily on first
-    /// `routedExpert(...)` touch.
+    /// touch.
     public static func load(directoryURL: URL,
                             device: any MTLDevice,
                             expecting: ArchConfig = .gemma4_26B_A4B) throws -> Model {

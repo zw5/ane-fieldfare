@@ -26,16 +26,10 @@ import Tokenizers
 /// batch (`GFTokenizer.decode`) and streaming (`GFDetokenizer`) paths go through
 /// it, so they agree by construction.
 enum GemmaDecoding {
-    /// `<0xXX>` byte-fallback token, e.g. `<0xE2>`.
-    static func isByteFallback(_ token: String) -> Bool {
-        token.count == 6
-            && token.hasPrefix("<0x")
-            && token.hasSuffix(">")
-            && token.dropFirst(3).dropLast().allSatisfy { $0.isHexDigit }
-    }
-
+    /// The byte of a `<0xXX>` byte-fallback token, e.g. `<0xE2>`.
     static func byteValue(_ token: String) -> UInt8? {
-        guard isByteFallback(token) else { return nil }
+        guard token.count == 6, token.hasPrefix("<0x"), token.hasSuffix(">"),
+              token.dropFirst(3).dropLast().allSatisfy({ $0.isHexDigit }) else { return nil }
         return UInt8(token.dropFirst(3).dropLast(), radix: 16)
     }
 

@@ -1,5 +1,6 @@
 public import Foundation
 public import ANEFieldfareHotpath
+import ANEFieldfareHotpathCLICore
 
 public struct ServerOptions: Sendable, Equatable {
     public var model: String
@@ -11,7 +12,7 @@ public struct ServerOptions: Sendable, Equatable {
     public var apiKey: String?
     public var maxQueue: Int = 8
     public var defaults = SamplingDefaults()
-    public var backend: RuntimeBackend = .metal
+    public var backend: RuntimeBackend = .hybridANE
     public var faultPolicy: RuntimeFaultPolicy = RuntimeConfiguration.production.faultPolicy
     public var earlyExpertRead: RuntimeEarlyExpertRead = RuntimeConfiguration.production.earlyExpertRead
 
@@ -48,9 +49,10 @@ public struct ServerOptions: Sendable, Equatable {
       --model <dir>              Path to a .gturbo model directory.
 
     options:
-      --drafter <dir>            DFlash drafter checkpoint: requests decode
+      --drafter <dir|off>        DFlash drafter checkpoint: requests decode
                                  speculatively, greedy or sampled (not with a
-                                 repetition penalty).
+                                 repetition penalty). Default: found beside the
+                                 model or in ../dflash/\(DrafterLocation.directoryName).
       --host <address>           Address to bind (default 127.0.0.1).
       --port <int>               Port to bind (default 8080; 0 = any free port).
       --max-context <int>        Context limit in tokens, prompt plus
@@ -68,7 +70,7 @@ public struct ServerOptions: Sendable, Equatable {
       --max-tokens <int>         Default completion limit when a request sends
                                  none (default: the rest of the context).
       --backend <metal|hybrid-ane>
-                                 Execution backend (default metal).
+                                 Execution backend (default hybrid-ane).
       --fault-policy <fail-closed|failover-metal>
                                  On an ANE guest fault (default fail-closed).
       --early-expert-read <off|router|fitted>
@@ -190,10 +192,22 @@ public func runServer(options: ServerOptions,
         log("[server] loading tokenizer and model from \(modelURL.path)")
         let tokenizer = try await GFTokenizer.load(forModelDirectory: modelURL)
         let loadStarted = ContinuousClock.now
+        let drafterURL: URL?
+        switch options.drafter {
+        case "off"?: drafterURL = nil
+        case let path?: drafterURL = URL(fileURLWithPath: path)
+        case nil:
+            drafterURL = DrafterLocation.find(model: options.model)
+            if drafterURL == nil {
+                log("[server] no drafter at "
+                    + DrafterLocation.candidates(model: options.model).map(\.path).joined(separator: " or ")
+                    + "; decoding without speculation")
+            }
+        }
         let engine = try await ModelEngine(
             options: ModelEngine.Options(
                 modelURL: modelURL,
-                drafterURL: options.drafter.map { URL(fileURLWithPath: $0) },
+                drafterURL: drafterURL,
                 maxContext: options.maxContext,
                 backend: options.backend,
                 faultPolicy: options.faultPolicy,

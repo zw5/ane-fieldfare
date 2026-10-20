@@ -124,8 +124,7 @@ import Metal
                     let decoder = try drafter.flatMap { drafter in
                         try mode == "spec" ? SpeculativeDecoder(runner: runner, drafter: drafter) : nil
                     }
-                    let hot = useHotHead ? HotHeadDecoder(runner: runner) : nil
-                    let plain: any LogitProducer = hot ?? runner
+                    let plain: any LogitProducer = (useHotHead ? HotHeadDecoder(runner: runner) : nil) ?? runner
                     let result = try await generate(prompt: text, tokens: options.tokens, temperature: options.temperature,
                                                     producer: decoder ?? plain, tokenizer: tokenizer,
                                                     context: context, scratch: scratch)
@@ -141,16 +140,11 @@ import Metal
                         "decode_seconds": result.result.decodeSeconds,
                         "decode_tps": decodeTPS,
                         "generated_ids": result.ids.map(Int.init),
-                        "counters": delta.json,
+                        "counters": delta.values,
                     ]
-                    if let hot {
-                        record["hot_head"] = ["guessed_steps": hot.guessedSteps, "wrong_guesses": hot.wrongGuesses]
-                    }
                     if let decoder {
                         var spec = decoder.stats.profile
                         spec["acceptance_rate"] = decoder.policy.acceptanceRate
-                        spec["verify_seconds_by_rows"] = decoder.policy.verifySeconds
-                        spec["draft_seconds_by_length"] = decoder.policy.draftSeconds
                         record["speculation"] = spec
                     }
                     if name == promptSet[0].0, mode == "plain", stepTokens.isEmpty {
@@ -192,7 +186,7 @@ import Metal
         let prompt: [Int32]
     }
 
-    static func generate(prompt: String, tokens: Int, temperature: Float = 0, producer: any LogitProducer,
+    static func generate(prompt: String, tokens: Int, temperature: Float, producer: any LogitProducer,
                          tokenizer: GFTokenizer,
                          context: MetalContext, scratch: RawCompletionScratch) async throws -> Generation {
         let ids = tokenizer.encode(try tokenizer.applyChatTemplate([.init(role: .user, content: prompt)]),
@@ -211,7 +205,8 @@ import Metal
         return Generation(result: result, ids: generated, prompt: ids)
     }
 
-    /// Cumulative runner counters, differenced per case.
+    /// Cumulative runner seconds per decode phase (what `compare.py`'s
+    /// breakdown reads), differenced per case.
     struct Counters {
         var values: [String: Double]
 
@@ -222,20 +217,6 @@ import Metal
                 "decode_shared_gpu_s": s(runner.decodeSharedGPUNanos),
                 "decode_routed_gpu_s": s(runner.decodeRoutedGPUNanos),
                 "decode_io_s": s(runner.totalIoNanos),
-                "expert_hits": Double(runner.routedExpertCacheHits),
-                "expert_misses": Double(runner.routedExpertCacheMisses),
-                "decode_layer_patches": Double(runner.decodeLayerPatches),
-                "verify_pre_router_gpu_s": s(runner.prefillPreRouterGPUNanos),
-                "verify_shared_gpu_s": s(runner.prefillSharedGPUNanos),
-                "verify_routed_gpu_s": s(runner.prefillRoutedGPUNanos),
-                "verify_fetch_wait_s": s(runner.prefillTileFetchNanos),
-                "verify_expert_hits": Double(runner.prefillTileHits),
-                "verify_expert_misses": Double(runner.prefillTileMisses),
-                "verify_early_reads": Double(runner.prefillEarlyReads),
-                "verify_bound_routes": Double(runner.boundVerifyRoutes),
-                "verify_patched_layers": Double(runner.patchedVerifyLayers),
-                "early_reads": Double(runner.earlyExpertReadStats?.reads ?? 0),
-                "early_reads_used": Double(runner.earlyExpertReadStats?.used ?? 0),
             ]
         }
 
@@ -244,8 +225,6 @@ import Metal
             for (key, value) in values { delta.values[key] = value - (other.values[key] ?? 0) }
             return delta
         }
-
-        var json: [String: Double] { values }
     }
 
     /// Medians need many samples, so steps rewind to the same context and

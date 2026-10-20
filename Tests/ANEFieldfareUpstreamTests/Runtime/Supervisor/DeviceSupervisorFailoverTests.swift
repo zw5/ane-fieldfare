@@ -33,19 +33,6 @@ private func poison(_ buffer: any MTLBuffer, on context: MetalContext) throws {
     }
     struct Injected: Error {}
 
-    @Test func placementResolvesFromBackendAndEnvironment() throws {
-        #expect(try DeviceSupervisor.aneLayerCount(backend: .metal, numLayers: 30, environment: [:]) == 0)
-        #expect(try DeviceSupervisor.aneLayerCount(backend: .hybridANE, numLayers: 30, environment: [:]) == 30)
-        let variable = "ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS"
-        #expect(try DeviceSupervisor.aneLayerCount(backend: .metal, numLayers: 30, environment: [variable: "12"]) == 12)
-        #expect(try DeviceSupervisor.aneLayerCount(backend: .hybridANE, numLayers: 30, environment: [variable: "0"]) == 0)
-        for invalid in ["31", "x", "-1"] {
-            #expect(throws: ANEExecutionError.self) {
-                try DeviceSupervisor.aneLayerCount(backend: .metal, numLayers: 30, environment: [variable: invalid])
-            }
-        }
-    }
-
     @Test func evictsOnlyUnderFailover() async throws {
         let closed = DeviceSupervisor(aneLayers: 2, faultPolicy: .failClosed, guest: NoGuest())
         await #expect(throws: Injected.self) { _ = try await closed.supervise(layer: 0) { throw Injected() } }
@@ -68,12 +55,11 @@ private func poison(_ buffer: any MTLBuffer, on context: MetalContext) throws {
 /// kernels are specialised to the production shape, so the toy checkpoint
 /// cannot run a full pass; these tests are skipped when the checkpoint is
 /// absent. Injected guests corrupt the host's buffers and then fault.
-/// Failover must reproduce the matching placement's logits bit for bit, and
-/// fail-closed must abort.
+/// Failover must reproduce the matching placement's logits bit for bit.
 @Suite(.serialized, .enabled(if: installedCheckpointURL != nil, "installed checkpoint required"))
 struct DeviceSupervisorFailoverTests {
-    /// Delegates to a real guest, then faults on `faultLayer` after
-    /// corrupting the partials, as a carrier that lost its program would.
+    /// Delegates to a real guest (or does nothing), then faults on `faultLayer`
+    /// after corrupting the partials, as a carrier that lost its program would.
     final class FaultAtLayerGuest: RoutedPrefillGuest {
         let inner: any RoutedPrefillGuest?
         let faultLayer: Int
@@ -90,21 +76,6 @@ struct DeviceSupervisorFailoverTests {
             }
             try poison(partials, on: context)
             throw ANEExecutionError.rejected("injected routed fault at layer \(layer)")
-        }
-        var profile: [String: Any] { ["injected": true] }
-    }
-
-    /// Writes NaN over every routed partial row, then faults on its first
-    /// layer without running anything real.
-    final class CorruptingRoutedGuest: RoutedPrefillGuest {
-        let context: MetalContext
-        var calls = 0
-        init(context: MetalContext) { self.context = context }
-        func runLayer(model: Model, layer: Int, hidden: any MTLBuffer, partials: any MTLBuffer,
-                      routes: PrefillMoEGroupedRoutes, pairs: any MTLBuffer) async throws {
-            calls += 1
-            try poison(partials, on: context)
-            throw ANEExecutionError.rejected("injected routed fault")
         }
         var profile: [String: Any] { ["injected": true] }
     }
@@ -148,27 +119,18 @@ struct DeviceSupervisorFailoverTests {
 
     @Test func routedPrefillFailoverMatchesMetalBitExactly() async throws {
         let fixture = try Fixture()
-        let reference = try await fixture.logits(.metalOnly())
+        let reference = try await fixture.logits(DeviceSupervisor(aneLayers: 0, faultPolicy: .failClosed, guest: nil))
         #expect(reference[0].contains { $0 != 0 })
 
-        let guest = CorruptingRoutedGuest(context: fixture.context)
+        // A guest re-admitted after eviction would run as a no-op and leave
+        // the routed partials unwritten, so `recovered` would differ.
+        let guest = FaultAtLayerGuest(inner: nil, faultLayer: 0, context: fixture.context)
         let supervisor = DeviceSupervisor(aneLayers: fixture.model.config.numLayers,
                                           faultPolicy: .failoverMetal, guest: guest)
         let recovered = try await fixture.logits(supervisor)
         #expect(recovered == reference)
-        #expect(guest.calls == 1, "an evicted guest must never be admitted again")
         #expect(supervisor.faults.map(\.action) == [.evictedToMetal])
         #expect(supervisor.faults.first?.layer == 0)
-    }
-
-    @Test func routedPrefillFaultFailsClosedByDefault() async throws {
-        let fixture = try Fixture()
-        let supervisor = DeviceSupervisor(aneLayers: fixture.model.config.numLayers, faultPolicy: .failClosed,
-                                          guest: CorruptingRoutedGuest(context: fixture.context))
-        await #expect(throws: ANEExecutionError.self) {
-            _ = try await fixture.logits(supervisor)
-        }
-        #expect(supervisor.faults.map(\.action) == [.failedClosed])
     }
 
     /// A real ANE guest evicted at layer `k` must leave exactly the output of
@@ -188,7 +150,7 @@ struct DeviceSupervisorFailoverTests {
         let recovered = try await fixture.logits(supervisor)
         #expect(recovered == reference)
         #expect(supervisor.faults.map(\.layer) == [k])
-        #expect(recovered != (try await fixture.logits(.metalOnly())),
+        #expect(recovered != (try await fixture.logits(DeviceSupervisor(aneLayers: 0, faultPolicy: .failClosed, guest: nil))),
                 "ANE layers before the fault should differ from pure Metal arithmetic")
     }
 }

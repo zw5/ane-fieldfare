@@ -12,13 +12,11 @@ using namespace metal;
 
 constant constexpr uint kFusedThreads        = 256;
 constant constexpr uint kFusedMaxSimdGroups  = kFusedThreads / 32;  // 8
-constant constexpr uint kFusedGroupSize      = 64;
 // Threadgroup-memory cap for the normalized-hidden staging slot. Sized for
 // D=2816 (production hidden dim) with headroom; consumes 8 KB per threadgroup.
 constant constexpr uint kFusedMaxD           = 4096;
 constant constexpr uint kFusedMaxHeadDim     = 512;
 constant uint FC_FUSED_D [[function_constant(80)]];
-constant uint FC_FUSED_N [[function_constant(81)]];
 constant uint FC_FUSED_HEAD_DIM [[function_constant(82)]];
 constant uint FC_FUSED_NUM_Q_HEADS [[function_constant(83)]];
 constant uint FC_FUSED_NUM_KV_HEADS [[function_constant(84)]];
@@ -31,10 +29,6 @@ static inline bool fused_use_fc() {
 
 static inline uint fused_fc_d(constant uint& D) {
     return (fused_use_fc() && is_function_constant_defined(FC_FUSED_D)) ? FC_FUSED_D : D;
-}
-
-static inline uint fused_fc_n(constant uint& N) {
-    return (fused_use_fc() && is_function_constant_defined(FC_FUSED_N)) ? FC_FUSED_N : N;
 }
 
 static inline uint fused_fc_head_dim(constant uint& head_dim) {
@@ -72,16 +66,13 @@ inline void fused_rope_neox_pair(thread float& x0,
 }
 
 // ============================================================================
-// fused_qkv_epilogue — real Gemma 4 Q/K/V per-head post-processing.
+// fused_qkv_epilogue — Gemma 4 Q/K/V per-head post-processing after the
+// projection: Q/K RMSNorm with a BF16 weight shared across heads, then NeoX
+// RoPE; V no-scale RMSNorm.
 //
-// Replaces the cb1 chain after Q/K/V projection:
-//     rmsnorm_bf16w_perhead(Q, q_norm) -> rmsnorm_bf16w_perhead(K, k_norm)
-//     -> rmsnorm_no_scale_perhead(V) -> rope_neox(Q) -> rope_neox(K)
-//
-// One threadgroup owns one logical head. Q and K use BF16 weights shared across
-// heads; V uses no-scale RMSNorm. For Q/K, the normalized per-head values are
-// rounded to half in threadgroup memory before RoPE, preserving the standalone
-// kernel boundary where RMSNorm writes FP16 and RoPE reads FP16.
+// One threadgroup owns one logical head. For Q/K, the normalized values are
+// rounded to half in threadgroup memory before RoPE, as prefill's separate
+// norm and RoPE kernels round between them.
 // ============================================================================
 
 static inline void fused_qkv_epilogue_head(
@@ -154,7 +145,6 @@ static inline void fused_qkv_epilogue_head(
     }
 }
 
-
 [[kernel, max_total_threads_per_threadgroup(kFusedThreads)]]
 void fused_qkv_epilogue(
     device       half*   q              [[buffer(0)]],  // [num_q_heads, head_dim]
@@ -222,21 +212,13 @@ void fused_qkv_epilogue_rows(
                             head_tg, partial);
 }
 
-// ============================================================================
-// fused_layer_tail — real Gemma 4 decoder-layer tail.
-//
-// Replaces the cb2 chain:
-//     rmsnorm_bf16w(h2, post_ffn_2) -> residual_add(h1, ...)
-//     -> rmsnorm_bf16w(..., post_ffn) -> residual_add(hidden, ...)
-//     -> layer-scalar multiply
-//
-// The two RMSNorm reductions copy rmsnorm.metal's two-stage reduction order.
-// Elementwise adds and scalar multiply preserve the same FP16 stage boundaries
-// as the standalone kernels: h1+h2_norm is rounded to half before the second
-// reduction, and hidden+post_norm is rounded to half before multiplying by the
-// half-cast layer scalar.
-// ============================================================================
-
+// fused_post_attn_setup — after attention and o_proj:
+//     attn = rmsnorm_bf16w(attn, post_attention_norm); hidden += attn
+//     dense_x = rmsnorm_bf16w(hidden, pre_ffn); routed_x = rmsnorm_bf16w(hidden, pre_ffn_2)
+//     router_x = hidden * rsqrt(mean(hidden^2) + eps)
+// Each norm reduces in rmsnorm.metal's order, and hidden is rounded to half
+// before its norm, so every output is bitwise rmsnorm_bf16w's (router_x's
+// with a unit weight).
 [[kernel, max_total_threads_per_threadgroup(kFusedThreads)]]
 void fused_post_attn_setup(
     device       half*   hidden         [[buffer(0)]],  // [D] FP16 in-place
@@ -351,7 +333,13 @@ static inline float fused_rms_inv(device const half* x, uint DD, float rms_eps,
     return inv;
 }
 
-// The layer tail. With `norm_h1`, `h1` is the shared expert's raw output and
+// fused_layer_tail — the Gemma 4 decoder-layer tail:
+//     h12 = h1 + rmsnorm_bf16w(h2, post_ffn_2)
+//     hidden = (hidden + rmsnorm_bf16w(h12, post_ffn)) * layer_scalar
+// The norms reduce in rmsnorm.metal's order; h12 and hidden + norm are rounded
+// to half before the next stage, and the layer scalar is cast to half.
+//
+// With `norm_h1`, `h1` is the shared expert's raw output and
 // the tail first applies its post-FFN-1 norm (w_postffn1), as the standalone
 // rmsnorm_bf16w did in place. With `norm_next`, it then writes the next
 // layer's input norm of the new hidden state into `next_normed`, as that

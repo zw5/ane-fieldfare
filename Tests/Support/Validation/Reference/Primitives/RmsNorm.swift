@@ -1,14 +1,8 @@
 import Foundation
 import Accelerate
 
-/// FP32 RMSNorm reference computed with Accelerate vectorized primitives.
-///
-/// Deliberately reaches the same answer via a *different* sequence of
-/// operations than the Metal kernel: `vDSP_svesq` for the sum-of-squares,
-/// `vDSP_vmul` + `vDSP_vsmul` for the per-element scale. The kernel uses a
-/// per-thread block reduction with `simd_sum`; this reference uses
-/// Accelerate's pipeline. Different summation tree, different rounding chain,
-/// same math — which is what makes this a useful comparator.
+/// FP32 RMSNorm reference on Accelerate, so its summation tree differs from
+/// the kernel's `simd_sum` block reduction.
 public enum RmsNormRef {
     /// y[i] = x[i] * weight[i] * 1 / sqrt(mean(x^2) + eps)
     public static func apply(x: [Float], weight: [Float], eps: Float) -> [Float] {

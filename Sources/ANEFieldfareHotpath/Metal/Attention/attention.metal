@@ -33,8 +33,6 @@ constant constexpr uint kAttnThreads      = 256;
 // kAttnMaxSimdGroups must cover kAttnThreads / 32 = 8.
 constant constexpr uint kAttnMaxSimdGroups = 8;
 constant constexpr uint kAttnMaxQPerKV     = 2;
-constant constexpr uint kAttnMaxFullQPerKV = 8;
-constant constexpr uint kAttnFullQPerThreadgroup = 2;
 // Largest head_dim we run with (full-attention layers). SWA uses 256 — the
 // kernel still allocates the 512-slot scratch but only touches the live half.
 constant constexpr uint kAttnMaxHeadDim   = 512;
@@ -42,7 +40,6 @@ constant uint FC_ATTN_HEAD_DIM [[function_constant(60)]];
 constant uint FC_ATTN_NUM_Q_HEADS [[function_constant(61)]];
 constant uint FC_ATTN_NUM_KV_HEADS [[function_constant(62)]];
 constant bool FC_ATTN_USE_FC [[function_constant(63)]];
-constant float FC_ATTN_SCALE [[function_constant(64)]];
 constant uint FC_ATTN_NUM_CHUNKS [[function_constant(65)]];
 constant uint FC_ATTN_RING_CAP [[function_constant(69)]];
 
@@ -69,10 +66,6 @@ static inline uint attn_fc_num_kv_heads(constant uint& num_kv_heads) {
         : num_kv_heads;
 }
 
-static inline float attn_fc_scale(float scale) {
-    return is_function_constant_defined(FC_ATTN_SCALE) ? FC_ATTN_SCALE : scale;
-}
-
 static inline uint attn_fc_num_chunks(constant uint& num_chunks) {
     return is_function_constant_defined(FC_ATTN_NUM_CHUNKS) ? FC_ATTN_NUM_CHUNKS : num_chunks;
 }
@@ -82,10 +75,6 @@ static inline uint attn_ring_slot(uint p) {
             FC_ATTN_RING_CAP != 0u)
         ? (p % FC_ATTN_RING_CAP)
         : p;
-}
-
-static inline float attn_softmax_exp(float x) {
-    return fast::exp(x);
 }
 
 // Block reduce: per-SIMD-group simd_sum, write partial to scratch, lane 0 of
@@ -110,11 +99,9 @@ inline float block_reduce_sum(float v,
     return *bcast;
 }
 
-
 // ============================================================================
-// Split-KV (Flash-Decoding) decode attention — the default path.
+// Split-KV (Flash-Decoding) decode attention.
 //
-
 // Pass 1 (attention_decode_partial): grid = num_q_heads * num_chunks. Each TG
 //   runs the same online-softmax recurrence over its chunk [p_start, p_end) and
 //   writes the UN-normalized partial state (m_chunk, d_chunk, o_chunk[head_dim])
@@ -125,10 +112,9 @@ inline float block_reduce_sum(float v,
 //   writes out[i] = O[i] / D in FP16.
 //
 // At num_chunks == 1 the chunk spans the whole [kv_start, seq_len) range and
-// the partial is the exact single-pass accumulation; the combine's only chunk
-// has m_glob == m_chunk so e^0 == 1 and out == o/d — byte-identical to the
-// single-pass kernels above. num_chunks > 1 changes the FP rounding of the
-// partial sums only (same position summation order), not the algorithm.
+// the combine's only chunk has m_glob == m_chunk, so out == o/d exactly.
+// num_chunks > 1 changes the FP rounding of the partial sums only (same
+// position summation order), not the algorithm.
 // ============================================================================
 
 [[kernel, max_total_threads_per_threadgroup(kAttnThreads)]]
@@ -198,11 +184,11 @@ void attention_decode_partial(
         float s = block_reduce_sum(partial,
                                    simd_lane_id, simd_group_id, simdgroups,
                                    reduce_scratch, &bcast);
-        s *= attn_fc_scale(scale);
+        s *= scale;
 
         const float m_new = max(m_run, s);
-        const float alpha = attn_softmax_exp(m_run - m_new);
-        const float p_exp = attn_softmax_exp(s     - m_new);
+        const float alpha = fast::exp(m_run - m_new);
+        const float p_exp = fast::exp(s     - m_new);
         d_run = d_run * alpha + p_exp;
 
         uint slot = 0;
@@ -312,11 +298,11 @@ void attention_decode_gqa_swa_partial(
             if (simd_lane_id == 0) { bcast[active_q] = t; }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        s = bcast[active_q] * attn_fc_scale(scale);
+        s = bcast[active_q] * scale;
 
         const float m_new = max(m_run, s);
-        const float alpha = attn_softmax_exp(m_run - m_new);
-        const float p_exp = attn_softmax_exp(s - m_new);
+        const float alpha = fast::exp(m_run - m_new);
+        const float p_exp = fast::exp(s - m_new);
         d_run = d_run * alpha + p_exp;
         for (uint slot = 0; slot < kGQAPerThread; ++slot) { o_local[slot] *= alpha; }
         m_run = m_new;
@@ -363,14 +349,14 @@ void attention_decode_combine(
     float m_glob = -INFINITY;
     for (uint c = 0; c < NC; ++c) { m_glob = max(m_glob, m_row[c]); }
     float D = 0.0f;
-    for (uint c = 0; c < NC; ++c) { D += d_row[c] * attn_softmax_exp(m_row[c] - m_glob); }
+    for (uint c = 0; c < NC; ++c) { D += d_row[c] * fast::exp(m_row[c] - m_glob); }
     const float inv_d = (D > 0.0f) ? (1.0f / D) : 0.0f;
 
     device half* out_row = out + uint(q_head) * HD;
     for (uint i = lid; i < HD; i += lsize) {
         float acc = 0.0f;
         for (uint c = 0; c < NC; ++c) {
-            acc += o_base[c * HD + i] * attn_softmax_exp(m_row[c] - m_glob);
+            acc += o_base[c * HD + i] * fast::exp(m_row[c] - m_glob);
         }
         out_row[i] = half(acc * inv_d);
     }

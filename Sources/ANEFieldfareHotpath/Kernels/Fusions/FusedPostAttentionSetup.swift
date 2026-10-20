@@ -8,7 +8,7 @@ import Metal
 ///   hidden = hidden + attn
 ///   dense_x = rmsnorm_bf16w(hidden, pre_feedforward_layernorm)
 ///   routed_x = rmsnorm_bf16w(hidden, pre_feedforward_layernorm_2)
-///   router_x = rmsnorm_no_scale(hidden)
+///   router_x = rmsnorm(hidden), no weight
 final class FusedPostAttentionSetup {
     private let pso: any MTLComputePipelineState
     private let specializedPSO: any MTLComputePipelineState?

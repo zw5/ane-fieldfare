@@ -1,17 +1,14 @@
-import Darwin
 public import Foundation
 public import Metal
 import ANEFieldfareImportedFormat
 
 public enum VisionRuntimeError: Error, CustomStringConvertible {
-    case disabled
     case invalidInput(String)
     case commandFailed(String)
     case unsupportedKernel(String)
 
     public var description: String {
         switch self {
-        case .disabled: "vision runtime is unavailable"
         case .invalidInput(let detail): "invalid vision input: \(detail)"
         case .commandFailed(let detail): "vision Metal command failed: \(detail)"
         case .unsupportedKernel(let detail): "vision kernel unavailable: \(detail)"
@@ -23,18 +20,6 @@ public struct VisionFeatures {
     public let buffer: any MTLBuffer
     public let tokenCount: Int
     public let hiddenSize: Int
-    public let gpuNanoseconds: UInt64
-    public let scratchBytes: Int
-    public let projectorPath: MPPPrefillInt4QMM.Path
-    public let expertResidencyTransition: VisionExpertResidencyTransition?
-    public let preprocessing: VisionPreprocessingReport?
-}
-
-public struct VisionPreprocessingReport: Sendable, Equatable {
-    public let metadata: VisionImageMetadata
-    public let geometry: Gemma4ImageGeometry
-    public let wallNanoseconds: UInt64
-    public let allocatedBytes: Int
 }
 
 public final class VisionRuntime {
@@ -47,17 +32,18 @@ public final class VisionRuntime {
     private let primitives: VisionPrimitives
     private let attention: VisionAttention
     private let usesBF16Projector: Bool
+    private let projectorKernel: MPPPrefillInt4QMM
+    private let imageResize: VisionResize?
     /// Mapped weight regions retained across images under `.keepReady`. Mapping
     /// and first-touching the 1.08 GB the tower reads costs the same every image
     /// otherwise; holding the mappings pays it once. Pages are clean, file-backed
     /// and evictable, like the routed expert pool.
     private var cachedRegions: [String: VisionMappedWeightRegion] = [:]
 
-
     public static func open(
         textModelURL: URL,
         context: MetalContext,
-        visionPackURL: URL? = nil
+        visionPackURL: URL?
     ) throws -> VisionRuntime {
         try requireSupportedDevice(context.device)
         let manifest = try ManifestReader.load(
@@ -68,22 +54,13 @@ public final class VisionRuntime {
         }
         let companion = try visionPackURL
             ?? VisionPackLocation.companionURL(forTextModel: textModelURL)
-        // The pack has to exist before anything is created beside it. The lease
-        // opens its lock with O_CREAT, so taking it first meant a text-only
-        // install got a permanent stray dotfile, and a pack on a read-only
-        // volume failed with "could not open use lock ... errno 30" — a lock
-        // error standing in for a perfectly valid pack.
+        // The lease creates its lock file beside the pack (O_CREAT), so the
+        // pack and its manifest must be confirmed first: a missing pack or a
+        // stray directory must not get a lock file, and a missing pack is
+        // `packNotFound`, not invalid metadata.
         guard FileManager.default.fileExists(atPath: companion.path) else {
-            // Absence is not invalid metadata. Saying "metadata is invalid" for
-            // a pack nobody installed sends the reader looking for corruption
-            // in a file that is not there.
             throw VisionPackError.packNotFound(companion.path)
         }
-        // ... and it has to look like a pack, for the same reason the existence
-        // check above exists. A directory that is merely *there* — a `.partial`
-        // download, a mistyped path — also got a permanent stray lock file
-        // beside it, because the lease is created before the store validates
-        // anything. One `lstat` moves that decision ahead of the `O_CREAT`.
         let manifestPath = companion
             .appendingPathComponent(GTurboVisionFormatV1.manifestFile).path
         guard FileManager.default.fileExists(atPath: manifestPath) else {
@@ -97,23 +74,15 @@ public final class VisionRuntime {
         return try VisionRuntime(context: context, store: store, useLease: useLease)
     }
 
-    public static func isSupported(on device: any MTLDevice) -> Bool {
-        device.supportsFamily(.apple8)
-    }
-
     public static func requireSupportedDevice(_ device: any MTLDevice) throws {
-        try requireSupportedDevice(supportsApple8: isSupported(on: device))
-    }
-
-    static func requireSupportedDevice(supportsApple8: Bool) throws {
-        guard supportsApple8 else {
+        guard device.supportsFamily(.apple8) else {
             throw VisionRuntimeError.unsupportedKernel(
                 "the image tower requires an M2 or newer Apple Silicon Mac")
         }
     }
 
-    init(context: MetalContext, store: VisionWeightStore,
-         useLease: consuming VisionPackUseLease) throws {
+    private init(context: MetalContext, store: VisionWeightStore,
+                 useLease: consuming VisionPackUseLease) throws {
         self.context = context
         self.store = store
         self.useLease = useLease
@@ -123,112 +92,55 @@ public final class VisionRuntime {
         // Pre-Apple10 GPUs convert the pooled features to FP16 for the projector.
         self.usesBF16Projector = context.device.supportsFamily(.apple10)
         self.imageResize = try? VisionResize(context: context)
-        // Built once per runtime; the tensorops library behind it is shared
-        // with the linear and attention kernels through
-        // `MetalContext.privateLibrary`'s cache instead of compiled per
-        // constructor.
         self.projectorKernel = MPPPrefillInt4QMM(
-            context: context,
-            variant: usesBF16Projector
-                ? .apple10BF16
-                : context.device.supportsFamily(.apple10) ? .apple10V1 : .control)
+            context: context, variant: usesBF16Projector ? .apple10BF16 : .control)
     }
-
-    private let projectorKernel: MPPPrefillInt4QMM
-    private let imageResize: VisionResize?
-
-    /// The tensor groups the encode path maps, named once so prewarm cannot
-    /// map a different grouping into the same cache.
-    static let patchEmbedderTensorNames = [
-        "vision_tower.patch_embedder.input_proj.weight",
-        "vision_tower.patch_embedder.position_embedding_table",
-    ]
-    static let projectorTensorNames = [
-        "vision_tower.std_bias",
-        "vision_tower.std_scale",
-        "embed_vision.embedding_projection.weight",
-        "embed_vision.embedding_projection.scales",
-        "embed_vision.embedding_projection.biases",
-    ]
 
     public func encodeImage(
         at fileURL: URL,
-        languageModel: Model? = nil,
-        residencyPolicy: VisionResidencyPolicy = .defaultPolicy,
-        checkCancellation: () throws -> Void = {}
+        languageModel: Model,
+        residencyPolicy: VisionResidencyPolicy,
+        checkCancellation: () throws -> Void
     ) throws -> VisionFeatures {
-        let preprocessor = Gemma4ImagePreprocessor(device: context.device, config: config,
-                                                   gpuResize: imageResize)
-        return try encodeImage(
-            plan: try preprocessor.plan(fileURL: fileURL),
+        try encodeImage(
+            plan: try makePreprocessor().plan(fileURL: fileURL),
             languageModel: languageModel,
             residencyPolicy: residencyPolicy,
             checkCancellation: checkCancellation)
     }
 
-    /// Encodes an image the caller has already planned.
-    ///
-    /// Callers plan first to learn the token count, and re-planning here opened
-    /// the file a second time for another ImageIO sniff, metadata parse and
-    /// marker walk — per image, per turn. It also validated the encode against
-    /// metadata that a file swapped between the two opens would no longer match.
+    /// Encodes an image the caller has already planned, without reopening the
+    /// file, so the encode matches the metadata the plan was validated against.
     public func encodeImage(
         plan: VisionImagePlan,
-        languageModel: Model? = nil,
-        residencyPolicy: VisionResidencyPolicy = .defaultPolicy,
-        checkCancellation: () throws -> Void = {}
-    ) throws -> VisionFeatures {
-        try encode(languageModel: languageModel,
-                   residencyPolicy: residencyPolicy,
-                   checkCancellation: checkCancellation) { preprocessor in
-            try preprocessor.preprocess(plan)
-        }
-    }
-
-    private func encode(
-        languageModel: Model?,
+        languageModel: Model,
         residencyPolicy: VisionResidencyPolicy,
-        checkCancellation: () throws -> Void,
-        pixels: (Gemma4ImagePreprocessor) throws -> VisionPixelBuffer
+        checkCancellation: () throws -> Void
     ) throws -> VisionFeatures {
         try checkCancellation()
-        let preprocessor = Gemma4ImagePreprocessor(device: context.device, config: config,
-                                                   gpuResize: imageResize)
+        if residencyPolicy == .onDemand { try drainGPU() }
         try checkCancellation()
-        let gpuDrainNanoseconds = try languageModel != nil && residencyPolicy == .onDemand
-            ? drainGPU() : 0
+        _ = languageModel.prepareExpertResidencyForVision(residencyPolicy)
         try checkCancellation()
-        let transition = languageModel?.prepareExpertResidencyForVision(
-            residencyPolicy, gpuDrainNanoseconds: gpuDrainNanoseconds)
-        try checkCancellation()
-        let input = try pixels(preprocessor)
-        return try encodePreparedPatches(
-            patchesBF16: input.patchesBF16,
-            positionsInt32x2: input.positionsInt32x2,
-            patchGridWidth: input.geometry.patchGridWidth,
-            patchGridHeight: input.geometry.patchGridHeight,
-            expertResidencyTransition: transition,
-            preprocessing: VisionPreprocessingReport(
-                metadata: input.metadata,
-                geometry: input.geometry,
-                wallNanoseconds: input.wallNanoseconds,
-                allocatedBytes: input.allocatedBytes),
+        return try encodePatches(
+            try makePreprocessor().preprocess(plan),
             retainsWeightRegions: residencyPolicy == .keepReady,
             checkCancellation: checkCancellation)
     }
 
-    private func encodePreparedPatches(
-        patchesBF16: any MTLBuffer,
-        positionsInt32x2: any MTLBuffer,
-        patchGridWidth: Int,
-        patchGridHeight: Int,
-        expertResidencyTransition: VisionExpertResidencyTransition?,
-        preprocessing: VisionPreprocessingReport?,
+    private func makePreprocessor() -> Gemma4ImagePreprocessor {
+        Gemma4ImagePreprocessor(device: context.device, config: config, gpuResize: imageResize)
+    }
+
+    private func encodePatches(
+        _ input: VisionPixelBuffer,
         retainsWeightRegions: Bool,
         checkCancellation: () throws -> Void
     ) throws -> VisionFeatures {
         if !retainsWeightRegions { cachedRegions.removeAll(keepingCapacity: false) }
         try checkCancellation()
+        let patchGridWidth = input.geometry.patchGridWidth
+        let patchGridHeight = input.geometry.patchGridHeight
         let rows = patchGridWidth * patchGridHeight
 
         // The QKV projections write attention's padded head-major layout
@@ -249,7 +161,6 @@ public final class VisionRuntime {
             if retainsWeightRegions { cachedRegions[key] = region }
             return region
         }
-        var gpuNanoseconds: UInt64 = 0
         // Command buffers are pipelined: the CPU encodes the next layer while
         // the GPU executes the previous one. An in-flight entry keeps its
         // mapped weight region alive until its buffer completes, and the
@@ -265,9 +176,6 @@ public final class VisionRuntime {
                                                             error: entry.buffer.error) {
                 throw VisionRuntimeError.commandFailed(detail)
             }
-            gpuNanoseconds += UInt64(
-                max(0, entry.buffer.gpuEndTime - entry.buffer.gpuStartTime)
-                    * 1_000_000_000)
         }
         func commitPipelined(_ buffer: any MTLCommandBuffer,
                              retaining region: VisionMappedWeightRegion?) throws {
@@ -281,15 +189,15 @@ public final class VisionRuntime {
             for entry in inFlight { entry.buffer.waitUntilCompleted() }
         }
 
-        let patchWeight = Self.patchEmbedderTensorNames[0]
-        let positionTable = Self.patchEmbedderTensorNames[1]
+        let patchWeight = "vision_tower.patch_embedder.input_proj.weight"
+        let positionTable = "vision_tower.patch_embedder.position_embedding_table"
         do {
-            let fixed = try mapRegion(Self.patchEmbedderTensorNames)
+            let fixed = try mapRegion([patchWeight, positionTable])
             let commandBuffer = try makeCommandBuffer()
             try scratch.encodeClear(commandBuffer: commandBuffer)
             attention.encodeClearPadding(commandBuffer: commandBuffer)
             primitives.encodeNormalize(commandBuffer: commandBuffer,
-                                       input: patchesBF16,
+                                       input: input.patchesBF16,
                                        output: scratch.normalizedPatches,
                                        rows: rows, paddedRows: scratch.paddedRows)
             linear.encode(
@@ -302,7 +210,7 @@ public final class VisionRuntime {
                 commandBuffer: commandBuffer,
                 hidden: scratch.hiddenA,
                 table: fixed.buffer, tableOffset: try fixed.offset(of: positionTable),
-                positions: positionsInt32x2, rows: rows)
+                positions: input.positionsInt32x2, rows: rows)
             try commitPipelined(commandBuffer, retaining: fixed)
         }
 
@@ -344,7 +252,7 @@ public final class VisionRuntime {
                 weights: weights.buffer,
                 qWeightOffset: try offset("self_attn.q_norm.weight"),
                 kWeightOffset: try offset("self_attn.k_norm.weight"),
-                positions: positionsInt32x2,
+                positions: input.positionsInt32x2,
                 rows: rows, heads: config.numHeads,
                 paddedRowStride: scratch.paddedRows)
             attention.encode(commandBuffer: commandBuffer,
@@ -406,7 +314,13 @@ public final class VisionRuntime {
         let outputRows = (patchGridWidth / config.poolingKernel)
             * (patchGridHeight / config.poolingKernel)
         try checkCancellation()
-        let projector = try mapRegion(Self.projectorTensorNames)
+        let projector = try mapRegion([
+            "vision_tower.std_bias",
+            "vision_tower.std_scale",
+            "embed_vision.embedding_projection.weight",
+            "embed_vision.embedding_projection.scales",
+            "embed_vision.embedding_projection.biases",
+        ])
         guard let features = context.device.makeBuffer(
             length: outputRows * config.textHiddenSize * MemoryLayout<Float16>.stride,
             options: .storageModeShared) else {
@@ -431,7 +345,7 @@ public final class VisionRuntime {
                 input: scratch.attention, output: scratch.hiddenB,
                 count: outputRows * config.hiddenSize)
         }
-        let projectorMetadata = projectorKernel.encode(
+        let projectorPath = projectorKernel.encode(
             commandBuffer: commandBuffer,
             weights: projector.buffer,
             weightsOffset: try projector.offset(
@@ -445,21 +359,14 @@ public final class VisionRuntime {
             x: usesBF16Projector ? scratch.attention : scratch.hiddenB,
             y: features,
             m: outputRows, n: config.textHiddenSize, k: config.hiddenSize)
-        guard projectorMetadata.path != .fallback else {
+        guard projectorPath != .fallback else {
             throw VisionRuntimeError.unsupportedKernel("INT4 projector fell back")
         }
         try commitPipelined(commandBuffer, retaining: projector)
         while !inFlight.isEmpty { try drainOldest() }
 
-        return VisionFeatures(buffer: features,
-                              tokenCount: outputRows,
-                              hiddenSize: config.textHiddenSize,
-                              gpuNanoseconds: gpuNanoseconds,
-                              scratchBytes: scratch.allocatedBytes
-                                  + attention.additionalScratchBytes,
-                              projectorPath: projectorMetadata.path,
-                              expertResidencyTransition: expertResidencyTransition,
-                              preprocessing: preprocessing)
+        return VisionFeatures(buffer: features, tokenCount: outputRows,
+                              hiddenSize: config.textHiddenSize)
     }
 
     private func makeCommandBuffer() throws -> any MTLCommandBuffer {
@@ -467,8 +374,7 @@ public final class VisionRuntime {
         return value
     }
 
-    private func drainGPU() throws -> UInt64 {
-        let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+    private func drainGPU() throws {
         let commandBuffer = try makeCommandBuffer()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
@@ -477,7 +383,5 @@ public final class VisionRuntime {
                                                         error: commandBuffer.error) {
             throw VisionRuntimeError.commandFailed(detail)
         }
-        return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started
     }
-
 }

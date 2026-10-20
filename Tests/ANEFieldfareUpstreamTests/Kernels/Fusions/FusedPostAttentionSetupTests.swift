@@ -20,35 +20,24 @@ import ANEFieldfareValidationSupport
         let rms = try RMSNorm(context: ctx)
         let fused = try FusedPostAttentionSetup(context: ctx)
 
-        guard
-            let hiddenLegacy = unsafe ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(Self.d), options: .storageModeShared),
-            let attnLegacy = unsafe ctx.device.makeBuffer(bytes: attn, length: Self.bytes(Self.d), options: .storageModeShared),
-            let denseLegacy = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
-            let routedLegacy = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
-            let routerLegacy = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
-            let hiddenFused = unsafe ctx.device.makeBuffer(bytes: hidden, length: Self.bytes(Self.d), options: .storageModeShared),
-            let attnFused = unsafe ctx.device.makeBuffer(bytes: attn, length: Self.bytes(Self.d), options: .storageModeShared),
-            let denseFused = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
-            let routedFused = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
-            let routerFused = ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared),
-            let wPostBuf = unsafe ctx.device.makeBuffer(bytes: wPost,
-                                                 length: wPost.count * MemoryLayout<UInt16>.size,
-                                                 options: .storageModeShared),
-            let wPreBuf = unsafe ctx.device.makeBuffer(bytes: wPre,
-                                                length: wPre.count * MemoryLayout<UInt16>.size,
-                                                options: .storageModeShared),
-            let wPre2Buf = unsafe ctx.device.makeBuffer(bytes: wPre2,
-                                                 length: wPre2.count * MemoryLayout<UInt16>.size,
-                                                 options: .storageModeShared)
-        else {
-            Issue.record("Failed to allocate buffers")
-            return
+        func buffer<T: BitwiseCopyable>(_ values: [T]) throws -> any MTLBuffer {
+            try #require(unsafe ctx.device.makeBuffer(bytes: values,
+                                                      length: values.count * MemoryLayout<T>.stride,
+                                                      options: .storageModeShared))
         }
+        func scratch() throws -> any MTLBuffer {
+            try #require(ctx.device.makeBuffer(length: Self.bytes(Self.d), options: .storageModeShared))
+        }
+        let hiddenLegacy = try buffer(hidden), attnLegacy = try buffer(attn)
+        let denseLegacy = try scratch(), routedLegacy = try scratch(), routerLegacy = try scratch()
+        let hiddenFused = try buffer(hidden), attnFused = try buffer(attn)
+        let denseFused = try scratch(), routedFused = try scratch(), routerFused = try scratch()
+        let wPostBuf = try buffer(wPost), wPreBuf = try buffer(wPre), wPre2Buf = try buffer(wPre2)
+        // The router norm has no weight; a unit BF16 weight leaves it exact.
+        let unitBuf = try buffer([UInt16](repeating: Quantization.bf16Bits(1.0), count: Self.d))
 
-        guard let attentionNormCB = ctx.queue.makeCommandBuffer() else {
-            Issue.record("Failed to allocate command buffer")
-            return
-        }
+        // The legacy residual add runs on the CPU between two command buffers.
+        let attentionNormCB = try #require(ctx.queue.makeCommandBuffer())
         rms.encodeBF16W(commandBuffer: attentionNormCB,
                         x: attnLegacy,
                         weight: wPostBuf,
@@ -68,10 +57,7 @@ import ANEFieldfareValidationSupport
             unsafe hiddenPointer[index] += attentionPointer[index]
         }
 
-        guard let cb = ctx.queue.makeCommandBuffer() else {
-            Issue.record("Failed to allocate command buffer")
-            return
-        }
+        let cb = try #require(ctx.queue.makeCommandBuffer())
         rms.encodeBF16W(commandBuffer: cb,
                         x: hiddenLegacy,
                         weight: wPreBuf,
@@ -84,11 +70,12 @@ import ANEFieldfareValidationSupport
                         out: routedLegacy,
                         d: UInt32(Self.d),
                         eps: Self.eps)
-        rms.encodeNoScale(commandBuffer: cb,
-                          x: hiddenLegacy,
-                          out: routerLegacy,
-                          d: UInt32(Self.d),
-                          eps: Self.eps)
+        rms.encodeBF16W(commandBuffer: cb,
+                        x: hiddenLegacy,
+                        weight: unitBuf,
+                        out: routerLegacy,
+                        d: UInt32(Self.d),
+                        eps: Self.eps)
         fused.encode(commandBuffer: cb,
                      hidden: hiddenFused,
                      attn: attnFused,

@@ -25,38 +25,21 @@ extension ModelLoaderTests {
 
         try FileManager.default.removeItem(at: alias)
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: replacement)
-        _ = try model.routedExpert(layer: 0, expert: 0)
+        _ = try model.routedExpertViews(layer: 0, experts: [0])[0]
     }
 
-    @Test func rejectsManifestLeafSymlink() throws {
+    @Test(arguments: ["manifest.json", "packed_experts"])
+    func rejectsSymlinkedInstallEntry(_ entry: String) throws {
         let dir = try Self.writeToySynthetic()
         let outside = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-manifest-\(UUID().uuidString).json")
+            .appendingPathComponent("gturbo-outside-\(UUID().uuidString)")
         defer {
             try? FileManager.default.removeItem(at: dir)
             try? FileManager.default.removeItem(at: outside)
         }
-        let manifest = dir.appendingPathComponent("manifest.json")
-        try FileManager.default.moveItem(at: manifest, to: outside)
-        try FileManager.default.createSymbolicLink(at: manifest, withDestinationURL: outside)
-        let device = try #require(MTLCreateSystemDefaultDevice())
-
-        #expect(throws: ModelError.self) {
-            try Model.load(directoryURL: dir, device: device, expecting: .gemma4Toy())
-        }
-    }
-
-    @Test func rejectsPackedExpertsParentSymlink() throws {
-        let dir = try Self.writeToySynthetic()
-        let outside = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gturbo-packed-\(UUID().uuidString)")
-        defer {
-            try? FileManager.default.removeItem(at: dir)
-            try? FileManager.default.removeItem(at: outside)
-        }
-        let packed = dir.appendingPathComponent("packed_experts")
-        try FileManager.default.moveItem(at: packed, to: outside)
-        try FileManager.default.createSymbolicLink(at: packed, withDestinationURL: outside)
+        let link = dir.appendingPathComponent(entry)
+        try FileManager.default.moveItem(at: link, to: outside)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
         let device = try #require(MTLCreateSystemDefaultDevice())
 
         #expect(throws: ModelError.self) {
@@ -79,7 +62,7 @@ extension ModelLoaderTests {
         try FileManager.default.createSymbolicLink(at: layer, withDestinationURL: outside)
 
         #expect(throws: ModelError.self) {
-            try model.routedExpert(layer: 0, expert: 0)
+            try model.routedExpertViews(layer: 0, experts: [0])[0]
         }
     }
 }

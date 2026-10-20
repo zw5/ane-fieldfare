@@ -77,12 +77,6 @@ public struct HTTPRequestParser {
         self.limits = limits
     }
 
-    /// Whether unconsumed bytes are buffered, i.e. a request has started.
-    public var hasBufferedData: Bool {
-        if case .head = state { return cursor < buffer.count }
-        return true
-    }
-
     public mutating func append(_ data: Data) {
         if cursor > 0, cursor >= buffer.count / 2 {
             buffer.removeFirst(cursor)
@@ -104,8 +98,6 @@ public struct HTTPRequestParser {
     }
 
     // MARK: - Head
-
-    private static let crlf: [UInt8] = [0x0D, 0x0A]
 
     /// The index of the next CRLF at or after `from`, if buffered.
     private func crlf(from: Int) -> Int? {

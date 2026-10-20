@@ -1,4 +1,4 @@
-public import Foundation
+import Foundation
 import Synchronization
 
 /// The OpenAI-compatible API over one `CompletionBackend`.
@@ -17,13 +17,12 @@ public struct OpenAIService: Sendable {
         /// Called after each generation with a one-line summary.
         public var log: @Sendable (String) -> Void
 
-        public init(modelID: String, apiKey: String? = nil, defaults: SamplingDefaults = SamplingDefaults(),
-                    created: Int = Int(Date().timeIntervalSince1970),
+        public init(modelID: String, apiKey: String?, defaults: SamplingDefaults,
                     log: @escaping @Sendable (String) -> Void = { _ in }) {
             self.modelID = modelID
             self.apiKey = apiKey
             self.defaults = defaults
-            self.created = created
+            self.created = Int(Date().timeIntervalSince1970)
             self.log = log
         }
     }

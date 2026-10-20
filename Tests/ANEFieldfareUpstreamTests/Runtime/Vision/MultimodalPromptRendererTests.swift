@@ -8,8 +8,8 @@ import Testing
         let context = try MetalContext()
         let firstID = UUID()
         let secondID = UUID()
-        let first = try features(rows: 2, context: context)
-        let second = try features(rows: 3, context: context)
+        let first = try visionTestFeatures(rows: 2, context: context)
+        let second = try visionTestFeatures(rows: 3, context: context)
 
         let input = try MultimodalPromptRenderer.render(
             messages: [MultimodalMessage(
@@ -53,20 +53,5 @@ import Testing
                 featuresByID: [:],
                 tokenizer: tokenizer)
         }
-    }
-
-    private func features(rows: Int, context: MetalContext) throws -> VisionFeatures {
-        let bytes = rows * VisionConfig().textHiddenSize * MemoryLayout<Float16>.stride
-        let buffer = try #require(context.device.makeBuffer(
-            length: bytes, options: .storageModePrivate))
-        return VisionFeatures(
-            buffer: buffer,
-            tokenCount: rows,
-            hiddenSize: VisionConfig().textHiddenSize,
-            gpuNanoseconds: 0,
-            scratchBytes: bytes,
-            projectorPath: .affineThreadgroupF16,
-            expertResidencyTransition: nil,
-            preprocessing: nil)
     }
 }

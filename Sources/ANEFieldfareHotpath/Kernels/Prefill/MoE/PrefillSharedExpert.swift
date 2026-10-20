@@ -31,8 +31,6 @@ final class PrefillSharedExpert {
         }
     }
 
-    var usesBatchedGEMM: Bool { batched != nil }
-
     private func scratch(tokens: Int, intermediate: Int) throws -> (gate: any MTLBuffer, up: any MTLBuffer, act: any MTLBuffer) {
         if let existing = batchScratch, existing.tokens >= tokens, existing.intermediate == intermediate {
             return (existing.gate, existing.up, existing.act)
@@ -53,9 +51,9 @@ final class PrefillSharedExpert {
 
     /// Returns false when the batched path does not apply and the caller's
     /// per-token loop must run.
-    private func encodeBatched(commandBuffer cb: any MTLCommandBuffer, x: any MTLBuffer, xOffset: Int,
-                               y: any MTLBuffer, yOffset: Int,
-                               gate: SharedExpertInt8Proj, up: SharedExpertInt8Proj, down: SharedExpertInt8Proj,
+    private func encodeBatched(commandBuffer cb: any MTLCommandBuffer, x: any MTLBuffer,
+                               y: any MTLBuffer,
+                               gate: SharedExpertProjection, up: SharedExpertProjection, down: SharedExpertProjection,
                                queryCount: Int, d: Int, intermediate: Int,
                                xStrideElements: Int, yStrideElements: Int,
                                smallBatch: Bool) throws -> Bool {
@@ -63,12 +61,12 @@ final class PrefillSharedExpert {
         guard let batched, let geluMulPSO, useMultiRow || queryCount >= Self.batchedMinimumTokens,
               xStrideElements == d, yStrideElements == d else { return false }
         let buffers = try scratch(tokens: queryCount, intermediate: intermediate)
-        func project(_ p: SharedExpertInt8Proj, x: any MTLBuffer, xOffset: Int, y: any MTLBuffer, yOffset: Int) throws -> Bool {
+        func project(_ p: SharedExpertProjection, x: any MTLBuffer, y: any MTLBuffer) throws -> Bool {
             if useMultiRow, let multiRow {
                 try multiRow.encodeRows(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                                     scales: p.scales, scalesOffset: p.scalesOffset,
                                     biases: p.biases, biasesOffset: p.biasesOffset,
-                                    x: x, xOffset: xOffset, y: y, yOffset: yOffset,
+                                    x: x, y: y,
                                     m: p.rows, n: p.cols, rows: queryCount,
                                     xStrideElements: Int(p.cols), yStrideElements: Int(p.rows))
                 return true
@@ -76,13 +74,13 @@ final class PrefillSharedExpert {
             return batched.encode(commandBuffer: cb, weights: p.weights, weightsOffset: p.weightsOffset,
                            scales: p.scales, scalesOffset: p.scalesOffset,
                            biases: p.biases, biasesOffset: p.biasesOffset,
-                           x: x, xOffset: xOffset, y: y, yOffset: yOffset,
-                           m: queryCount, n: Int(p.rows), k: Int(p.cols)).path != .fallback
+                           x: x, y: y,
+                           m: queryCount, n: Int(p.rows), k: Int(p.cols)) != .fallback
         }
         // A fallback on the first projection leaves nothing encoded; any
         // later one is a contract violation for these fixed shapes.
-        guard try project(gate, x: x, xOffset: xOffset, y: buffers.gate, yOffset: 0) else { return false }
-        guard try project(up, x: x, xOffset: xOffset, y: buffers.up, yOffset: 0),
+        guard try project(gate, x: x, y: buffers.gate) else { return false }
+        guard try project(up, x: x, y: buffers.up),
               let encoder = cb.makeTracedComputeEncoder() else {
             throw SharedExpertError.dimensionMismatch("batched shared expert up projection fell back")
         }
@@ -96,32 +94,25 @@ final class PrefillSharedExpert {
                                 threadsPerThreadgroup: MTLSize(width: min(geluMulPSO.maxTotalThreadsPerThreadgroup, 256),
                                                                height: 1, depth: 1))
         encoder.endEncoding()
-        guard try project(down, x: buffers.act, xOffset: 0, y: y, yOffset: yOffset) else {
+        guard try project(down, x: buffers.act, y: y) else {
             throw SharedExpertError.dimensionMismatch("batched shared expert down projection fell back")
         }
         return true
     }
 
     func encodeBlock(commandBuffer cb: any MTLCommandBuffer,
-                            x: any MTLBuffer,
-                            xOffset: Int = 0,
-                            y: any MTLBuffer,
-                            yOffset: Int = 0,
-                            gate: SharedExpertInt8Proj,
-                            up: SharedExpertInt8Proj,
-                            down: SharedExpertInt8Proj,
-                            scratchGate: any MTLBuffer,
-                            scratchGateOffset: Int = 0,
-                            scratchUp: any MTLBuffer,
-                            scratchUpOffset: Int = 0,
-                            scratchAct: any MTLBuffer,
-                            scratchActOffset: Int = 0,
-                            queryCount: Int,
-                            d: Int,
-                            intermediate: Int,
-                            xStrideElements: Int,
-                            yStrideElements: Int,
-                            smallBatch: Bool = false) throws {
+                     x: any MTLBuffer,
+                     y: any MTLBuffer,
+                     gate: SharedExpertProjection,
+                     up: SharedExpertProjection,
+                     down: SharedExpertProjection,
+                     scratchAct: any MTLBuffer,
+                     queryCount: Int,
+                     d: Int,
+                     intermediate: Int,
+                     xStrideElements: Int,
+                     yStrideElements: Int,
+                     smallBatch: Bool = false) throws {
         precondition(queryCount >= 0, "queryCount must be non-negative")
         precondition(d > 0, "d must be positive")
         precondition(intermediate > 0, "intermediate must be positive")
@@ -130,11 +121,11 @@ final class PrefillSharedExpert {
         guard gate.rows == UInt32(intermediate), gate.cols == UInt32(d),
               up.rows == UInt32(intermediate), up.cols == UInt32(d),
               down.rows == UInt32(d), down.cols == UInt32(intermediate) else {
-            throw SharedExpertInt8Error.dimensionMismatch(
+            throw SharedExpertError.dimensionMismatch(
                 "expected gate/up=(\(intermediate),\(d)) down=(\(d),\(intermediate))")
         }
 
-        if try encodeBatched(commandBuffer: cb, x: x, xOffset: xOffset, y: y, yOffset: yOffset,
+        if try encodeBatched(commandBuffer: cb, x: x, y: y,
                              gate: gate, up: up, down: down, queryCount: queryCount, d: d,
                              intermediate: intermediate, xStrideElements: xStrideElements,
                              yStrideElements: yStrideElements, smallBatch: smallBatch) {
@@ -144,18 +135,13 @@ final class PrefillSharedExpert {
         for row in 0..<queryCount {
             try shared.encode(commandBuffer: cb,
                               x: x,
-                              xOffset: xOffset + row * xStrideElements * halfBytes,
+                              xOffset: row * xStrideElements * halfBytes,
                               gate: gate,
                               up: up,
                               down: down,
                               y: y,
-                              yOffset: yOffset + row * yStrideElements * halfBytes,
-                              scratchGate: scratchGate,
-                              scratchGateOffset: scratchGateOffset,
-                              scratchUp: scratchUp,
-                              scratchUpOffset: scratchUpOffset,
-                              scratchAct: scratchAct,
-                              scratchActOffset: scratchActOffset)
+                              yOffset: row * yStrideElements * halfBytes,
+                              scratchAct: scratchAct)
         }
     }
 }

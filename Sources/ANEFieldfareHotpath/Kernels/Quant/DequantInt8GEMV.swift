@@ -1,47 +1,23 @@
-import Foundation
 import Metal
 
-/// Swift wrapper for `dequant_int8_gemv_simd`.
-///
-///   y = W * x
-///
-/// where W (M rows, N cols) is MLX-affine 8-bit (group=64) with BF16 scale +
-/// BF16 bias per group, x is FP16 [N], y is FP16 [M].
-///
-/// Same kernel, two call sites:
-///   * router  — M=128,    N=2816 (one per layer)
-///   * lm_head — M=262144, N=2816 (final classifier, tied with embed table)
-///
-/// One SIMD group (32 threads) runs per output row.
+/// `dequant_int8_gemv_simd`: y = W * x, where W (M rows, N cols) is MLX-affine
+/// 8-bit (group=64) with BF16 scale + BF16 bias per group, x is FP16 [N], y is
+/// FP16 [M]. One SIMD group (32 threads) runs per output row. The 8-bit shared
+/// expert's down projection is its caller.
 final class DequantInt8GEMV {
-    private struct Shape: Hashable {
-        var m: UInt32
-        var n: UInt32
-    }
-
     private let pso: any MTLComputePipelineState
-    private let specializedPSOs: [Shape: any MTLComputePipelineState]
-    private static let realDecodeShapes: [Shape] = [
-        Shape(m: 128, n: 2816),     // router.proj
-        Shape(m: 2112, n: 2816),    // shared expert gate/up
-        Shape(m: 2816, n: 2112),    // shared expert down
-    ]
+    /// Specialized to the 26B-A4B shared expert down projection, 2816 x 2112.
+    private let psoDown: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
-        let kernelName = "dequant_int8_gemv_simd"
-        self.pso = try context.pipeline(kernelName)
-
-        var variants: [Shape: any MTLComputePipelineState] = [:]
-        for shape in Self.realDecodeShapes {
-            variants[shape] = try context.pipeline(
-                kernelName,
-                constants: [
-                    MetalFunctionConstant(index: 70, value: .uint32(shape.m)),
-                    MetalFunctionConstant(index: 71, value: .uint32(shape.n)),
-                    MetalFunctionConstant(index: 72, value: .bool(true)),
-                ])
-        }
-        self.specializedPSOs = variants
+        self.pso = try context.pipeline("dequant_int8_gemv_simd")
+        self.psoDown = try context.pipeline(
+            "dequant_int8_gemv_simd",
+            constants: [
+                MetalFunctionConstant(index: 70, value: .uint32(2816)),
+                MetalFunctionConstant(index: 71, value: .uint32(2112)),
+                MetalFunctionConstant(index: 72, value: .bool(true)),
+            ])
     }
 
     /// Encodes the GEMV onto `commandBuffer`. Offsets allow passing the same
@@ -61,16 +37,14 @@ final class DequantInt8GEMV {
                      "N must be a multiple of \(Quantization.groupSize)")
         precondition(xOffset >= 0 && yOffset >= 0, "buffer offsets must be non-negative")
         guard let enc = commandBuffer.makeTracedComputeEncoder() else { return }
-        enc.setComputePipelineState(specializedPSOs[Shape(m: m, n: n)] ?? pso)
+        enc.setComputePipelineState(m == 2816 && n == 2112 ? psoDown : pso)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(scales,  offset: scalesOffset,  index: 1)
         enc.setBuffer(biases,  offset: biasesOffset,  index: 2)
         enc.setBuffer(x,       offset: xOffset,       index: 3)
         enc.setBuffer(y,       offset: yOffset,       index: 4)
-        let mVar = m
-        let nVar = n
-        enc.setValue(mVar, index: 5)
-        enc.setValue(nVar, index: 6)
+        enc.setValue(m, index: 5)
+        enc.setValue(n, index: 6)
 
         let rowsPerTG = 8
         let tgSize  = MTLSize(width: 32 * rowsPerTG, height: 1, depth: 1)

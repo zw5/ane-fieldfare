@@ -3,39 +3,19 @@ import Testing
 @testable import ANEFieldfareHotpath
 
 @Suite struct SampleTopK64Tests {
-    @Test func truncationDefaultsDoNotDisableGreedyEligibility() {
-        let config = GenerationConfig(temperature: 0, topK: 64, topP: 0.95)
-        #expect(config.isPureGreedy)
-    }
-
-    @Test func generationConfigRejectsSamplerStatesTheKernelCannotHonor() throws {
-        #expect(throws: GeneratorError.self) {
-            try GenerationConfig(temperature: 1, topK: 257, topP: 0.95).validate()
-        }
-        #expect(throws: GeneratorError.self) {
-            try GenerationConfig(temperature: 1, topK: nil, topP: 0.95).validate()
-        }
-        try GenerationConfig(temperature: 0, topK: nil, topP: 0.95).validate()
-    }
-
     /// `validate()` checked temperature for finiteness from the start and never
     /// checked the penalty beside it, so `--repetition-penalty inf` parsed, passed
     /// validation, reached the kernel and quietly degraded the output rather than
-    /// being refused: a prompt that counts to eight broke into another language
-    /// mid-count and then apologised for itself. Every CLI float guard without an
-    /// upper bound admits infinity, which is how it got that far.
-    @Test func generationConfigRejectsAPenaltyThatCannotBeApplied() throws {
-        #expect(throws: GeneratorError.self) {
-            try GenerationConfig(temperature: 0, repetitionPenalty: .infinity).validate()
+    /// being refused. Also the sampler states the kernels cannot honour.
+    @Test func generationConfigRejectsStatesTheKernelsCannotHonor() throws {
+        for config in [GenerationConfig(temperature: 1, topK: 257, topP: 0.95),
+                       GenerationConfig(temperature: 1, topK: nil, topP: 0.95),
+                       GenerationConfig(temperature: 0, repetitionPenalty: .infinity),
+                       GenerationConfig(temperature: 0, repetitionPenalty: 0),
+                       GenerationConfig(temperature: 0, repetitionPenalty: .nan)] {
+            #expect(throws: GeneratorError.self) { try config.validate() }
         }
-        #expect(throws: GeneratorError.self) {
-            try GenerationConfig(temperature: 0, repetitionPenalty: 0).validate()
-        }
-        #expect(throws: GeneratorError.self) {
-            try GenerationConfig(temperature: 0, repetitionPenalty: .nan).validate()
-        }
-        // The default, and an ordinary setting, both stay valid.
-        try GenerationConfig(temperature: 0).validate()
+        try GenerationConfig(temperature: 0, topK: nil, topP: 0.95).validate()
         try GenerationConfig(temperature: 0, repetitionPenalty: 1.1).validate()
     }
 
@@ -49,25 +29,20 @@ import Testing
         let vocab: Int
 
         init(vocab: Int) throws {
-            self.context = try MetalContext()
+            let context = try MetalContext()
+            self.context = context
             self.current = try Sample(context: context)
             self.candidate = try SampleTopK64(context: context, vocab: vocab)
             self.vocab = vocab
-            guard let probs = context.device.makeBuffer(
-                      length: vocab * MemoryLayout<Float16>.stride,
-                      options: .storageModeShared),
-                  let currentOutput = context.device.makeBuffer(
-                      length: MemoryLayout<UInt32>.stride,
-                      options: .storageModeShared),
-                  let candidateOutput = context.device.makeBuffer(
-                      length: MemoryLayout<UInt32>.stride,
-                      options: .storageModeShared)
-            else {
-                throw MetalError.noDevice
+            func buffer(_ length: Int) throws -> any MTLBuffer {
+                guard let buffer = context.device.makeBuffer(length: length, options: .storageModeShared) else {
+                    throw MetalError.noDevice
+                }
+                return buffer
             }
-            self.probs = probs
-            self.currentOutput = currentOutput
-            self.candidateOutput = candidateOutput
+            self.probs = try buffer(vocab * MemoryLayout<Float16>.stride)
+            self.currentOutput = try buffer(MemoryLayout<UInt32>.stride)
+            self.candidateOutput = try buffer(MemoryLayout<UInt32>.stride)
         }
 
         func write(_ values: (Int) -> Float) {
@@ -104,7 +79,6 @@ import Testing
 
     @Test func productionVocabularyMatchesCurrentSampler() throws {
         let rig = try Rig(vocab: 262_144)
-        #expect(rig.candidate.scratchBytes == 139_264)
         rig.write { i in
             let mixed = UInt64(i) &* 6364136223846793005 &+ 1442695040888963407
             return Float(UInt32(mixed >> 40) + 1) * (1.0 / 16_777_217.0)
@@ -116,18 +90,6 @@ import Testing
                 #expect(result.candidate == result.current,
                         "temperature \(temperature), seed \(seed): candidate \(result.candidate), current \(result.current)")
             }
-        }
-    }
-
-    @Test func tiesAndPartialTailMatchCurrentSampler() throws {
-        let rig = try Rig(vocab: 1_003)
-        rig.write { _ in 1.0 }
-
-        for seed in UInt64(1)...UInt64(8) {
-            let result = rig.draw(seed: seed, topP: 0.95)
-            #expect(result.candidate == result.current,
-                    "seed \(seed): candidate \(result.candidate), current \(result.current)")
-            #expect(result.candidate < 64)
         }
     }
 

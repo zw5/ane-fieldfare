@@ -7,9 +7,8 @@ import Metal
 ///   p[i]  = exp(z'[i] - max_j z'[j]) / sum_j exp(z'[j] - max_j z'[j])
 ///
 /// One threadgroup, single online-softmax pass (Milakov & Gimelshein). FP16
-/// storage in and out, FP32 accumulation. The softcap value lives in the
-/// kernel signature instead of being hardcoded so that downstream callers
-/// (and tests) can disable it by passing a very large number.
+/// storage in and out, FP32 accumulation. A very large `softcap` disables
+/// the cap.
 final class LogitSoftcapSoftmax {
     private let pso: any MTLComputePipelineState
 
@@ -47,9 +46,9 @@ final class LogitSoftcapSoftmax {
 /// one UInt32 token id. With `temperature == 0` performs greedy argmax and
 /// ignores top-k / top-p / seed. With `temperature > 0` applies top-p against
 /// the full distribution, caps the surviving set with top-k, then applies
-/// temperature sharpening (`p^(1/T)`) and samples via a seeded PRNG. The
-/// plain-temperature fast path uses the same
-/// `(seed, position, row)` Gumbel stream as the fused lm_head sampler.
+/// temperature sharpening (`p^(1/T)`) and samples via a seeded PRNG. Plain
+/// temperature (no top-k/top-p) takes a Gumbel-max draw keyed by
+/// `(seed, position, token)`.
 final class Sample {
     private let pso: any MTLComputePipelineState
 
@@ -59,7 +58,7 @@ final class Sample {
 
     /// Encodes the sampler. `probs` is an FP16 buffer of length `v`. `outToken`
     /// must point at storage for one UInt32. The seed is the full 64-bit PRNG
-    /// state — tests pass identical seeds to assert determinism.
+    /// state.
     func encode(commandBuffer: any MTLCommandBuffer,
                        probs: any MTLBuffer,
                        outToken: any MTLBuffer,
@@ -98,13 +97,12 @@ enum SampleTopK64Error: Error {
     case scratchAllocationFailed
 }
 
-/// Three-stage Top-64 sampler for the documented Gemma 4 policy and measured
-/// temperature variants. Intermediate pairs remain in private GPU memory.
+/// Three-stage Top-64 sampler (temperature > 0, top-k 64). Intermediate
+/// pairs remain in private GPU memory.
 final class SampleTopK64 {
     private static let tileSize = 1024
     private static let keptPerTile = 64
 
-    private let ctx: MetalContext
     private let stage1PSO: any MTLComputePipelineState
     private let reducePSO: any MTLComputePipelineState
     private let finalPSO: any MTLComputePipelineState
@@ -117,14 +115,12 @@ final class SampleTopK64 {
     private let stage1Count: Int
     private let stage2Count: Int
 
-    public let vocab: Int
-    public let scratchBytes: Int
+    private let vocab: Int
 
     public init(context: MetalContext, vocab: Int) throws {
         guard vocab > 0, vocab <= 262_144 else {
             throw SampleTopK64Error.unsupportedVocabulary(vocab)
         }
-        self.ctx = context
         self.vocab = vocab
         self.stage1PSO = try context.pipeline("sample_topk64_stage1")
         self.reducePSO = try context.pipeline("sample_topk64_reduce")
@@ -139,8 +135,6 @@ final class SampleTopK64 {
         let stage1IndexBytes = stage1Count * MemoryLayout<UInt32>.stride
         let stage2ValueBytes = stage2Count * MemoryLayout<Float>.stride
         let stage2IndexBytes = stage2Count * MemoryLayout<UInt32>.stride
-        self.scratchBytes = stage1ValueBytes + stage1IndexBytes
-            + stage2ValueBytes + stage2IndexBytes
 
         guard let stage1Values = context.device.makeBuffer(
                   length: stage1ValueBytes, options: .storageModePrivate),

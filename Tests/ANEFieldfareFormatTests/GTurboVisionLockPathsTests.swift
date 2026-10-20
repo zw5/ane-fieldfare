@@ -5,7 +5,6 @@ import ANEFieldfareImportedFormat
 /// Every reader and writer of a vision companion must derive the same lock
 /// file; these pin the shared derivation itself.
 @Suite struct GTurboVisionLockPathsTests {
-
     @Test func symlinkedParentDerivesTheSameLockFileAsThePhysicalPath() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory

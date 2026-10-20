@@ -126,21 +126,13 @@ package struct OpenedVisionImage {
 
 
     /// Whether the JPEG's entropy-coded scan is terminated by an end-of-image
-    /// marker, which is the only question that separates a truncated file from
-    /// a complete one.
+    /// marker. ImageIO reports `statusComplete` for a truncated file and
+    /// decodes the missing scan as gray filler, so this is checked here.
     ///
-    /// Neither simpler test works. ImageIO reports `statusComplete` for a file
-    /// truncated to a fifth of its length — the incomplete statuses only apply
-    /// to incremental sources — and it then decodes the partial scan with gray
-    /// filler, so the model describes an image the file does not contain.
-    /// Scanning the tail for `FF D9` fails in both directions: a truncated photo
-    /// still carries the EOI of its EXIF thumbnail near the front, and a Motion
-    /// Photo's appended MP4 pushes the real EOI outside any fixed window.
-    ///
-    /// Markers are walked from the front to find the start of scan; anything
-    /// before it (thumbnails, ICC, XMP) is skipped by construction. A single
-    /// `FF D9` anywhere after that point means the scan was terminated, which
-    /// tolerates trailing video and padding.
+    /// Markers are walked from the front to the start of scan, skipping
+    /// thumbnails (whose own EOI would otherwise count), ICC and XMP; one
+    /// `FF D9` anywhere after it means the scan was terminated, which
+    /// tolerates trailing data such as a Motion Photo's video.
     func hasCompleteJPEGStream() -> Bool {
         guard let scanStart = startOfScanOffset() else { return false }
         var position = scanStart
@@ -162,14 +154,9 @@ package struct OpenedVisionImage {
         return false
     }
 
-    /// Whether the PNG ends with its `IEND` chunk, which is the same question
-    /// `hasCompleteJPEGStream` asks of a JPEG.
-    ///
-    /// A PNG cut short decodes exactly as badly and just as silently: ImageIO
-    /// returns the rows it has and leaves the rest black, so the model
-    /// confidently describes a black square. `IEND` is a fixed 12-byte trailer
-    /// with a constant CRC, so the check is a single tail read rather than a
-    /// walk, and appended data after `IEND` is not something PNG permits.
+    /// Whether the PNG ends with its `IEND` chunk; ImageIO decodes a truncated
+    /// PNG's missing rows as black. `IEND` is a fixed 12-byte trailer with a
+    /// constant CRC, and PNG permits nothing after it.
     func hasCompletePNGStream() -> Bool {
         let trailer = 12
         guard encodedBytes >= 8 + trailer else { return false }
@@ -192,17 +179,13 @@ package struct OpenedVisionImage {
             let read = unsafe fileProvider.read(into: &header, position: off_t(position), count: 4)
             guard read == 4, header[0] == 0xFF else { return nil }
             // Fill bytes: any number of 0xFF may precede a marker (ITU T.81
-            // B.1.1.2), and scanners and older camera firmware emit them.
-            // Reading one as the marker made its length the real marker byte
-            // and half the real length — a jump to nothing, and an intact photo
-            // reported as truncated.
+            // B.1.1.2).
             if header[1] == 0xFF {
                 position += 1
                 continue
             }
             let marker = header[1]
-            // Standalone markers carry no length. SOI and EOI belong here too:
-            // treating them as length-prefixed walked off into the entropy data.
+            // Standalone markers (TEM, SOI, EOI, RSTn) carry no length.
             if marker == 0x01 || marker == 0xD8 || marker == 0xD9
                 || (0xD0...0xD7).contains(marker) {
                 position += 2
