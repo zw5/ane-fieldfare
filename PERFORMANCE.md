@@ -2,7 +2,7 @@
 
 How the runtime got to its current speed, change by change, with what was
 measured and what was tried and rejected. All measurements are on an M5 with
-16 GB unless stated. Terms are defined in the [README glossary](README.md#glossary).
+16 GB unless stated.
 
 "Bit-exact" or "byte-identical" means the change did not alter the output.
 
