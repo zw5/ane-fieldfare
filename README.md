@@ -50,10 +50,12 @@ apps.
   measurements below used an M5 with 16 GB.
 - macOS 26 or later. Measured on macOS 27 build `26A5406e`.
 - Xcode with Swift 6.2 or later.
-- The model in `.gturbo` format (about 13 GB). This repository reads that
-  format but cannot create it. Use the installer from
-  [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) and put the
-  result at `checkpoints/gturbo/gemma4.gturbo` (git ignores `checkpoints/`).
+- The model in `.gturbo` format, installed by `ANEFieldfareInstall` (see
+  [Quick start](#quick-start)) at `checkpoints/gturbo/gemma4.gturbo` (git
+  ignores `checkpoints/`). The installer streams
+  `mlx-community/gemma-4-26b-a4b-it-4bit` from Hugging Face at a pinned
+  revision, about 15 GB through range requests, and writes the ~14.3 GB
+  install directly, without a second copy of the checkpoint on disk.
 - `z-lab/gemma-4-26B-A4B-it-DFlash` (dflash drafter) at
   `checkpoints/dflash/gemma-4-26B-A4B-it-DFlash` (or beside the model), where
   the CLI and the server find it. Without it the model still runs,
@@ -63,13 +65,22 @@ apps.
 ## Quick start
 
 ```bash
-Scripts/build.sh     # builds the CLI and the server into .build/
+Scripts/build.sh     # builds the CLI, the server and the installer into .build/
+
+# Download and install the model (resumable; set HF_TOKEN only if Hugging Face asks).
+.build/swift-hotpath/release/ANEFieldfareInstall --output checkpoints/gturbo/gemma4.gturbo
 
 .build/swift-hotpath/release/ANEFieldfareHotpathCLI \
   --model checkpoints/gturbo/gemma4.gturbo \
   --chat-prompt "What is the capital of France? Answer briefly." \
   --temperature 0 --max-new 64
 ```
+
+An interrupted install continues with `--resume` or is removed with
+`--discard-partial`; `--verify-install --input-gturbo <dir>` re-checks an
+install's files against its manifest. The optional image pack installs beside
+the model with `--vision-output checkpoints/gturbo/gemma4.vision.gturbo
+--text-model checkpoints/gturbo/gemma4.gturbo`.
 
 Speculative decoding is enabled whenever the drafter is installed, greedy or
 sampled; image prompts and a repetition penalty decode without the drafter. The
@@ -401,7 +412,8 @@ build. The quick suite takes about 90 s.
 | `Sources/ANEFieldfareHotpathCLI`, `…CLICore` | The command-line program. |
 | `Sources/ANEFieldfareServer`, `…ServerCore` | The OpenAI-compatible HTTP server: HTTP/1.1 on Network.framework, the OpenAI request and response shapes, and the serialized engine. |
 | `Sources/ANEFieldfareANECarrier` | The Objective-C ANE wrapper. |
-| `Sources/ANEFieldfareImportedFormat` | Reader for the `.gturbo` format. |
+| `Sources/ANEFieldfareImportedFormat` | The `.gturbo` format: its types, reader and writers. |
+| `Sources/ANEFieldfareInstall`, `…InstallCore` | The model installer: streams the checkpoint from Hugging Face into `.gturbo` and verifies installs. |
 | `Sources/ANEFieldfareBench` | The benchmark program used by `Scripts/bench/`. |
 | `Sources/ANEFieldfareDFlashCapture` | Records hidden states and routes for drafter work (`Scripts/dflash/`). |
 | `Tests/` | Test suites, CPU reference implementations and generators for the synthetic test models. |
@@ -412,8 +424,8 @@ build. The quick suite takes about 90 s.
 
 Apache License 2.0; see [LICENSE](LICENSE). Parts are adapted from
 [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) by drumih (Apache
-2.0): the Swift runtime, the `.gturbo` format, the CLI and the upstream
-regression tests. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+2.0): the Swift runtime, the `.gturbo` format, the CLI, the model installer
+and the upstream regression tests. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
 [UPSTREAM.json](UPSTREAM.json) for what came from where.
 
 Gemma is a model family from Google. Its weights are distributed under Google's

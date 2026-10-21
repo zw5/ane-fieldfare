@@ -20,7 +20,7 @@
   "32K CLI context default",
   "Device supervisor with ANE routed-prefill guest, local profiling and numerical oracles"
  ],
- "scope": "Imported runtime, compact format, CLI, and their regression tests. The upstream GUI and server are not imported; this repository's server is its own. Repack writers are test-fixture support only.",
+ "scope": "Imported runtime, compact format, CLI, model installer, and their regression tests. The upstream GUI and server are not imported; this repository's server is its own.",
  "benchmark_boundary": "September 16 post-merge comparison uses unmodified latest Turbo 4c6db1e with matched release toolchain, official generation fixtures/settings, nine discarded warmups and eighteen measured runs. The receipts are kept locally and not published. September 8 receipts are historical comparisons against 6c044011.",
  "additional_imports": [
   {
@@ -38,6 +38,27 @@
     "early reads are F_RDADVISE advisories into the page cache: no staging buffers, never blocking",
     "candidates limited to the guess's top 8 and absent from memory",
     "the same guess advises each verify row's next-layer experts"
+   ]
+  },
+  {
+   "source": "https://github.com/drumih/turbo-fieldfare (TurboFieldfareRepack)",
+   "revision": "2e9ea50e8c35a65d9170e3bff9d1063be8931ec0",
+   "date": "2026-10-15",
+   "license": "Apache-2.0",
+   "source_mappings": {
+    "Sources/TurboFieldfareRepack/Core": "Sources/ANEFieldfareInstallCore",
+    "Sources/TurboFieldfareRepack/Command": "Sources/ANEFieldfareInstall",
+    "Tests/TurboFieldfareRepack/Core": "Tests/ANEFieldfareInstallTests",
+    "Sources/TurboFieldfareFormat/GTurboManifestV1.swift": "Sources/ANEFieldfareImportedFormat/GTurboManifestV1.swift",
+    "Sources/TurboFieldfareFormat/GTurboVisionFormatV1.swift": "Sources/ANEFieldfareImportedFormat/GTurboVisionFormatV1.swift"
+   },
+   "local_changes": [
+    "builds under this repository's strict settings: Swift 6 strict memory safety, ExistentialAny, internal imports by default, warnings as errors",
+    "no @unchecked Sendable: the download session builds a configuration per session, and the redirect and range-transfer delegates and the progress reporter keep their mutable state in a Mutex",
+    "no force unwraps: buffer-taking pread/pwrite overloads, a checked Hugging Face base URL constant, dictionary entries iterated instead of re-looked-up",
+    "the resident index is staged in a raw allocation rather than an unwrapped buffer",
+    "tool names, receipts and temporary files say ANEFieldfareInstall; install-plan hash domains are unchanged",
+    "the test URL stub's scripted state is behind a Mutex"
    ]
   }
  ]

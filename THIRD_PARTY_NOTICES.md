@@ -17,10 +17,18 @@ records the mapping and retained ANE Fieldfare contracts.
 Upstream regression tests and numerical reference helpers are included under
 `Tests/ANEFieldfareUpstreamTests`, `Tests/ANEFieldfareFormatTests`, and
 `Tests/Support/Validation`, alongside this repository's own tests in the same
-targets. The repack writers under
-`Tests/Support/Repack` support synthetic loader fixtures only. These files
-retain the same Apache 2.0 attribution and license. This import does not add
-the upstream GUI, server, or installer executables.
+targets. The fixture generators under `Tests/Support/Format` support synthetic
+loader fixtures only. These files retain the same Apache 2.0 attribution and
+license. This import does not add the upstream GUI or server executables.
+
+The model installer under `Sources/ANEFieldfareInstallCore` and
+`Sources/ANEFieldfareInstall`, with its tests under
+`Tests/ANEFieldfareInstallTests`, is adapted from Turbo Fieldfare's
+`TurboFieldfareRepack` at upstream commit
+`2e9ea50e8c35a65d9170e3bff9d1063be8931ec0` (2026-10-15), Apache License 2.0. The
+`.gturbo` manifest and vision-pack types it writes
+(`Sources/ANEFieldfareImportedFormat/GTurboManifestV1.swift`,
+`GTurboVisionFormatV1.swift`) follow the same commit.
 
 The decode early expert read (`Runtime/Inference/NextLayerExpertPrefetcher.swift`,
 `Runtime/Inference/NextLayerGuessWeights.swift`) and the fitted next-layer
