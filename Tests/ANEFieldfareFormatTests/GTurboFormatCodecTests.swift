@@ -25,14 +25,15 @@ private enum FormatFixture {
                 hiddenActivation: "gelu_pytorch_tanh", fullAttentionLayerMask: [0]),
             quant: quant,
             files: [
-                "model_weights.bin": GTurboManifestFileV1(size: 16_448),
-                "packed_experts/layout.json": GTurboManifestFileV1(size: 1),
+                "model_weights.bin": GTurboManifestFileV1(size: 16_448, sha256: fixtureSHA),
+                "packed_experts/layout.json": GTurboManifestFileV1(size: 1, sha256: fixtureSHA),
                 "packed_experts/layer_00.bin": GTurboManifestFileV1(
-                    size: 2 * GTurboFormatV1.alignmentBytes),
+                    size: 2 * GTurboFormatV1.alignmentBytes, sha256: fixtureSHA),
             ],
             expertsPerLayer: 2,
             numLayers: 1,
-            expertStride: GTurboFormatV1.alignmentBytes)
+            expertStride: GTurboFormatV1.alignmentBytes,
+            bitWidthOverridesHonored: nil)
     }
 
     static let quantSlot = GTurboManifestQuantSlotV1(

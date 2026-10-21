@@ -1,6 +1,9 @@
 import Foundation
 import ANEFieldfareImportedFormat
 
+/// A well-formed SHA-256 for fixture manifest file entries.
+package let fixtureSHA = String(repeating: "a", count: 64)
+
 /// One resident-index entry for synthetic `model_weights.bin` fixtures.
 struct ResidentEntry: Sendable {
     let name: String

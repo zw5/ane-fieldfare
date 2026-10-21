@@ -20,12 +20,13 @@ private enum VisionFormatFixture {
                     biasType: "bf16", groupSize: 64)),
         ]
         return GTurboVisionManifestV1(
-            modelID: "fixture/model",
+            modelID: "fixture/model", sourceRevision: "fixture-revision",
+            sourceIndexSha256: fixtureSHA, processorConfigSha256: fixtureSHA,
             compatibleTextSourceSnapshotHash: "fixture-text-snapshot",
+            compatibleTextManifestSha256: fixtureSHA,
             files: [
-                GTurboVisionFormatV1.weightsFile: GTurboManifestFileV1(
-                    size: 2 * GTurboVisionFormatV1.alignmentBytes),
-                GTurboVisionFormatV1.processorFile: GTurboManifestFileV1(size: 2),
+                GTurboVisionFormatV1.weightsFile: GTurboManifestFileV1(size: 2 * GTurboVisionFormatV1.alignmentBytes, sha256: fixtureSHA),
+                GTurboVisionFormatV1.processorFile: GTurboManifestFileV1(size: 2, sha256: fixtureSHA),
             ],
             tensors: tensors ?? defaultTensors)
     }
@@ -41,8 +42,10 @@ private enum VisionFormatFixture {
     @Test func rejectsUnknownVersion() {
         let original = VisionFormatFixture.manifest()
         let changed = GTurboVisionManifestV1(
-            versionMajor: 2, modelID: original.modelID,
+            versionMajor: 2, modelID: original.modelID, sourceRevision: original.sourceRevision,
+            sourceIndexSha256: original.sourceIndexSha256, processorConfigSha256: original.processorConfigSha256,
             compatibleTextSourceSnapshotHash: original.compatibleTextSourceSnapshotHash,
+            compatibleTextManifestSha256: original.compatibleTextManifestSha256,
             files: original.files, tensors: original.tensors)
         #expect(throws: GTurboFormatError.self) {
             try GTurboVisionStructuralValidator.validate(changed)
@@ -75,10 +78,12 @@ private enum VisionFormatFixture {
     @Test func rejectsUnexpectedPayloadFile() {
         let original = VisionFormatFixture.manifest()
         var files = original.files
-        files["extra.bin"] = .init(size: 1)
+        files["extra.bin"] = .init(size: 1, sha256: fixtureSHA)
         let changed = GTurboVisionManifestV1(
-            modelID: original.modelID,
+            modelID: original.modelID, sourceRevision: original.sourceRevision,
+            sourceIndexSha256: original.sourceIndexSha256, processorConfigSha256: original.processorConfigSha256,
             compatibleTextSourceSnapshotHash: original.compatibleTextSourceSnapshotHash,
+            compatibleTextManifestSha256: original.compatibleTextManifestSha256,
             files: files, tensors: original.tensors)
         #expect(throws: GTurboFormatError.self) {
             try GTurboVisionStructuralValidator.validate(changed)

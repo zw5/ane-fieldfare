@@ -3,6 +3,7 @@ import Foundation
 import Darwin
 @testable import ANEFieldfareHotpath
 import ANEFieldfareImportedFormat
+import ANEFieldfareFormatTestSupport
 
 @Suite struct ManifestReaderTests {
 
@@ -58,11 +59,11 @@ import ANEFieldfareImportedFormat
         for (k, v) in archOverrides { archDict[k] = v }
 
         var files: [String: [String: Any]] = [
-            "model_weights.bin": ["size": 1024],
-            "packed_experts/layout.json": ["size": 1024],
+            "model_weights.bin": ["size": 1024, "sha256": fixtureSHA],
+            "packed_experts/layout.json": ["size": 1024, "sha256": fixtureSHA],
         ]
         for L in 0..<toy.numLayers {
-            files["packed_experts/layer_\(L).bin"] = ["size": 16384]
+            files["packed_experts/layer_\(L).bin"] = ["size": 16384, "sha256": fixtureSHA]
         }
 
         var root: [String: Any] = [

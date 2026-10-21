@@ -245,11 +245,11 @@ import ANEFieldfareValidationSupport
 
         // 4. manifest.json
         var files: [String: [String: Any]] = [
-            "model_weights.bin": ["size": totalBytes],
-            "packed_experts/layout.json": ["size": layoutData.count],
+            "model_weights.bin": ["size": totalBytes, "sha256": fixtureSHA],
+            "packed_experts/layout.json": ["size": layoutData.count, "sha256": fixtureSHA],
         ]
         for L in 0..<toy.numLayers {
-            files[unsafe String(format: "packed_experts/layer_%02d.bin", L)] = ["size": layerBytes]
+            files[unsafe String(format: "packed_experts/layer_%02d.bin", L)] = ["size": layerBytes, "sha256": fixtureSHA]
         }
 
         let archDict: [String: Any] = [

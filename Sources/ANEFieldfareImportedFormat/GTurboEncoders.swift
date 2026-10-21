@@ -1,26 +1,12 @@
 package import Foundation
-package import ANEFieldfareImportedFormat
 
-// Writers for synthetic gturbo fixtures. The runtime only reads the format.
-
-extension GTurboManifestCodec {
-    package static func encode(_ manifest: GTurboManifestV1) throws -> Data {
-        try validate(manifest)
-        return try prettyJSON(manifest, field: "manifest.json")
-    }
-}
+// Writers for the installer (and synthetic test fixtures); the runtime only
+// reads the format.
 
 extension GTurboPackedExpertsLayoutCodec {
     package static func encode(_ layout: GTurboPackedExpertsLayoutV1) throws -> Data {
         try GTurboV1StructuralValidator.validate(layout)
         return try prettyJSON(layout, field: "packed_experts/layout.json")
-    }
-}
-
-extension GTurboVisionManifestCodec {
-    package static func encode(_ manifest: GTurboVisionManifestV1) throws -> Data {
-        try GTurboVisionStructuralValidator.validate(manifest)
-        return try prettyJSON(manifest, field: GTurboVisionFormatV1.manifestFile)
     }
 }
 

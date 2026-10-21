@@ -39,12 +39,15 @@ import ANEFieldfareFormatTestSupport
 
         let weights = Data(repeating: 0, count: Int(GTurboVisionFormatV1.alignmentBytes))
         let processor = Data("{}".utf8)
+        let sha = String(repeating: "a", count: 64)
         let manifest = GTurboVisionManifestV1(
-            modelID: "fixture/model",
+            modelID: "fixture/model", sourceRevision: "fixture-revision",
+            sourceIndexSha256: sha, processorConfigSha256: sha,
             compatibleTextSourceSnapshotHash: "text-snapshot",
+            compatibleTextManifestSha256: sha,
             files: [
-                GTurboVisionFormatV1.weightsFile: .init(size: UInt64(weights.count)),
-                GTurboVisionFormatV1.processorFile: .init(size: UInt64(processor.count)),
+                GTurboVisionFormatV1.weightsFile: .init(size: UInt64(weights.count), sha256: sha),
+                GTurboVisionFormatV1.processorFile: .init(size: UInt64(processor.count), sha256: sha),
             ],
             tensors: [.init(
                 name: "vision.weight", executionPosition: 0,

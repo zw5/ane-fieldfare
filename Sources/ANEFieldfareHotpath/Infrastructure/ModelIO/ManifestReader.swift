@@ -32,7 +32,7 @@ public enum ManifestReader {
                                expecting: ArchConfig) throws -> Manifest {
         let manifest: Manifest
         do {
-            let wire = try GTurboManifestCodec.decode(data)
+            let wire = try GTurboManifestCodec.decodeUnchecked(data)
             guard wire.magic == GTurboFormatV1.magic else {
                 throw ModelError.notAGTurboDirectory
             }
