@@ -50,8 +50,7 @@ apps.
 
 ## Requirements
 
-- An Apple Silicon Mac with 16 GB of memory or more. Development and the
-  measurements below used an M5 with 16 GB.
+- An Apple Silicon Mac.
 - macOS 26 or later. Measured on macOS 27 build `26A5406e`.
 - Xcode with Swift 6.2 or later.
 - The model in `.gturbo` format, installed by `ANEFieldfareInstall` (see
