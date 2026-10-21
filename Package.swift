@@ -24,12 +24,13 @@ let package = Package(
         .library(name: "ANEFieldfareHotpath", targets: ["ANEFieldfareHotpath"]),
         .executable(name: "ANEFieldfareHotpathCLI", targets: ["ANEFieldfareHotpathCLI"]),
         .executable(name: "ANEFieldfareServer", targets: ["ANEFieldfareServer"]),
+        .executable(name: "ANEFieldfareInstall", targets: ["ANEFieldfareInstall"]),
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
     ],
     targets: [
-        // Writers for synthetic gturbo fixtures; the runtime only reads the format.
+        // Synthetic gturbo fixtures for the format and loader tests.
         .target(
             name: "ANEFieldfareFormatTestSupport",
             dependencies: ["ANEFieldfareImportedFormat"],
@@ -62,6 +63,12 @@ let package = Package(
             swiftSettings: strictSwiftSettings
         ),
         .testTarget(
+            name: "ANEFieldfareInstallTests",
+            dependencies: ["ANEFieldfareImportedFormat", "ANEFieldfareInstallCore"],
+            path: "Tests/ANEFieldfareInstallTests",
+            swiftSettings: strictSwiftSettings
+        ),
+        .testTarget(
             name: "ANEFieldfareServerTests",
             dependencies: [
                 "ANEFieldfareServerCore", "ANEFieldfareHotpath", "ANEFieldfareHotpathCLICore",
@@ -89,6 +96,19 @@ let package = Package(
         .target(
             name: "ANEFieldfareImportedFormat",
             path: "Sources/ANEFieldfareImportedFormat",
+            swiftSettings: strictSwiftSettings
+        ),
+        // Streams the model from Hugging Face into the .gturbo layout.
+        .target(
+            name: "ANEFieldfareInstallCore",
+            dependencies: ["ANEFieldfareImportedFormat"],
+            path: "Sources/ANEFieldfareInstallCore",
+            swiftSettings: strictSwiftSettings
+        ),
+        .executableTarget(
+            name: "ANEFieldfareInstall",
+            dependencies: ["ANEFieldfareInstallCore"],
+            path: "Sources/ANEFieldfareInstall",
             swiftSettings: strictSwiftSettings
         ),
         .target(
