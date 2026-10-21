@@ -10,6 +10,8 @@ straight from the OS file cache.
 | Generation with temperature 0.2 | **36-53 tok/s** | 21–25 tok/s | |
 | TTFT, 3,015-token prompt | **10 s** | 48 s | ~110 s |
 
+RSS is under 1GB for short prompts. 
+
 Measured on 2026-10-20 against Turbo Fieldfare's latest commit: greedy on this
 repo's benchmark prompts, sampled on Turbo's own benchmark; first token
 includes model load. Up to 99 tok/s is this repo's benchmark on code
