@@ -1,14 +1,14 @@
 # ANE Fieldfare
 
-**Gemma 4 26B-A4B at up to 99 tokens/s on a 16 GB Mac.** Prefill on the Apple
+**Gemma 4 26B-A4B at up to 100+ tokens/s on a 16 GB Mac. Using less than 2GB of RAM** Prefill on the Apple
 Neural Engine, speculative decoding on the GPU, and 13 GB of experts served
 straight from the OS file cache.
 
-| Same M5, 16 GB, same prompts | ANE Fieldfare | [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) | llama.cpp |
+| Setting | ANE Fieldfare | [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) | llama.cpp |
 | --- | ---: | ---: | ---: |
-| Generation, greedy | **65–87 tok/s** | 24–25 tok/s | 5–9 tok/s |
-| Generation, sampled (temperature 0.2) | **37–53 tok/s** | 21–25 tok/s | |
-| First token, 3,015-token prompt | **10 s** | 48 s | ~110 s (est.) |
+| Greedy generation, math | **96.6 tok/s** | 24–25 tok/s | 5–9 tok/s |
+| Generation with temperature 0.2 | **36-53 tok/s** | 21–25 tok/s | |
+| TTFT, 3,015-token prompt | **10 s** | 48 s | ~110 s |
 
 Measured on 2026-10-20 against Turbo Fieldfare's latest commit: greedy on this
 repo's benchmark prompts, sampled on Turbo's own benchmark; first token
@@ -16,6 +16,8 @@ includes model load. Up to 99 tok/s is this repo's benchmark on code
 ([Performance](#performance)). llama.cpp runs Google's Q4_0 GGUF, which is
 over Metal's 12.7 GB limit on a 16 GB Mac, so even its best layer split pages
 (`llama-bench`; first token estimated from its 24–32 tok/s prefill).
+
+This repo builds upon [Drumih](https://github.com/drumih)'s work creating Turbo Fieldfare!
 
 ## Architecture
 
@@ -28,9 +30,11 @@ over Metal's 12.7 GB limit on a 16 GB Mac, so even its best layer split pages
  ANE  computes the previous 4      ◄────┘           in one pass, routing experts on the GPU
   │                                             │
   └───── 13 GB of experts, memory-mapped and zero-copy: the OS file cache is the expert cache
+
+DFLASH -> Speculative decoding
 ```
 
-- **The file cache is the expert cache.** Experts are zero-copy Metal buffers
+- The file cache runs as the expert cache, with minor modifications from Turbo Fieldfare. Experts are zero-copy Metal buffers
   over the mapped model file, so a 13 GB model runs in under 1 GB of process
   memory on short prompts.
 - **The Neural Engine does prefill.** It can't unpack 4-bit weights, so the GPU
@@ -87,7 +91,7 @@ sampled; image prompts and a repetition penalty decode without the drafter. The
 prompt runs on the Neural Engine (`hybrid-ane`) unless you pass `--backend metal`.
 `--help` lists every option, including `--image` for image input.
 
-### Options that choose where work runs
+### Command line flags
 
 | Option | What it does |
 | --- | --- |
