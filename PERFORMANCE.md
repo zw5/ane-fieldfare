@@ -35,7 +35,7 @@ Tried and rejected:
   GPU's attention overlaps the ANE's experts: 13.4 s against 9.2 s. Every ANE
   call needs the GPU to expand the INT4 weights to FP16 first, so overlapping
   overloads the GPU, and both halves re-read and re-expand the same experts.
-- A third ANE buffer set (bank): no measurable difference.
+- A third ANE input/output buffer set: no measurable difference.
 - Early reads of every next-layer expert during long prefill: no gain on
   `metal`, 16% slower on `hybrid-ane`, because the early reads compete with the
   layer's own reads.
@@ -85,7 +85,7 @@ Further changes in the same round:
 - Top-8 selection uses all 32 threads of a SIMD group instead of one thread
   (12 → 1.8 µs).
 
-Decode step, A/B in ABBA order: 29.3 → 23.9 ms from GPU routing (33 → ~42
+Decode step, A/B in A-B-B-A order: 29.3 → 23.9 ms from GPU routing (33 → ~42
 tok/s), then −5% from the three changes above. Output byte-identical
 throughout. Each token now reads about 2.2 GB, which at this machine's measured
 ~132 GB/s takes at least 16.4 ms. The largest remaining costs per token: routed
@@ -263,9 +263,9 @@ From the GPU trace of the quick suite's code prompt, before the rewrite
   routes went to the CPU, were grouped into tiles, probed for residency and
   bound, and the tiles came back.
 - **Draft, 10%.** 5.1 ms per step (4.4 ms), of which ~3.4 ms GPU work. The rest
-  was host-side: encoding ~80 encoders through string-keyed weight lookups
+  was CPU-side: encoding ~80 encoders through string-keyed weight lookups
   before committing, then a blocking wait.
-- **Context features through the CPU.** The target's captured layers went GPU
+- **Context features through the CPU.** The main model's captured layers went GPU
   buffer → `memmove` → Swift array → staging copy → GPU, and plain steps
   re-laid them out on the CPU.
 - **Memory.** Loading the drafter read 860 MB of BF16 into a buffer, quantized
@@ -285,7 +285,7 @@ Measured and ruled out before designing:
 
 ### GPU-routed verify
 
-A verify layer's routed experts are now queued before the host knows its
+A verify layer's routed experts are now queued before the CPU knows its
 routes, as decode's are:
 
 - **Bound experts.** The previous layer's router already scores each row's
@@ -305,18 +305,18 @@ routes, as decode's are:
 - **Kernels.** `verify_bound_plan` (one thread per bound expert) finds each
   expert's rows in the block once, lists the routed experts by row class (up
   to 2, 4, 8 or 16 rows) and writes indirect grids; per class, the same
-  gate/up and down row math as the host-planned tiles runs over exactly the
+  gate/up and down row math as the CPU-planned tiles runs over exactly the
   routed experts.
-- **Patches.** Once the routes are back, the host runs only the routes the
+- **Patches.** Once the routes are back, the CPU runs only the routes the
   bound set missed (an unguessed expert, or one not in memory, read first)
   with the existing tile kernels, then commits the layer's tail. When nothing
-  was missed, the host's only work between router and tail is reading 64
+  was missed, the CPU's only work between router and tail is reading 64
   routes and committing a pre-encoded command buffer, while the GPU computes
   the experts.
 
 What it took:
 
-- The first version was 2× slower than the host tiles: every one of ~3M
+- The first version was 2× slower than the CPU-planned tiles: every one of ~3M
   threads per layer re-scanned the block's 64 routes, so the time grew with
   the number of bound experts, not the routed ones. The planning kernel and
   indirect dispatch fixed it.
@@ -326,7 +326,7 @@ What it took:
   26.5 ms.
 - How many guesses to bind (`ANE_FIELDFARE_VERIFY_BIND_TOP`): by idle time
   alone, 16 left 7.3 ms per 8-row verify (patches late) and 24–128 all ~2 ms.
-  End to end, binding is not free: each bound expert costs host time for
+  End to end, binding is not free: each bound expert costs CPU time for
   residency probes and `useResources`, and the union of 8 rows' guesses grows
   quickly. Quick suite with the drafter, three runs of 2 repetitions each,
   2026-10-20:
@@ -345,9 +345,9 @@ What it took:
   noise at 20 or 24.
 
 GPU idle per verify fell from 5.1–5.5 ms to 0.5–1.1 ms at every row count. The
-GPU-routed result is bitwise the host-routed one: same greedy tokens and same
+GPU-routed result is bitwise the CPU-routed one: same greedy tokens and same
 final hidden rows at 1, 3, 8 and 16 rows (`GPURoutedVerifyTests`).
-`ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` plans every layer on the host.
+`ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` plans every layer on the CPU.
 
 ### The drafter on the GPU
 
@@ -361,7 +361,7 @@ final hidden rows at 1, 3, 8 and 16 rows (`GPURoutedVerifyTests`).
   reads them in place. Load: 1.5 s → 1.0 s. Peak memory footprint with the
   drafter, on the quick suite's short prompts: 2.43 GB → 0.93 GB (0.78 GB
   without it). The footprint does not count the 242 MB of weights, which are
-  file-backed page cache, and during prefill the feature ring below grows to
+  file-backed page cache, and during prefill the hidden-state ring buffer (below) grows to
   the chunk size (35 MB at 1,024 tokens, 138 MB at 4,096). The pages are clean, so
   under pressure the OS can drop them like any cached file.
 - **Fused layout.** Q/K/V and gate/up are concatenated by rows at install, so
@@ -373,34 +373,33 @@ final hidden rows at 1, 3, 8 and 16 rows (`GPURoutedVerifyTests`).
   their 2,048-position window (plus two blocks) as a ring; only the full layer
   grows with context.
 - **Features never touch the CPU.** Prefill chunks, verify blocks and decode
-  steps copy the six captured target layers into a feature ring on the GPU, in
+  steps copy the six captured main-model layers into a ring buffer on the GPU, in
   the command buffer of each layer's tail, at slot `position % capacity`. The
   drafter reads the rows it needs from there on the same queue. The ring holds
   256 positions, grown to the chunk size during prefill.
 
-### One host wait per step
+### One CPU wait per step
 
 The drafter's context length lives on the GPU. Behind each verify's head, in
 one command buffer, the drafter:
 
-1. adds the block's rows to its context from the feature ring,
+1. adds the block's rows to its context from that ring buffer,
 2. accepts on the GPU (`dflash_accept`): compares the drafts with the verified
-   tokens, advances the context past the accepted ones and makes the target's
-   next token the next anchor,
+   tokens, advances the context past the accepted ones and starts the next
+   block from the main model's next token,
 3. drafts the next block from there.
 
 The verify reads its token IDs straight from the drafter's block buffer. The
-host waits once, then reads the verified tokens, the acceptance (checked
+CPU waits once, then reads the verified tokens, the acceptance (checked
 against its own) and the next drafts and their confidences together. The
-draft's host time is gone, and the draft runs back to back with the verify on
-the GPU. The chained draft is bitwise the host-driven one
+draft's CPU time is gone, and the draft runs back to back with the verify on
+the GPU. The chained draft is bitwise the CPU-driven one
 (`DFlashChainedDraftTests`).
 
 ### Results
 
 `Scripts/bench/ab.sh dflash-v1 dflash-v2-final 2`, quick suite (192 tokens,
-two ABBA rounds of 2 repetitions), desktop apps running, A/A noise floor 2.3%.
-The machine receipt (`results/dflash-v2-m5-macos27.json`) is kept locally; `results/` is not published.
+two A-B-B-A rounds of 2 repetitions), desktop apps running, noise floor 2.3%.
 
 | Prompt | `--drafter` before | `--drafter` after | Change (95% CI) |
 | --- | ---: | ---: | --- |
@@ -421,7 +420,7 @@ token 90 in both). Over the decode phase of the code and math cases (GPU
 trace, union of encoder intervals from the end of prefill to the end of the
 case) the GPU is now busy 93–95% of the
 time, up from 81–83%: speculative decoding is GPU-bound. What remains per step
-is ~0.4 ms between the draft finishing and the next verify starting (host
+is ~0.4 ms between the draft finishing and the next verify starting (CPU
 wake-up, reading the results, encoding layer 0, GPU start-up) and patches
 that wait on SSD reads. Further gains have to come from the GPU work itself
 (the 8-row expert and projection kernels run at ~105 GB/s of ~134) or from
@@ -436,7 +435,7 @@ top-p keep, with G a standard Gumbel variable from a counter-based hash. That
 is an exact draw from the truncated tempered softmax (the Gumbel-max trick),
 and it depends only on the logits and (seed, j). So:
 
-- The target's draw at a position is the same whether plain decode, a verify
+- The main model's draw at a position is the same whether plain decode, a verify
   row or prefill's last row makes it. Teacher-forcing a plain sampled decode
   through 1-, 3- and 8-row verifies reproduces every token
   (`sampledVerifyReproducesSampledDecode`, and `verify-check` with
@@ -446,7 +445,7 @@ and it depends only on the logits and (seed, j). So:
   the chained loop and the policy are unchanged. A draft matches when both
   models' perturbed maxima land on the same token, which shared noise makes
   likely when the two distributions are close.
-- The output is the target's sampled text for the seed, with or without the
+- The output is the main model's sampled text for the seed, with or without the
   drafter, up to near-ties between batched and single-row arithmetic.
 
 Top-k (up to 256) is selected exactly in two passes over each row: a
@@ -474,8 +473,8 @@ Eleven of the twelve sampled speculative outputs equalled plain sampled
 output; explanation at 0.8 first differed at token 32, a flipped near-tie in
 the noisy race (a plain decode step reading KV rows a verify had written).
 
-Sampled text now differs from the host sampler's for the same seed (the noise
-is different); a repetition penalty still takes the host path, without the
+Sampled text now differs from the CPU sampler's for the same seed (the noise
+is different); a repetition penalty still takes the CPU path, without the
 drafter.
 
 ## End-to-end results
@@ -483,8 +482,8 @@ drafter.
 ### Before the rewrite
 
 Against the build before the hot-vocabulary head and the drafter changes
-above. `Scripts/bench/ab.sh` quick suite (192 tokens, two ABBA rounds of 2
-repetitions), few other apps running; the A/A noise floor was 2.8%.
+above. `Scripts/bench/ab.sh` quick suite (192 tokens, two A-B-B-A rounds of 2
+repetitions), few other apps running; the noise floor was 2.8%.
 
 | Prompt | Plain before | Plain now | `--drafter` before | `--drafter` now |
 | --- | ---: | ---: | ---: | ---: |
@@ -497,7 +496,7 @@ differed from plain greedy at token 90 on math, in both builds.
 
 ### The verify work
 
-Same suite, but with desktop apps running (A/A noise floor 3%); "before" is the
+Same suite, but with desktop apps running (noise floor 3%); "before" is the
 build just before the verify changes:
 
 | Prompt | Plain | `--drafter` before | `--drafter` now |

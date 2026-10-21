@@ -93,11 +93,11 @@ prompt runs on the Neural Engine (`hybrid-ane`) unless you pass `--backend metal
 | Variable | Effect |
 | --- | --- |
 | `ANE_FIELDFARE_HOTPATH_PROFILE=1` | Write a JSON timing profile to stderr, including which work ran on the ANE and any ANE failures. |
-| `ANE_FIELDFARE_GPU_TRACE=<path>` | Record every GPU encoder's execution and the host's waits on one clock, and write a Chrome trace to `<path>` (open it at ui.perfetto.dev). `Scripts/profile/summarize.py <path>` prints GPU time per kernel and GPU idle time by what the host was doing. Costs no measurable speed. |
+| `ANE_FIELDFARE_GPU_TRACE=<path>` | Record every GPU encoder's execution and the CPU's waits on one clock, and write a Chrome trace to `<path>` (open it at ui.perfetto.dev). `Scripts/profile/summarize.py <path>` prints GPU time per kernel and GPU idle time by what the CPU was doing. Costs no measurable speed. |
 | `ANE_FIELDFARE_ANE_ROUTED_PREFILL_LAYERS=n` | Use the ANE for layers `0..<n` only. |
 | `ANE_FIELDFARE_HOT_HEAD=0` | `ANEFieldfareBench` only: turn off the [hot-vocabulary shortcut](#hot-vocabulary-shortcut). |
 | `ANE_FIELDFARE_HOST_ROUTED_VERIFY=1` | Plan every verify layer's experts on the CPU instead of routing them on the GPU. Slower; meant for checking the GPU routing. |
-| `ANE_FIELDFARE_VERIFY_BIND_TOP=n` | Guessed experts per verify row bound for GPU routing. Default 20. |
+| `ANE_FIELDFARE_VERIFY_BIND_TOP=n` | How many of each verify row's guessed experts the GPU routing can use. Default 20. |
 | `ANE_FIELDFARE_TEST_CHECKPOINT=<path>` | Model location for tests, if not the default. |
 | `ANE_FIELDFARE_API_KEY=<key>` | Server only: require `Authorization: Bearer <key>`, like `--api-key`, without putting the key on the command line. |
 
@@ -159,16 +159,16 @@ Streams send a first chunk with `role`, content deltas, a chunk with
 `finish_reason` (`stop` or `length`), the usage chunk if asked, and
 `data: [DONE]`.
 
-**Decoding.** As in the CLI: temperature 0 is greedy (the hot-vocabulary head
-without a drafter), anything above it samples on the GPU, and with a drafter
-loaded both decode speculatively, with the same text for a given `seed` as
-without it. A request with a repetition penalty samples on the host, without
+**Decoding.** As in the CLI: temperature 0 is greedy (with the
+hot-vocabulary shortcut when no drafter is loaded), anything above it samples
+on the GPU, and with a drafter loaded both decode speculatively, with the same
+text for a given `seed` as without it. A request with a repetition penalty samples on the CPU, without
 the drafter.
 
 **Concurrency.** One generation runs at a time; others wait in order, up to
 `--max-queue`, and further requests get `503` with `Retry-After`. A client that
 disconnects cancels its generation (between tokens, or between prefill chunks)
-or leaves the line. The server keeps the last request's KV cache: when the
+or leaves the queue. The server keeps the last request's KV cache: when the
 next request starts with the same tokens and decodes the same way (a chat
 re-sending its history), only the new part of the prompt is prefilled.
 
@@ -195,7 +195,7 @@ return the CLI's text. Run it under the benchmark lock:
 ### One forward pass
 
 ```
-tokens → embed → 30 × [ attention → router → shared FFN + 8 routed experts → layer tail ] → head → next token
+tokens → embed → 30 × [ attention → router → shared FFN + 8 routed experts → norm + residual ] → head → next token
 ```
 
 - **Attention** mixes information between tokens.
@@ -203,7 +203,7 @@ tokens → embed → 30 × [ attention → router → shared FFN + 8 routed expe
 - The **shared FFN** is one feed-forward block every token goes through.
 - The 8 **routed experts** are small feed-forward blocks; only the chosen ones
   run.
-- The **layer tail** is the normalization and residual add that finish a layer.
+- Each layer ends with a normalization and a residual add.
 - The **head** turns the final hidden state into a score for each of the
   262,144 vocabulary tokens.
 
@@ -245,10 +245,10 @@ job, routed experts during prefill, and the code treats it as optional.
   With `fail-closed` the request stops. With `failover-metal` the ANE is
   dropped for the rest of that run (it is never re-enabled) and the GPU redoes
   the failed layer and all later ones.
-- The **ANE carrier** (`Sources/ANEFieldfareANECarrier`) is a small
+- The **ANE wrapper** (`Sources/ANEFieldfareANECarrier`) is a small
   Objective-C wrapper over Apple's private ANE runtime. It compiles one ANE
   program that computes 4 experts at a time, for up to 128 tokens each. It has
-  two input/output buffer sets ("banks") so the GPU can fill one while the ANE
+  two input/output buffer sets so the GPU can fill one while the ANE
   works on the other.
 - The ANE cannot unpack the model's 4-bit weights, so for every ANE call the GPU
   first expands the 4 experts' weights to FP16 and passes them in as ordinary
@@ -271,9 +271,9 @@ decoding would be faster.
 The pipeline is built so the GPU never waits for the CPU:
 
 - **Verify routes experts on the GPU.** Each layer's router also guesses the
-  next layer's experts for every row. Those guesses (every resident expert, for
-  layer 0) are bound while the GPU runs the layer, and a planning kernel picks
-  out the ones the rows actually chose. The CPU only patches the rare route
+  next layer's experts for every row. Those guesses (for layer 0, every expert
+  already in memory) go to the GPU with the layer, and a planning kernel picks
+  out the ones the rows actually chose. The CPU only runs the rare route
   that wasn't guessed or whose expert is still on disk. It plans the same
   routes as the CPU would; the tests check this end to end, by comparing
   speculative output with plain decoding.
@@ -294,7 +294,7 @@ The pipeline is built so the GPU never waits for the CPU:
   the tempered distribution). The drafter draws its guesses with the same
   noise, so a draft is kept exactly when it equals the main model's own draw.
   The output is therefore the main model's sampled text for that seed, the
-  same text plain decoding draws, and on the quick suite sampling at
+  same text plain decoding draws, and on the benchmark prompts sampling at
   temperature 0.6–1.0 ran 1.4–1.9× faster with the drafter, as greedy does.
 
 Speculative output is the same as plain output for the same settings except
@@ -338,9 +338,9 @@ rejected: [PERFORMANCE.md](PERFORMANCE.md).
 Scripts/test.sh    # lint, build, then every test suite
 ```
 
-Most tests use small synthetic model files the tests generate themselves (the
-code calls these *fixtures*). The tokenizer and server tests download Gemma's
-tokenizer from the Hugging Face Hub on first run. Some tests call the real
+Most tests use small synthetic model files the tests generate themselves. The
+tokenizer and server tests download Gemma's tokenizer from the Hugging Face Hub
+on first run. Some tests call the real
 ANE and need ANE hardware. Tests that need the real model run when it is at the
 default path or `ANE_FIELDFARE_TEST_CHECKPOINT`, and are skipped otherwise.
 
@@ -370,8 +370,8 @@ Important checks:
   `assumeIsolated`, `DispatchQueue` and `Task.detached` unless a `// SAFETY:`
   comment states the invariant the compiler cannot check, and rejects `try!`,
   `as!` and force unwraps in `Sources/`.
-- **Receipts.** A performance or correctness claim comes with a machine
-  receipt: host, OS build, exact command, exit status and the measured result.
+- **Measurements.** A performance claim states the machine, OS build and
+  exact command it was measured with.
 
 ## Benchmarking a change
 
@@ -404,7 +404,7 @@ build. The quick suite takes about 90 s.
 | `Sources/ANEFieldfareImportedFormat` | Reader for the `.gturbo` format. |
 | `Sources/ANEFieldfareBench` | The benchmark program used by `Scripts/bench/`. |
 | `Sources/ANEFieldfareDFlashCapture` | Records hidden states and routes for drafter work (`Scripts/dflash/`). |
-| `Tests/` | Test suites, CPU reference implementations and fixture generators. |
+| `Tests/` | Test suites, CPU reference implementations and generators for the synthetic test models. |
 | `Scripts/` | Build, test, lint and benchmark scripts. |
 | `PERFORMANCE.md` | The optimization history: every change, its measurements, and what was tried and rejected. |
 
