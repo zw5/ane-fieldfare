@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="ANE Fieldfare logo: a fieldfare in goggles riding a flaming Neural Engine chip" width="240">
+</p>
+
 <h1 align="center">ANE Fieldfare</h1>
 
 <p align="center"><strong>Gemma 4 26B-A4B at up to 100+ tokens/s on a 16 GB Mac. Using less than 2GB of RAM</strong></p>
@@ -447,7 +451,7 @@ build. The quick suite takes about 90 s.
 | `Sources/ANEFieldfareDFlashCapture` | Records hidden states and routes for drafter work (`Scripts/dflash/`). |
 | `Tests/` | Test suites, CPU reference implementations and generators for the synthetic test models. |
 | `Scripts/` | Build, test, lint and benchmark scripts. |
-| `assets/` | The README's speed chart, drawn by `Scripts/readme/charts.py` from the comparison table's numbers. |
+| `assets/` | The logo, and the README's speed chart drawn by `Scripts/readme/charts.py` from the comparison table's numbers. |
 | `PERFORMANCE.md` | The optimization history: every change, its measurements, and what was tried and rejected. |
 
 ## License and credits
