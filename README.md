@@ -1,8 +1,7 @@
 # ANE Fieldfare
 
-**Gemma 4 26B-A4B at up to 100+ tokens/s on a 16 GB Mac. Using less than 2GB of RAM** Prefill on the Apple
-Neural Engine, speculative decoding on the GPU, and 13 GB of experts served
-straight from the OS file cache.
+**Gemma 4 26B-A4B at up to 100+ tokens/s on a 16 GB Mac. Using less than 2GB of RAM** 
+Using the Apple Neural Engine for prefill, speculative decoding on the GPU, and 13 GB of experts from the OS file cache.
 
 | Setting | ANE Fieldfare | [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) | llama.cpp |
 | --- | ---: | ---: | ---: |
