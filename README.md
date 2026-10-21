@@ -1,6 +1,30 @@
-# ANE Fieldfare
+<h1 align="center">ANE Fieldfare</h1>
 
-**Gemma 4 26B-A4B at up to 100+ tokens/s on a 16 GB Mac. Using less than 2GB of RAM** 
+<p align="center"><strong>Gemma 4 26B-A4B at up to 100+ tokens/s on a 16 GB Mac. Using less than 2GB of RAM</strong></p>
+
+<p align="center">
+  <img alt="Swift 6.2" src="https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white">
+  <img alt="Metal 4" src="https://img.shields.io/badge/Metal-4-5E5CE6">
+  <img alt="Apple Neural Engine" src="https://img.shields.io/badge/Apple-Neural%20Engine-1F6FEB?logo=apple&logoColor=white">
+  <img alt="macOS 26 or later" src="https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white">
+  <a href="https://ai.google.dev/gemma/docs/core/model_card_4"><img alt="Gemma 4 26B-A4B" src="https://img.shields.io/badge/Model-Gemma%204%2026B--A4B-4285F4"></a>
+  <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/badge/License-Apache%202.0-2ea44f"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#openai-compatible-server">Local server</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="PERFORMANCE.md">Performance log</a> ·
+  <a href="#benchmarking-a-change">Benchmarking</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/speed-dark.svg">
+    <img alt="Generation speed on the same 16 GB M5: greedy 96.6 tok/s on math against Turbo Fieldfare's 24–25 and llama.cpp's 5–9; temperature 0.2, 36–53 against 21–25. First token on a 3,015-token prompt: 10 s against 48 s and about 110 s." src="assets/speed-light.svg" width="880">
+  </picture>
+</p>
 
 Using the Apple Neural Engine for prefill, speculative decoding on the GPU, and 13 GB of experts from the OS file cache.
 
@@ -423,6 +447,7 @@ build. The quick suite takes about 90 s.
 | `Sources/ANEFieldfareDFlashCapture` | Records hidden states and routes for drafter work (`Scripts/dflash/`). |
 | `Tests/` | Test suites, CPU reference implementations and generators for the synthetic test models. |
 | `Scripts/` | Build, test, lint and benchmark scripts. |
+| `assets/` | The README's speed chart, drawn by `Scripts/readme/charts.py` from the comparison table's numbers. |
 | `PERFORMANCE.md` | The optimization history: every change, its measurements, and what was tried and rejected. |
 
 ## License and credits
