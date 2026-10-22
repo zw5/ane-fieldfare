@@ -19,6 +19,13 @@
   <a href="#benchmarking-a-change">Benchmarking</a>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/speed-dark.svg">
+    <img alt="Generation speed on the same 16 GB M5: greedy 96.6 tok/s on math against Turbo Fieldfare's 24–25 and llama.cpp's 5–9; temperature 0.2, 36–53 against 21–25. First token on a 3,015-token prompt: 10 s against 48 s and about 110 s." src="assets/speed-light.svg" width="880">
+  </picture>
+</p>
+
 Using the Apple Neural Engine for prefill, speculative decoding on the GPU, and 13 GB of experts from the OS file cache.
 
 | Setting | ANE Fieldfare | [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) | llama.cpp |
@@ -440,6 +447,7 @@ build. The quick suite takes about 90 s.
 | `Sources/ANEFieldfareDFlashCapture` | Records hidden states and routes for drafter work (`Scripts/dflash/`). |
 | `Tests/` | Test suites, CPU reference implementations and generators for the synthetic test models. |
 | `Scripts/` | Build, test, lint and benchmark scripts. |
+| `assets/` | The README's speed chart, drawn by `Scripts/readme/charts.py` from the comparison table's numbers. |
 | `PERFORMANCE.md` | The optimization history: every change, its measurements, and what was tried and rejected. |
 
 ## License and credits

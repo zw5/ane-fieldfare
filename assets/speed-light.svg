@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="308" viewBox="0 0 880 308" role="img" aria-labelledby="t d">
+<title id="t">ANE Fieldfare against Turbo Fieldfare and llama.cpp</title>
+<desc id="d">Greedy generation on a math prompt: ANE Fieldfare 96.6 tokens per second, Turbo Fieldfare 24 to 25, llama.cpp 5 to 9. Temperature 0.2: ANE Fieldfare 36 to 53, Turbo Fieldfare 21 to 25. First token on a 3,015-token prompt: ANE Fieldfare 10 seconds, Turbo Fieldfare 48, llama.cpp about 110 (estimated).</desc>
+<defs><pattern id="hatch-0" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#caddf5"/><line x1="0" y1="0" x2="0" y2="6" stroke="#2a78d6" stroke-width="3"/></pattern><pattern id="hatch-1" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#fad9cc"/><line x1="0" y1="0" x2="0" y2="6" stroke="#eb6834" stroke-width="3"/></pattern><pattern id="hatch-2" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#c6ebde"/><line x1="0" y1="0" x2="0" y2="6" stroke="#1baf7a" stroke-width="3"/></pattern></defs>
+<style>
+text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; fill: #1f2328; }
+.title { font-size: 16px; font-weight: 600; }
+.group { font-size: 13px; font-weight: 600; }
+.name, .value { font-size: 13px; }
+.strong { font-weight: 600; }
+.muted, .tick, .note { fill: #59636e; }
+.muted { font-size: 13px; }
+.tick { font-size: 11px; }
+.note { font-size: 11px; }
+.grid { stroke: #d1d9e0; stroke-width: 1; }
+</style>
+<text x="0" y="32" class="title">Generation speed</text>
+<text x="0" y="50" class="muted">tokens per second</text>
+<line x1="112.0" y1="83" x2="112.0" y2="167" class="grid"/>
+<line x1="112.0" y1="193" x2="112.0" y2="249" class="grid"/>
+<text x="112.0" y="274" class="tick" text-anchor="middle">0</text>
+<line x1="177.5" y1="83" x2="177.5" y2="167" class="grid"/>
+<line x1="177.5" y1="193" x2="177.5" y2="249" class="grid"/>
+<text x="177.5" y="274" class="tick" text-anchor="middle">25</text>
+<line x1="243.0" y1="83" x2="243.0" y2="167" class="grid"/>
+<line x1="243.0" y1="193" x2="243.0" y2="249" class="grid"/>
+<text x="243.0" y="274" class="tick" text-anchor="middle">50</text>
+<line x1="308.5" y1="83" x2="308.5" y2="167" class="grid"/>
+<line x1="308.5" y1="193" x2="308.5" y2="249" class="grid"/>
+<text x="308.5" y="274" class="tick" text-anchor="middle">75</text>
+<line x1="374.0" y1="83" x2="374.0" y2="167" class="grid"/>
+<line x1="374.0" y1="193" x2="374.0" y2="249" class="grid"/>
+<text x="374.0" y="274" class="tick" text-anchor="middle">100</text>
+<text x="0" y="80" class="group">Greedy, math prompt</text>
+<text x="102" y="101.5" class="name" text-anchor="end">ANE Fieldfare</text>
+<path d="M112.0,88 h249.1 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-249.1 z" fill="#2a78d6"/>
+<text x="373.1" y="101.5" class="value strong">96.6</text>
+<text x="102" y="129.5" class="name" text-anchor="end">Turbo Fieldfare</text>
+<rect x="112" y="116" width="61.9" height="18" fill="#eb6834"/>
+<path d="M175.9,116 h0.8 a0.8100000000000023,0.8100000000000023 0 0 1 0.8100000000000023,0.8100000000000023 v16.379999999999995 a0.8100000000000023,0.8100000000000023 0 0 1 -0.8100000000000023,0.8100000000000023 h-0.8 z" fill="#f7c3ae"/>
+<text x="185.5" y="129.5" class="value">24–25</text>
+<text x="102" y="157.5" class="name" text-anchor="end">llama.cpp</text>
+<rect x="112" y="144" width="12.1" height="18" fill="#1baf7a"/>
+<path d="M126.1,144 h5.5 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-5.5 z" fill="#a4dfca"/>
+<text x="143.6" y="157.5" class="value">5–9</text>
+<text x="0" y="190" class="group">Temperature 0.2</text>
+<text x="102" y="211.5" class="name" text-anchor="end">ANE Fieldfare</text>
+<rect x="112" y="198" width="93.3" height="18" fill="#2a78d6"/>
+<path d="M207.3,198 h39.5 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-39.5 z" fill="#aac9ef"/>
+<text x="258.9" y="211.5" class="value strong">36–53</text>
+<text x="102" y="239.5" class="name" text-anchor="end">Turbo Fieldfare</text>
+<rect x="112" y="226" width="54.0" height="18" fill="#eb6834"/>
+<path d="M168.0,226 h5.5 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-5.5 z" fill="#f7c3ae"/>
+<text x="185.5" y="239.5" class="value">21–25</text>
+<text x="490" y="32" class="title">Time to first token</text>
+<text x="490" y="50" class="muted">seconds</text>
+<line x1="602.0" y1="83" x2="602.0" y2="167" class="grid"/>
+<text x="602.0" y="192" class="tick" text-anchor="middle">0</text>
+<line x1="647.5" y1="83" x2="647.5" y2="167" class="grid"/>
+<text x="647.5" y="192" class="tick" text-anchor="middle">30</text>
+<line x1="693.0" y1="83" x2="693.0" y2="167" class="grid"/>
+<text x="693.0" y="192" class="tick" text-anchor="middle">60</text>
+<line x1="738.5" y1="83" x2="738.5" y2="167" class="grid"/>
+<text x="738.5" y="192" class="tick" text-anchor="middle">90</text>
+<line x1="784.0" y1="83" x2="784.0" y2="167" class="grid"/>
+<text x="784.0" y="192" class="tick" text-anchor="middle">120</text>
+<text x="490" y="80" class="group">3,015-token prompt, model load included</text>
+<text x="592" y="101.5" class="name" text-anchor="end">ANE Fieldfare</text>
+<path d="M602.0,88 h11.2 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-11.2 z" fill="#2a78d6"/>
+<text x="625.2" y="101.5" class="value strong">10 s</text>
+<text x="592" y="129.5" class="name" text-anchor="end">Turbo Fieldfare</text>
+<path d="M602.0,116 h68.8 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-68.8 z" fill="#eb6834"/>
+<text x="682.8" y="129.5" class="value">48 s</text>
+<text x="592" y="157.5" class="name" text-anchor="end">llama.cpp</text>
+<path d="M602.0,144 h162.8 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-162.8 z" fill="url(#hatch-2)"/>
+<text x="776.8" y="157.5" class="value">~110 s (est.)</text>
+<text x="0" y="300" class="note">Same M5 MacBook, 16 GB, macOS 27, measured 2026-10-20. Ranges span the benchmark prompts. llama.cpp’s first token is estimated from its prefill rate.</text>
+</svg>
