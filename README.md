@@ -1,10 +1,6 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="ANE Fieldfare logo: a fieldfare in goggles riding a flaming Neural Engine chip" width="240">
-</p>
-
 <h1 align="center">ANE Fieldfare</h1>
 
-<p align="center"><strong>Gemma 4 26B-A4B at up to 100+ tokens/s on a 16 GB Mac. Using less than 2GB of RAM</strong></p>
+<p align="center"><strong>Gemma 4 26B-A4B at up to 106 tokens/s on a 16 GB Mac. Using less than 2GB of RAM</strong></p>
 
 <p align="center">
   <img alt="Swift 6.2" src="https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white">
@@ -23,13 +19,6 @@
   <a href="#benchmarking-a-change">Benchmarking</a>
 </p>
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/speed-dark.svg">
-    <img alt="Generation speed on the same 16 GB M5: greedy 96.6 tok/s on math against Turbo Fieldfare's 24–25 and llama.cpp's 5–9; temperature 0.2, 36–53 against 21–25. First token on a 3,015-token prompt: 10 s against 48 s and about 110 s." src="assets/speed-light.svg" width="880">
-  </picture>
-</p>
-
 Using the Apple Neural Engine for prefill, speculative decoding on the GPU, and 13 GB of experts from the OS file cache.
 
 | Setting | ANE Fieldfare | [Turbo Fieldfare](https://github.com/drumih/turbo-fieldfare) | llama.cpp |
@@ -42,8 +31,8 @@ RSS is under 1GB for short prompts.
 
 Measured on 2026-10-20 against Turbo Fieldfare's latest commit: greedy on this
 repo's benchmark prompts, sampled on Turbo's own benchmark; first token
-includes model load. Up to 99 tok/s is this repo's benchmark on code
-([Performance](#performance)). llama.cpp runs Google's Q4_0 GGUF, which is
+includes model load. The peak is 106 tok/s; 99 tok/s is this repo's benchmark
+on code ([Performance](#performance)). llama.cpp runs Google's Q4_0 GGUF, which is
 over Metal's 12.7 GB limit on a 16 GB Mac, so even its best layer split pages
 (`llama-bench`; first token estimated from its 24–32 tok/s prefill).
 
@@ -451,7 +440,6 @@ build. The quick suite takes about 90 s.
 | `Sources/ANEFieldfareDFlashCapture` | Records hidden states and routes for drafter work (`Scripts/dflash/`). |
 | `Tests/` | Test suites, CPU reference implementations and generators for the synthetic test models. |
 | `Scripts/` | Build, test, lint and benchmark scripts. |
-| `assets/` | The logo, and the README's speed chart drawn by `Scripts/readme/charts.py` from the comparison table's numbers. |
 | `PERFORMANCE.md` | The optimization history: every change, its measurements, and what was tried and rejected. |
 
 ## License and credits
