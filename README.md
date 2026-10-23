@@ -20,10 +20,7 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/speed-dark.svg">
-    <img alt="Generation speed on the same 16 GB M5: greedy 96.6 tok/s on math against Turbo Fieldfare's 24–25 and llama.cpp's 5–9; temperature 0.2, 36–53 against 21–25. First token on a 3,015-token prompt: 10 s against 48 s and about 110 s." src="assets/speed-light.svg" width="880">
-  </picture>
+  <img alt="Generation speed on the same 16 GB M5: greedy 96.6 tok/s on math against Turbo Fieldfare's 24–25 and llama.cpp's 5–9; temperature 0.2, 36–53 against 21–25. First token on a 3,015-token prompt: 10 s against 48 s and about 110 s." src="assets/speed.svg" width="880">
 </p>
 
 Using the Apple Neural Engine for prefill, speculative decoding on the GPU, and 13 GB of experts from the OS file cache.

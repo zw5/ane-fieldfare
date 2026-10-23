@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Draws the README's speed chart as two SVGs, one per GitHub theme.
+"""Draws the README's speed chart.
 
     python3 Scripts/readme/charts.py
 
-writes assets/speed-light.svg and assets/speed-dark.svg. The numbers
+writes assets/speed.svg. The chart carries its own dark background, so it reads
+the same on GitHub's light and dark themes. The numbers
 are the README's comparison table (same M5, 16 GB, measured 2026-10-20); change
 them there and here together.
 """
@@ -23,13 +24,10 @@ FIRST_TOKEN = [
 ]
 
 THEMES = {
-    "light": {
-        "series": ["#2a78d6", "#eb6834", "#1baf7a"],
-        "text": "#1f2328", "muted": "#59636e", "grid": "#d1d9e0", "page": "#ffffff",
-    },
     "dark": {
         "series": ["#3987e5", "#d95926", "#199e70"],
-        "text": "#f0f6fc", "muted": "#9198a1", "grid": "#3d444d", "page": "#0d1117",
+        "text": "#f0f6fc", "muted": "#9198a1", "grid": "#3d444d", "page": "#161b22",
+        "border": "#30363d",
     },
 }
 
@@ -40,6 +38,7 @@ PITCH = 28
 HEADER = 26
 NAME_COLUMN = 112
 TOP = 62
+PAD = 28
 
 
 def panel(x, width, title, subtitle, groups, axis_max, ticks, unit, theme):
@@ -73,7 +72,7 @@ def panel(x, width, title, subtitle, groups, axis_max, ticks, unit, theme):
                 rows.append(f'<rect x="{bar_left}" y="{y}" width="{scale(low) - bar_left - 1:.1f}" '
                             f'height="{BAR}" fill="{fill}"/>')
                 rows.append(rounded_end(scale(low) + 1, y, scale(high) - scale(low) - 1,
-                                        blend(color, t["page"], 0.4)))
+                                        blend(color, t["page"], 0.6)))
             else:
                 rows.append(rounded_end(bar_left, y, scale(high) - bar_left, fill))
             if estimated:
@@ -120,15 +119,13 @@ def chart(theme):
     right, right_bottom = panel(
         490, 390, "Time to first token", "seconds",
         FIRST_TOKEN, 120, [0, 30, 60, 90, 120], " s", theme)
-    height = max(left_bottom, right_bottom) + 34
+    height = max(left_bottom, right_bottom) + 2 * PAD
     hatches = "".join(
         f'<pattern id="hatch-{i}" width="6" height="6" patternUnits="userSpaceOnUse" '
         f'patternTransform="rotate(45)"><rect width="6" height="6" fill="{blend(c, t["page"], 0.25)}"/>'
         f'<line x1="0" y1="0" x2="0" y2="6" stroke="{c}" stroke-width="3"/></pattern>'
         for i, c in enumerate(t["series"]))
-    note = ("Same M5 MacBook, 16 GB, macOS 27, measured 2026-10-20. Ranges span the benchmark prompts. "
-            "llama.cpp’s first token is estimated from its prefill rate.")
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{height}" viewBox="0 0 {WIDTH} {height}" role="img" aria-labelledby="t d">
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH + 2 * PAD}" height="{height}" viewBox="0 0 {WIDTH + 2 * PAD} {height}" role="img" aria-labelledby="t d">
 <title id="t">ANE Fieldfare against Turbo Fieldfare and llama.cpp</title>
 <desc id="d">Greedy generation on a math prompt: ANE Fieldfare 96.6 tokens per second, Turbo Fieldfare 24 to 25, llama.cpp 5 to 9. Temperature 0.2: ANE Fieldfare 36 to 53, Turbo Fieldfare 21 to 25. First token on a 3,015-token prompt: ANE Fieldfare 10 seconds, Turbo Fieldfare 48, llama.cpp about 110 (estimated).</desc>
 <defs>{hatches}</defs>
@@ -138,15 +135,16 @@ text {{ font-family: {FONT}; fill: {t["text"]}; }}
 .group {{ font-size: 13px; font-weight: 600; }}
 .name, .value {{ font-size: 13px; }}
 .strong {{ font-weight: 600; }}
-.muted, .tick, .note {{ fill: {t["muted"]}; }}
+.muted, .tick {{ fill: {t["muted"]}; }}
 .muted {{ font-size: 13px; }}
 .tick {{ font-size: 11px; }}
-.note {{ font-size: 11px; }}
 .grid {{ stroke: {t["grid"]}; stroke-width: 1; }}
 </style>
+<rect x="0.5" y="0.5" width="{WIDTH + 2 * PAD - 1}" height="{height - 1}" rx="12" fill="{t["page"]}" stroke="{t["border"]}"/>
+<g transform="translate({PAD},{PAD - 16})">
 {chr(10).join(left)}
 {chr(10).join(right)}
-<text x="0" y="{height - 8}" class="note">{note}</text>
+</g>
 </svg>
 """
 
@@ -154,9 +152,8 @@ text {{ font-family: {FONT}; fill: {t["text"]}; }}
 def main():
     out = Path(__file__).resolve().parents[2] / "assets"
     out.mkdir(parents=True, exist_ok=True)
-    for theme in THEMES:
-        (out / f"speed-{theme}.svg").write_text(chart(theme), encoding="utf-8")
-        print(out / f"speed-{theme}.svg")
+    (out / "speed.svg").write_text(chart("dark"), encoding="utf-8")
+    print(out / "speed.svg")
 
 
 if __name__ == "__main__":
