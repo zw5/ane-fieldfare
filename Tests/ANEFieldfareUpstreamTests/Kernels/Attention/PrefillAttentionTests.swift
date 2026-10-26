@@ -66,6 +66,85 @@ import ANEFieldfareValidationSupport
                 "TensorOps 2D rel=\(rel) maxAbs=\(maxAbs) keys=\(visibleKeys)")
     }
 
+    /// Gemma's attention shapes on the grouped-query tensor kernel, across
+    /// its query groups and key blocks: head size 256 with 16 query heads
+    /// over 8 KV heads (sliding layers, with and without a wrapped cache ring
+    /// that cuts blocks at the wrap; like production's, the ring holds the
+    /// window plus the chunk) and 512 over 2 (full layers).
+    @Test(arguments: [(256, 8, 0, 7, 0, 0), (256, 8, 61, 70, 0, 0), (256, 8, 0, 70, 13, 0),
+                      (256, 8, 300, 150, 200, 0), (256, 8, 500, 150, 200, 360), (256, 8, 700, 90, 200, 291),
+                      (512, 2, 0, 7, 0, 0), (512, 2, 61, 70, 0, 0), (512, 2, 0, 130, 0, 0), (512, 2, 1_000, 5, 0, 0)])
+    func gqaTensorAttentionMatchesReference(
+        _ shape: (headDim: Int, kvHeads: Int, start: Int, chunk: Int, window: Int, ring: Int)
+    ) throws {
+        let (headDim, kvHeads, start, chunk, window, ring) = shape
+        let qHeads = 16
+        let qStride = qHeads * headDim, kvStride = kvHeads * headDim, oStride = qHeads * headDim
+        let kvValid = start + chunk
+        let scale = 1 / Float(headDim).squareRoot()
+        var rng = SeedTree(0x6E44).key("gqa-prefill-attn-\(headDim)-\(start)-\(chunk)")
+        let q = (0..<(chunk * qStride)).map { _ in rng.uniform(-1, 1) }
+        let k = (0..<(kvValid * kvStride)).map { _ in rng.uniform(-1, 1) }
+        let v = (0..<(kvValid * kvStride)).map { _ in rng.uniform(-1, 1) }
+
+        let ctx = try MetalContext()
+        let prefill = try PrefillAttention(context: ctx)
+        let qBuf = try #require(Fp16Buffer.make(ctx.device, values: q))
+        // A ring holds logical key `key` at slot `key % ring`; the newest
+        // `ring` keys are present.
+        func cache(_ values: [Float]) -> [Float] {
+            guard ring > 0 else { return values }
+            var slots = [Float](repeating: 0, count: ring * kvStride)
+            for key in max(0, kvValid - ring)..<kvValid {
+                for i in 0..<kvStride { slots[(key % ring) * kvStride + i] = values[key * kvStride + i] }
+            }
+            return slots
+        }
+        let kBuf = try #require(Fp16Buffer.make(ctx.device, values: cache(k)))
+        let vBuf = try #require(Fp16Buffer.make(ctx.device, values: cache(v)))
+        let outBuf = try #require(Fp16Buffer.make(ctx.device, count: chunk * oStride))
+        let params = PrefillAttentionParams(
+            startPosition: UInt32(start), queryCount: UInt32(chunk), headDim: UInt32(headDim),
+            numQHeads: UInt32(qHeads), numKVHeads: UInt32(kvHeads), kvValidCount: UInt32(kvValid),
+            slidingWindow: UInt32(window), kvTokenStrideElements: UInt32(kvStride),
+            qTokenStrideElements: UInt32(qStride), oTokenStrideElements: UInt32(oStride),
+            scale: scale, bidirectionalBlockStart: 0, bidirectionalBlockEnd: 0)
+        let cb = try #require(ctx.queue.makeCommandBuffer())
+        try prefill.encodeCausal(commandBuffer: cb, q: qBuf, k: kBuf, v: vBuf, out: outBuf, params: params,
+                                 kvRingCapacity: UInt32(ring), layerKind: window == 0 ? .full : .slidingWindow)
+        cb.commit()
+        cb.waitUntilCompleted()
+        try checkCommandBufferError(cb)
+        let out = Fp16Buffer.read(outBuf, count: chunk * oStride)
+
+        // The rounded inputs the kernel sees.
+        let qh = q.map { Float(Float16($0)) }, kh = k.map { Float(Float16($0)) }, vh = v.map { Float(Float16($0)) }
+        var reference = [Float](repeating: 0, count: chunk * oStride)
+        for t in 0..<chunk {
+            let last = start + t + 1
+            let first = window > 0 ? max(0, last - window) : 0
+            for h in 0..<qHeads {
+                let kvh = h / (qHeads / kvHeads)
+                var scores = [Float](repeating: -.infinity, count: last)
+                for key in first..<last {
+                    var dot: Float = 0
+                    for d in 0..<headDim { dot += qh[t * qStride + h * headDim + d] * kh[key * kvStride + kvh * headDim + d] }
+                    scores[key] = dot * scale
+                }
+                let m = scores.max() ?? -.infinity
+                var denom: Float = 0
+                for score in scores { denom += Foundation.exp(score - m) }
+                for d in 0..<headDim {
+                    var acc: Float = 0
+                    for key in first..<last { acc += Foundation.exp(scores[key] - m) * vh[key * kvStride + kvh * headDim + d] }
+                    reference[t * oStride + h * headDim + d] = acc / denom
+                }
+            }
+        }
+        let maxAbs = RelError.maxAbsDiff(out, reference)
+        #expect(maxAbs <= 2e-2, "head \(headDim) start \(start) chunk \(chunk) window \(window) ring \(ring) maxAbs=\(maxAbs)")
+    }
+
     private static func makeFixture(start: Int,
                                     chunk: Int,
                                     window: Int,

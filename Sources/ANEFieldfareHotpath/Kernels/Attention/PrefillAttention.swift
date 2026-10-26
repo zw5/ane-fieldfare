@@ -26,17 +26,15 @@ struct PrefillAttentionParams: Sendable, Equatable {
 final class PrefillAttention {
     private let context: MetalContext
     private let psoCausalTiled: any MTLComputePipelineState
-    private let psoFullTensorOps2D: any MTLComputePipelineState
 
     init(context: MetalContext) throws {
         self.context = context
         self.psoCausalTiled = try context.pipeline("attention_prefill_causal_tiled")
-        self.psoFullTensorOps2D = try context.pipeline("attention_prefill_full_tensorops")
     }
 
-    /// Full-attention layers of the production shape run the TensorOps
-    /// kernel, other head sizes 256 and 512 the SIMD kernel, and the rest the
-    /// tiled kernel.
+    /// Gemma's shapes without a bidirectional block run the grouped-query
+    /// tensor kernel, other head sizes 256 and 512 the SIMD kernel, and the
+    /// rest the tiled kernel.
     func encodeCausal(commandBuffer: any MTLCommandBuffer,
                       q: any MTLBuffer,
                       k: any MTLBuffer,
@@ -46,20 +44,17 @@ final class PrefillAttention {
                       kvRingCapacity: UInt32,
                       layerKind: PrefillAttentionLayerKind) throws {
         let params = Self.effective(params, layerKind: layerKind)
-        // TensorOps starts its key loop at zero and ignores slidingWindow, so
-        // these are visibility guards rather than shape optimizations.
-        let windowNeverClips = params.slidingWindow == 0 || params.slidingWindow >= params.kvValidCount
-        let tensorOpsShape = layerKind == .full
-            && kvRingCapacity == 0
-            && windowNeverClips
-            && params.headDim == 512
-            && params.numQHeads == 16
-            && params.numKVHeads == 2
-            && params.scale == 1.0
-        if tensorOpsShape {
-            try dispatch(commandBuffer, psoFullTensorOps2D, q: q, k: k, v: v, out: out, params: params,
-                         threads: 128, headsPerGroup: 8)
-        } else if [256, 512].contains(params.headDim) {
+        if let shape = Self.gqaTensorShape(params) {
+            let constants = kvRingCapacity > 0
+                ? [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))] : []
+            let pipeline = try context.pipeline(shape.name, constants: constants)
+            let queries = 16 / shape.heads
+            try dispatch(commandBuffer, pipeline, q: q, k: k, v: v, out: out, params: params,
+                         threads: shape.threads, headsPerGroup: shape.heads,
+                         queryGroups: (Int(params.queryCount) + queries - 1) / queries)
+            return
+        }
+        if [256, 512].contains(params.headDim) {
             let pipeline = try context.pipeline("attention_prefill_causal_simd",
                 constants: [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity)),
                             MetalFunctionConstant(index: 77, value: .uint32(params.headDim))])
@@ -68,6 +63,18 @@ final class PrefillAttention {
         } else {
             try encodeCausalTiled(commandBuffer: commandBuffer, q: q, k: k, v: v, out: out, params: params,
                                   kvRingCapacity: kvRingCapacity, layerKind: layerKind)
+        }
+    }
+
+    /// The grouped-query tensor kernel for this shape: head size 256 with two
+    /// query heads a KV head, or 512 with eight; none with a bidirectional
+    /// block.
+    private static func gqaTensorShape(_ p: PrefillAttentionParams) -> (name: String, heads: Int, threads: Int)? {
+        guard p.bidirectionalBlockStart == p.bidirectionalBlockEnd else { return nil }
+        switch (p.headDim, p.numQHeads / p.numKVHeads) {
+        case (256, 2): return ("attention_prefill_gqa_tensorops_d256_h2", 2, 128)
+        case (512, 8): return ("attention_prefill_gqa_tensorops_d512_h8", 8, 256)
+        default: return nil
         }
     }
 
@@ -106,7 +113,8 @@ final class PrefillAttention {
 
     private func dispatch(_ commandBuffer: any MTLCommandBuffer, _ pipeline: any MTLComputePipelineState,
                           q: any MTLBuffer, k: any MTLBuffer, v: any MTLBuffer, out: any MTLBuffer,
-                          params: PrefillAttentionParams, threads: Int, headsPerGroup: Int) throws {
+                          params: PrefillAttentionParams, threads: Int, headsPerGroup: Int,
+                          queryGroups: Int? = nil) throws {
         precondition(threads <= pipeline.maxTotalThreadsPerThreadgroup,
                      "prefill attention needs \(threads) threads per threadgroup")
         let enc = try commandBuffer.makeTracedComputeEncoder()
@@ -117,7 +125,7 @@ final class PrefillAttention {
         enc.setBuffer(out, offset: 0, index: 3)
         enc.setValue(params, index: 4)
         enc.dispatchThreadgroups(
-            MTLSize(width: Int(params.queryCount), height: Int(params.numQHeads) / headsPerGroup, depth: 1),
+            MTLSize(width: queryGroups ?? Int(params.queryCount), height: Int(params.numQHeads) / headsPerGroup, depth: 1),
             threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
         enc.endEncoding()
     }
