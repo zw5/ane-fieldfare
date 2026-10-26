@@ -108,6 +108,89 @@ kernel void mpp_prefill_affine_threadgroup_f16(
     }
 }
 
+// The same product with 128x64 output tiles, so each dequantized weight
+// serves 128 tokens. Per 64-wide step along K each thread dequantizes 32
+// weights of one row from four word loads and one scale and bias, and the
+// tensor op accumulates in place; 8 KB of threadgroup memory lets several
+// threadgroups share a core. Needs N a multiple of 64, K of 64, and
+// 4-byte-aligned weight rows.
+constant constexpr int kMPPAffineWideTileM = 128;
+constant constexpr int kMPPAffineWideTileN = 64;
+constant constexpr int kMPPAffineWideTileK = 64;
+
+kernel void mpp_prefill_affine_wide_f16(
+    device const uint8_t* packedWeights [[buffer(0)]],
+    device const bfloat* scales         [[buffer(1)]],
+    device const bfloat* biases         [[buffer(2)]],
+    device half* activations            [[buffer(3)]],
+    device half* output                 [[buffer(4)]],
+    constant uint& M                    [[buffer(5)]],
+    constant uint& N                    [[buffer(6)]],
+    constant uint& K                    [[buffer(7)]],
+    uint3 tgid                          [[threadgroup_position_in_grid]],
+    uint3 lid3                          [[thread_position_in_threadgroup]]) {
+    constexpr auto descriptor = matmul2d_descriptor(
+        kMPPAffineWideTileM, kMPPAffineWideTileN, kMPPAffineWideTileK,
+        false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<descriptor, execution_simdgroups<4>> operation;
+
+    using device_half_tensor = tensor<device half, dextents<int32_t, 2>, tensor_inline>;
+    using threadgroup_half_tensor = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
+
+    threadgroup half weightTile[kMPPAffineWideTileN * kMPPAffineWideTileK];
+    threadgroup_half_tensor tileB(
+        weightTile,
+        dextents<int32_t, 2>(kMPPAffineWideTileK, kMPPAffineWideTileN),
+        array<int32_t, 2>({1, kMPPAffineWideTileK}));
+    device_half_tensor matrixA(
+        activations,
+        dextents<int32_t, 2>(int32_t(K), int32_t(M)),
+        array<int32_t, 2>({1, int32_t(K)}));
+    auto firstTileA = matrixA.slice(0, int32_t(tgid.y) * kMPPAffineWideTileM);
+    auto accumulator = operation.get_destination_cooperative_tensor<
+        decltype(firstTileA), decltype(tileB), float>();
+    for (int element = 0; element < accumulator.get_capacity(); ++element) {
+        accumulator[element] = 0.0f;
+    }
+
+    // Thread t dequantizes row t % 64, 32-weight chunk t / 64.
+    const uint lid = lid3.x;
+    const uint localN = lid % uint(kMPPAffineWideTileN);
+    const uint chunk0 = lid / uint(kMPPAffineWideTileN);
+    const uint globalN = tgid.x * uint(kMPPAffineWideTileN) + localN;
+    const uint groupsPerRow = K / kGroupSize;
+    device const uint* row = reinterpret_cast<device const uint*>(packedWeights + globalN * (K / 2u));
+    device const bfloat* rowScales = scales + globalN * groupsPerRow;
+    device const bfloat* rowBiases = biases + globalN * groupsPerRow;
+    threadgroup half* dst = weightTile + localN * uint(kMPPAffineWideTileK) + chunk0 * 32u;
+    for (uint tileK = 0; tileK < K; tileK += uint(kMPPAffineWideTileK)) {
+        const uint group = tileK / kGroupSize;
+        const float scale = float(rowScales[group]);
+        const float bias = float(rowBiases[group]);
+        device const uint* words = row + (tileK + chunk0 * 32u) / 8u;
+        for (uint w = 0; w < 4u; ++w) {
+            const uint word = words[w];
+            for (uint j = 0; j < 8u; ++j) {
+                dst[8u * w + j] = half(fma(float((word >> (4u * j)) & 0xFu), scale, bias));
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        auto tileA = matrixA.slice(int32_t(tileK), int32_t(tgid.y) * kMPPAffineWideTileM);
+        operation.run(tileA, tileB, accumulator);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (int element = 0; element < accumulator.get_capacity(); ++element) {
+        if (!accumulator.is_valid_element(element)) continue;
+        const auto position = accumulator.get_multidimensional_index(element);
+        const uint outN = tgid.x * uint(kMPPAffineWideTileN) + uint(position[0]);
+        const uint outM = tgid.y * uint(kMPPAffineWideTileM) + uint(position[1]);
+        if (outM < M) {
+            output[outM * N + outN] = half(accumulator[element]);
+        }
+    }
+}
+
 constant constexpr int kMPPAffineApple10TileM = 64;
 constant constexpr int kMPPAffineApple10TileN = 64;
 constant constexpr int kMPPAffineApple10TileK = 128;

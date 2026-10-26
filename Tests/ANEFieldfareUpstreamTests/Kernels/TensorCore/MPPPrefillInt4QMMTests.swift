@@ -101,9 +101,12 @@ import ANEFieldfareValidationSupport
 
     /// The TensorOps INT4 GEMM against an FP32 affine reference: partial
     /// tiles in M and N, adversarial affine terms, unaligned weights.
-    @Test func tensorOpsQMMMatchesFP32AffineReference() throws {
-        let m = 17, n = 35, k = 128
-        let weightOffset = 13, scaleOffset = 2, biasOffset = 6
+    /// Unaligned weights and N = 35 take the 64x32 kernel; aligned weights
+    /// with N a multiple of 64 take the 128x64 one, with a partial M tile.
+    @Test(arguments: [(17, 35, 128, 13), (150, 128, 256, 16)])
+    func tensorOpsQMMMatchesFP32AffineReference(shape: (Int, Int, Int, Int)) throws {
+        let (m, n, k, weightOffset) = shape
+        let scaleOffset = 2, biasOffset = 6
         let context = try MetalContext()
         let candidate = try MPPPrefillInt4QMM(context: context)
         let inputs = Self.makeInputs(m: m, n: n, k: k, adversarialAffine: true)

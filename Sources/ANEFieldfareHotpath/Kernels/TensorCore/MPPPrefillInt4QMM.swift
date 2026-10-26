@@ -12,6 +12,9 @@ public final class MPPPrefillInt4QMM {
     private static let tileK = Quantization.groupSize
 
     private let pso: any MTLComputePipelineState
+    /// The control product on 128x64 tiles with word-wide dequantization,
+    /// for shapes it fits.
+    private let widePSO: (any MTLComputePipelineState)?
     private let variant: Variant
 
     /// `apple10BF16` (the vision projector) needs an Apple10 GPU.
@@ -28,6 +31,10 @@ public final class MPPPrefillInt4QMM {
             throw MetalError.missingFunction(name)
         }
         self.pso = try context.device.makeComputePipelineState(function: function)
+        self.widePSO = try variant == .control
+            ? library.makeFunction(name: "mpp_prefill_affine_wide_f16")
+                .map { try context.device.makeComputePipelineState(function: $0) }
+            : nil
         self.variant = variant
     }
 
@@ -49,8 +56,11 @@ public final class MPPPrefillInt4QMM {
                      && biasesOffset.isMultiple(of: MemoryLayout<UInt16>.stride),
                      "INT4 QMM shape m=\(m) n=\(n) k=\(k) or offsets unsupported")
         let encoder = try commandBuffer.makeTracedComputeEncoder()
+        let wide = widePSO.flatMap { pso in
+            n.isMultiple(of: 64) && k.isMultiple(of: 64) && weightsOffset.isMultiple(of: 4) ? pso : nil
+        }
 
-        encoder.setComputePipelineState(pso)
+        encoder.setComputePipelineState(wide ?? pso)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
         encoder.setBuffer(scales, offset: scalesOffset, index: 1)
         encoder.setBuffer(biases, offset: biasesOffset, index: 2)
@@ -59,10 +69,11 @@ public final class MPPPrefillInt4QMM {
         encoder.setValue(UInt32(m), index: 5)
         encoder.setValue(UInt32(n), index: 6)
         encoder.setValue(UInt32(k), index: 7)
+        let tileN = useApple10 || wide != nil ? 64 : Self.tileN
+        let tileM = wide != nil ? 128 : Self.tileM
         encoder.dispatchThreadgroups(
-            MTLSize(width: (n + (useApple10 ? 64 : Self.tileN) - 1)
-                        / (useApple10 ? 64 : Self.tileN),
-                    height: (m + Self.tileM - 1) / Self.tileM,
+            MTLSize(width: (n + tileN - 1) / tileN,
+                    height: (m + tileM - 1) / tileM,
                     depth: 1),
             threadsPerThreadgroup: MTLSize(width: pso.threadExecutionWidth * 4,
                                            height: 1,
