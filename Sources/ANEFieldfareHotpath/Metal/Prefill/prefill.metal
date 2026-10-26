@@ -175,6 +175,71 @@ void prefill_rmsnorm_no_scale_perhead_block(
     }
 }
 
+// The same norms with one SIMD group per head row, eight rows a threadgroup,
+// for head sizes that are multiples of 32 up to 512: each lane holds
+// head_dim / 32 values, so a row needs one simd_sum and no barrier.
+constant constexpr uint kPerHeadSimdRows = 8;
+
+template <bool kScaled>
+static inline void prefill_rmsnorm_perhead_simd(
+    device const half* x, device const bfloat* weight, device half* out,
+    uint T, uint head_dim, uint num_heads, uint token_stride_elems, float eps,
+    uint tg, uint lane, uint sg
+) {
+    const uint row = tg * kPerHeadSimdRows + sg;
+    if (row >= T * num_heads) return;
+    const uint t = row / num_heads, h = row % num_heads;
+    device const half* xh = x + t * token_stride_elems + h * head_dim;
+    device half* yh = out + t * token_stride_elems + h * head_dim;
+    const uint per_lane = head_dim / 32u;
+    float v[16];
+    float acc = 0.0f;
+    for (uint i = 0; i < per_lane; ++i) {
+        v[i] = float(xh[i * 32u + lane]);
+        acc = fma(v[i], v[i], acc);
+    }
+    const float inv = rsqrt(simd_sum(acc) / float(head_dim) + eps);
+    for (uint i = 0; i < per_lane; ++i) {
+        const uint d = i * 32u + lane;
+        yh[d] = half(kScaled ? v[i] * inv * float(weight[d]) : v[i] * inv);
+    }
+}
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+void prefill_rmsnorm_bf16w_perhead_simd(
+    device const half*   x                   [[buffer(0)]],
+    device const bfloat* weight              [[buffer(1)]],
+    device half*         out                 [[buffer(2)]],
+    constant uint&       T                   [[buffer(3)]],
+    constant uint&       head_dim            [[buffer(4)]],
+    constant uint&       num_heads           [[buffer(5)]],
+    constant uint&       token_stride_elems  [[buffer(6)]],
+    constant float&      eps                 [[buffer(7)]],
+    uint                 tg                  [[threadgroup_position_in_grid]],
+    uint                 lane                [[thread_index_in_simdgroup]],
+    uint                 sg                  [[simdgroup_index_in_threadgroup]]
+) {
+    prefill_rmsnorm_perhead_simd<true>(x, weight, out, T, head_dim, num_heads, token_stride_elems, eps,
+                                       tg, lane, sg);
+}
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+void prefill_rmsnorm_no_scale_perhead_simd(
+    device const half*   x                   [[buffer(0)]],
+    device half*         out                 [[buffer(1)]],
+    constant uint&       T                   [[buffer(2)]],
+    constant uint&       head_dim            [[buffer(3)]],
+    constant uint&       num_heads           [[buffer(4)]],
+    constant uint&       token_stride_elems  [[buffer(5)]],
+    constant float&      eps                 [[buffer(6)]],
+    uint                 tg                  [[threadgroup_position_in_grid]],
+    uint                 lane                [[thread_index_in_simdgroup]],
+    uint                 sg                  [[simdgroup_index_in_threadgroup]]
+) {
+    prefill_rmsnorm_perhead_simd<false>(x, nullptr, out, T, head_dim, num_heads, token_stride_elems, eps,
+                                        tg, lane, sg);
+}
+
 [[kernel, max_total_threads_per_threadgroup(256)]]
 void prefill_post_attn_setup_block(
     device       half*   hidden                [[buffer(0)]],
