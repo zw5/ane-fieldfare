@@ -12,7 +12,9 @@ final class PrefillSIMDAttentionTests: XCTestCase {
             for (start, count, window, capacity, imageBlock) in [
                 (40,7,9,16,false), (4092,7,1024,2048,true)
             ] {
-                let heads = 4, kvHeads = 2, valid = start + count
+                // Four query heads over one KV head: a shape the grouped-query
+                // tensor kernel does not take, so the SIMD kernel runs.
+                let heads = 4, kvHeads = 1, valid = start + count
                 let slots = capacity == 0 ? valid : capacity
                 let q = (0..<(count * heads * d)).map { Float16(sin(Float($0) * 0.133) * 0.35) }
                 var k = [Float16](repeating: 0, count: slots * kvHeads * d)
@@ -51,14 +53,14 @@ final class PrefillSIMDAttentionTests: XCTestCase {
                     let keys = Array(first..<(imageBlock ? valid : start + row + 1))
                     let scores: [Double] = keys.map { key in
                         var score = 0.0
-                        for c in 0..<d { score += Double(q[(row*heads+h)*d+c]) * Double(k[((key%slots)*kvHeads+h/2)*d+c]) }
+                        for c in 0..<d { score += Double(q[(row*heads+h)*d+c]) * Double(k[((key%slots)*kvHeads+h/heads)*d+c]) }
                         return score
                     }
                     let mx = scores.max()!
                     let weights = scores.map { exp($0-mx) }, sum = weights.reduce(0,+)
                     for c in 0..<d {
                         var expected = 0.0
-                        for (i,key) in keys.enumerated() { expected += weights[i] * Double(v[((key%slots)*kvHeads+h/2)*d+c]) / sum }
+                        for (i,key) in keys.enumerated() { expected += weights[i] * Double(v[((key%slots)*kvHeads+h/heads)*d+c]) / sum }
                         let value = unsafe Double(actual[(row*heads+h)*d+c])
                         XCTAssertTrue(value.isFinite)
                         maximum = max(maximum, abs(value-expected))
