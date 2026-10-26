@@ -8,8 +8,9 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
     let sharedIntermediate: Int
     let routedIntermediate: Int
     let topK: Int
-    /// Routed pairs one grouped-MoE microbatch processes.
-    let routedPairMicrobatchRows = 32
+    /// Routed pairs one grouped-MoE microbatch processes. Larger batches mean
+    /// fewer, fuller dispatches; the activations cost 2.8 KB per pair.
+    let routedPairMicrobatchRows = 2048
 
     init(config: ArchConfig,
          chunkTokens: Int,
@@ -92,7 +93,8 @@ struct PrefillChunkScratchBuffers {
             routeWeights: try sharedBuffer(layout.routeIDElements * MemoryLayout<Float16>.stride,
                                            label: "prefill.routeWeights"),
             sharedActScratch: try privateBuffer(layout.sharedIntermediate, label: "prefill.sharedActScratch"),
-            routedActScratch: try privateBuffer(microbatch * layout.routedIntermediate,
+            // FP16 activations followed by their block scales.
+            routedActScratch: try privateBuffer(2 * microbatch * layout.routedIntermediate,
                                                 label: "prefill.routedActScratch"))
     }
 }

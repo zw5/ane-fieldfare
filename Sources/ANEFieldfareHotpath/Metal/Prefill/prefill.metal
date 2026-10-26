@@ -379,66 +379,6 @@ struct PrefillGroupedRoutedMoEStreamedParamsMSL {
     uint down_b_off;
 };
 
-static inline uint prefill_streamed_local_expert_id(
-    constant PrefillGroupedRoutedMoEStreamedParamsMSL& p,
-    uint slot
-) {
-    switch (slot) {
-        case 0: return p.local_expert_0;
-        case 1: return p.local_expert_1;
-        case 2: return p.local_expert_2;
-        case 3: return p.local_expert_3;
-        case 4: return p.local_expert_4;
-        case 5: return p.local_expert_5;
-        case 6: return p.local_expert_6;
-        case 7: return p.local_expert_7;
-        case 8: return p.local_expert_8;
-        case 9: return p.local_expert_9;
-        case 10: return p.local_expert_10;
-        case 11: return p.local_expert_11;
-        case 12: return p.local_expert_12;
-        case 13: return p.local_expert_13;
-        case 14: return p.local_expert_14;
-        default: return p.local_expert_15;
-    }
-}
-
-static inline float prefill_moe_int4_gemv_row_dev(
-    device const uint8_t* W,
-    device const bfloat* S,
-    device const bfloat* B,
-    device const half* x,
-    uint row,
-    uint N
-) {
-    const uint groups = N / kPrefillGroupSize;
-    const uint row_bytes = N / 2u;
-    device const uint8_t* W_row = W + row * row_bytes;
-    device const bfloat* s_row = S + row * groups;
-    device const bfloat* b_row = B + row * groups;
-
-    float acc = 0.0f;
-    for (uint g = 0; g < groups; ++g) {
-        const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
-        device const uint8_t* Wg = W_row + g * (kPrefillGroupSize / 2u);
-        device const half* xg = x + g * kPrefillGroupSize;
-        float dot_qx = 0.0f;
-        float sum_x = 0.0f;
-        for (uint k = 0; k < kPrefillGroupSize / 2u; ++k) {
-            const uint8_t packed = Wg[k];
-            const float x0 = float(xg[2u * k]);
-            const float x1 = float(xg[2u * k + 1u]);
-            dot_qx = fma(float(uint(packed & 0x0Fu)), x0, dot_qx);
-            dot_qx = fma(float(uint(packed >> 4)), x1, dot_qx);
-            sum_x += x0 + x1;
-        }
-        acc = fma(scale, dot_qx, acc);
-        acc = fma(bias, sum_x, acc);
-    }
-    return acc;
-}
-
 kernel void prefill_router_gemma4_block(
     device const uint8_t* W                [[buffer(0)]],
     device const bfloat*  scales           [[buffer(1)]],
@@ -559,72 +499,220 @@ kernel void prefill_moe_reduce_token_major(
     h2[t * D + d] = half(acc);
 }
 
-kernel void prefill_grouped_routed_moe_batched_phase1(
+// ---- Routed experts as small matrix multiplies ------------------
+// The host cuts each microbatch of expert-sorted pairs into tiles of up to
+// 32 pairs that share one expert. A threadgroup of four SIMD groups computes
+// 64 output rows for one tile on the tensor units: per 32-wide step along
+// the input it stages the pairs' inputs and the dequantized weights in FP16
+// and runs one 32x64x32 matmul2d per projection, accumulating in FP32.
+struct PrefillMMATileMSL {
+    uint pair;      // first pair, within the microbatch
+    uint count;     // pairs, 1...32
+    uint slot;      // the expert's slot in the routed tile
+    uint reserved;
+};
+
+// Thirty-two weights of `row` from 32-weight chunk `c`, dequantized.
+static inline void prefill_mma_dequant32(device const uint8_t* W, device const bfloat* S, device const bfloat* B,
+                                         uint row, uint N, uint c, threadgroup half* out) {
+    const uint groups = N / kPrefillGroupSize;
+    const float sc = float(S[row * groups + c / 2u]), bi = float(B[row * groups + c / 2u]);
+    device const uint* W_row = (device const uint*)(W + row * (N / 2u));
+    for (uint k = 0; k < 4u; ++k) {
+        const uint w = W_row[4u * c + k];
+        for (uint j = 0; j < 8u; ++j) out[8u * k + j] = half(fma(float((w >> (4u * j)) & 0xFu), sc, bi));
+    }
+}
+
+#if defined(__HAVE_TENSOR__)
+// The activations between the two kernels are FP16 with a power-of-two
+// scale per pair and 64-row block, so values past FP16's range (~78k seen)
+// keep FP16's relative precision. The down kernel brings each block to its
+// pair's largest scale as it stages it (exact unless a value falls below
+// FP16's normal range relative to the pair's largest) and applies that
+// scale to the pair's sums.
+constant constexpr int kRoutedTensorPairs = 32;
+constant constexpr int kRoutedTensorRows = 64;
+constant constexpr int kRoutedTensorK = 64;
+constant constexpr uint kRoutedTensorMaxBlocks = 16;   // F up to 1024
+
+// Block scales follow this microbatch's FP16 activations in act_scratch.
+static inline uint prefill_routed_tensor_scale_offset(constant PrefillGroupedRoutedMoEStreamedParamsMSL& p) {
+    return p.pair_count * p.F / 2u;   // in floats
+}
+
+kernel void prefill_routed_gate_up_tensorops(
     device const half*                                   hidden               [[buffer(0)]],
     device const PrefillTokenExpertPairMSL*              sorted_pairs         [[buffer(1)]],
     device half*                                         act_scratch          [[buffer(7)]],
     device const PrefillStreamedRoutedBlobsMSL&          routed               [[buffer(9)]],
     constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p                    [[buffer(10)]],
-    uint2                                                gid                  [[thread_position_in_grid]]
+    constant PrefillMMATileMSL*                          tiles                [[buffer(11)]],
+    uint2                                                tg                   [[threadgroup_position_in_grid]],
+    uint                                                 tid                  [[thread_index_in_threadgroup]]
 ) {
-    const uint f = gid.x;
-    const uint pair_local = gid.y;
-    if (f >= p.F || pair_local >= p.pair_count) return;
+    // 32-wide steps keep threadgroup memory near 10 KB, so several
+    // threadgroups share a core.
+    constexpr int kStep = 32;
+    constexpr auto desc = matmul2d_descriptor(kRoutedTensorPairs, kRoutedTensorRows, kStep,
+                                              false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroups<4>> op;
+    using tg_half_tensor = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
 
-    const PrefillTokenExpertPairMSL pair = sorted_pairs[p.pair_start + pair_local];
-    uint local_slot = kPrefillMaxTileExperts;
-    for (uint slot = 0; slot < p.live_expert_count; ++slot) {
-        if (prefill_streamed_local_expert_id(p, slot) == pair.expert) {
-            local_slot = slot;
-            break;
+    threadgroup half xs[kRoutedTensorPairs * kStep];
+    // Gate and up weights as FP16 [row][k] during the loop, then the
+    // activations as FP32 [pair][row].
+    threadgroup float space[kRoutedTensorPairs * kRoutedTensorRows];
+    threadgroup half* wg = reinterpret_cast<threadgroup half*>(space);
+    threadgroup half* wu = wg + kRoutedTensorRows * kStep;
+    threadgroup uint tokens[kRoutedTensorPairs];
+    const PrefillMMATileMSL tile = tiles[tg.y];
+    const uint row0 = tg.x * uint(kRoutedTensorRows);
+    if (tid < uint(kRoutedTensorPairs)) {
+        tokens[tid] = tid < tile.count ? sorted_pairs[p.pair_start + tile.pair + tid].token : 0u;
+    }
+    device const uint8_t* expert = routed.blob[tile.slot];
+    const bool gate_thread = tid < uint(kRoutedTensorRows);
+    device const uint8_t* W = expert + (gate_thread ? p.gate_W_off : p.up_W_off);
+    device const bfloat* S = reinterpret_cast<device const bfloat*>(expert + (gate_thread ? p.gate_s_off : p.up_s_off));
+    device const bfloat* B = reinterpret_cast<device const bfloat*>(expert + (gate_thread ? p.gate_b_off : p.up_b_off));
+    const uint w_row = tid % uint(kRoutedTensorRows);
+    threadgroup half* w_dst = (gate_thread ? wg : wu) + w_row * kStep;
+
+    tg_half_tensor x_t(xs, dextents<int32_t, 2>(kStep, kRoutedTensorPairs), array<int32_t, 2>({1, kStep}));
+    tg_half_tensor g_t(wg, dextents<int32_t, 2>(kStep, kRoutedTensorRows), array<int32_t, 2>({1, kStep}));
+    tg_half_tensor u_t(wu, dextents<int32_t, 2>(kStep, kRoutedTensorRows), array<int32_t, 2>({1, kStep}));
+    auto cg = op.get_destination_cooperative_tensor<decltype(x_t), decltype(g_t), float>();
+    auto cu = op.get_destination_cooperative_tensor<decltype(x_t), decltype(u_t), float>();
+    for (int e = 0; e < cg.get_capacity(); ++e) { cg[e] = 0.0f; cu[e] = 0.0f; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Staging: four threads a pair, eight inputs each.
+    const uint stage_pair = tid / 4u, stage_k = (tid % 4u) * 8u;
+    threadgroup half4* x_dst = reinterpret_cast<threadgroup half4*>(xs + stage_pair * kStep + stage_k);
+    const bool stage_live = stage_pair < tile.count;
+    device const half* x_row = hidden + tokens[stage_pair] * p.hidden_stride_elements + stage_k;
+    for (uint c = 0; c < p.D / uint(kStep); ++c) {
+        if (stage_live) {
+            device const half4* x_src = reinterpret_cast<device const half4*>(x_row + c * uint(kStep));
+            x_dst[0] = x_src[0];
+            x_dst[1] = x_src[1];
+        } else {
+            x_dst[0] = half4(0.0h);
+            x_dst[1] = half4(0.0h);
+        }
+        prefill_mma_dequant32(W, S, B, row0 + w_row, p.D, c, w_dst);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        op.run(x_t, g_t, cg);
+        op.run(x_t, u_t, cu);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // The two accumulators share one layout, so each element's activation is
+    // formed in registers.
+    for (int e = 0; e < cg.get_capacity(); ++e) {
+        if (!cg.is_valid_element(e)) continue;
+        const auto pos = cg.get_multidimensional_index(e);
+        space[uint(pos[1]) * kRoutedTensorRows + uint(pos[0])] = prefill_gelu_pytorch_tanh(cg[e]) * cu[e];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Four threads a pair, sixteen rows each; the four are adjacent lanes.
+    const uint pr = tid / 4u, r0 = (tid % 4u) * 16u;
+    float peak = 0.0f;
+    for (uint i = 0; i < 16u; ++i) peak = max(peak, abs(space[pr * kRoutedTensorRows + r0 + i]));
+    peak = max(peak, simd_shuffle_xor(peak, ushort(1)));
+    peak = max(peak, simd_shuffle_xor(peak, ushort(2)));
+    int exponent = 0;
+    frexp(peak, exponent);   // peak < 2^exponent
+    const float to_half = ldexp(1.0f, 14 - exponent);
+    if (pr < tile.count) {
+        const uint pair = tile.pair + pr;
+        device half* dst = act_scratch + pair * p.F + row0 + r0;
+        for (uint i = 0; i < 16u; ++i) dst[i] = half(space[pr * kRoutedTensorRows + r0 + i] * to_half);
+        if (tid % 4u == 0u) {
+            device float* scales = reinterpret_cast<device float*>(act_scratch) + prefill_routed_tensor_scale_offset(p);
+            scales[pair * (p.F / uint(kRoutedTensorK)) + tg.x] = ldexp(1.0f, exponent - 14);
         }
     }
-    if (local_slot >= p.live_expert_count) return;
-
-    device const uint8_t* expert = routed.blob[local_slot];
-    device const half* x = hidden + pair.token * p.hidden_stride_elements;
-    device const uint8_t* gate_W = expert + p.gate_W_off;
-    device const bfloat* gate_s = reinterpret_cast<device const bfloat*>(expert + p.gate_s_off);
-    device const bfloat* gate_b = reinterpret_cast<device const bfloat*>(expert + p.gate_b_off);
-    device const uint8_t* up_W = expert + p.up_W_off;
-    device const bfloat* up_s = reinterpret_cast<device const bfloat*>(expert + p.up_s_off);
-    device const bfloat* up_b = reinterpret_cast<device const bfloat*>(expert + p.up_b_off);
-
-    const float gate = prefill_moe_int4_gemv_row_dev(gate_W, gate_s, gate_b, x, f, p.D);
-    const float up = prefill_moe_int4_gemv_row_dev(up_W, up_s, up_b, x, f, p.D);
-    act_scratch[pair_local * p.F + f] = half(prefill_gelu_pytorch_tanh(gate) * up);
 }
 
-kernel void prefill_grouped_routed_moe_batched_down(
+kernel void prefill_routed_down_tensorops(
     device const PrefillTokenExpertPairMSL*              sorted_pairs         [[buffer(1)]],
     device half*                                         route_partials       [[buffer(5)]],
-    device const half*                                   act_scratch          [[buffer(7)]],
+    device half*                                         act_scratch          [[buffer(7)]],
     device const PrefillStreamedRoutedBlobsMSL&          routed               [[buffer(9)]],
     constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p                    [[buffer(10)]],
-    uint2                                                gid                  [[thread_position_in_grid]]
+    constant PrefillMMATileMSL*                          tiles                [[buffer(11)]],
+    uint2                                                tg                   [[threadgroup_position_in_grid]],
+    uint                                                 tid                  [[thread_index_in_threadgroup]]
 ) {
-    const uint d = gid.x;
-    const uint pair_local = gid.y;
-    if (d >= p.D || pair_local >= p.pair_count) return;
+    constexpr int kStep = 32;
+    constexpr auto desc = matmul2d_descriptor(kRoutedTensorPairs, kRoutedTensorRows, kStep,
+                                              false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroups<4>> op;
+    using tg_half_tensor = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
 
-    const PrefillTokenExpertPairMSL pair = sorted_pairs[p.pair_start + pair_local];
-    uint local_slot = kPrefillMaxTileExperts;
-    for (uint slot = 0; slot < p.live_expert_count; ++slot) {
-        if (prefill_streamed_local_expert_id(p, slot) == pair.expert) {
-            local_slot = slot;
-            break;
-        }
+    threadgroup half xs[kRoutedTensorPairs * kStep];
+    threadgroup half wd[kRoutedTensorRows * kStep];
+    // Each block's scale relative to its pair's largest (a power of two at
+    // most 1), and that largest.
+    threadgroup float relative[kRoutedTensorPairs * kRoutedTensorMaxBlocks];
+    threadgroup float pair_scale[kRoutedTensorPairs];
+    threadgroup uint dest[kRoutedTensorPairs];
+    const PrefillMMATileMSL tile = tiles[tg.y];
+    const uint row0 = tg.x * uint(kRoutedTensorRows);
+    const uint blocks = p.F / uint(kRoutedTensorK);
+    if (tid < uint(kRoutedTensorPairs)) {
+        const uint pr = min(tid, tile.count - 1u);
+        const PrefillTokenExpertPairMSL pair = sorted_pairs[p.pair_start + tile.pair + pr];
+        dest[tid] = (pair.token * p.top_k + pair.rank) * p.D;
+        device const float* scales = reinterpret_cast<device const float*>(act_scratch)
+            + prefill_routed_tensor_scale_offset(p) + (tile.pair + pr) * blocks;
+        float largest = 0.0f;
+        for (uint b = 0; b < blocks; ++b) largest = max(largest, scales[b]);
+        for (uint b = 0; b < blocks; ++b) relative[tid * blocks + b] = scales[b] / largest;
+        pair_scale[tid] = largest;
     }
-    if (local_slot >= p.live_expert_count) return;
+    device const uint8_t* expert = routed.blob[tile.slot];
+    device const bfloat* dS = reinterpret_cast<device const bfloat*>(expert + p.down_s_off);
+    device const bfloat* dB = reinterpret_cast<device const bfloat*>(expert + p.down_b_off);
 
-    device const uint8_t* expert = routed.blob[local_slot];
-    device const uint8_t* down_W = expert + p.down_W_off;
-    device const bfloat* down_s = reinterpret_cast<device const bfloat*>(expert + p.down_s_off);
-    device const bfloat* down_b = reinterpret_cast<device const bfloat*>(expert + p.down_b_off);
-    device const half* act = act_scratch + pair_local * p.F;
-    const half value = half(prefill_moe_int4_gemv_row_dev(down_W, down_s, down_b, act, d, p.F));
-    route_partials[(pair.token * p.top_k + pair.rank) * p.D + d] = value;
+    tg_half_tensor a_t(xs, dextents<int32_t, 2>(kStep, kRoutedTensorPairs), array<int32_t, 2>({1, kStep}));
+    tg_half_tensor w_t(wd, dextents<int32_t, 2>(kStep, kRoutedTensorRows), array<int32_t, 2>({1, kStep}));
+    auto acc = op.get_destination_cooperative_tensor<decltype(a_t), decltype(w_t), float>();
+    for (int e = 0; e < acc.get_capacity(); ++e) acc[e] = 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Staging: four threads a pair, eight activations each, brought to the
+    // pair's largest scale; the first 64 threads dequantize a row each.
+    const uint stage_pair = tid / 4u, stage_k = (tid % 4u) * 8u;
+    const bool stage_live = stage_pair < tile.count;
+    device const half4* a_row = reinterpret_cast<device const half4*>(
+        act_scratch + (tile.pair + stage_pair) * p.F + stage_k);
+    threadgroup half4* x_dst = reinterpret_cast<threadgroup half4*>(xs + stage_pair * kStep + stage_k);
+    for (uint c = 0; c < p.F / uint(kStep); ++c) {
+        if (stage_live) {
+            const half r = half(relative[stage_pair * blocks + c / 2u]);
+            for (uint i = 0; i < 2u; ++i) x_dst[i] = a_row[c * uint(kStep) / 4u + i] * r;
+        } else {
+            for (uint i = 0; i < 2u; ++i) x_dst[i] = half4(0.0h);
+        }
+        if (tid < uint(kRoutedTensorRows)) {
+            prefill_mma_dequant32(expert + p.down_W_off, dS, dB, row0 + tid, p.F, c, wd + tid * kStep);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        op.run(a_t, w_t, acc);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (int e = 0; e < acc.get_capacity(); ++e) {
+        if (!acc.is_valid_element(e)) continue;
+        const auto pos = acc.get_multidimensional_index(e);
+        const uint pr = uint(pos[1]);
+        if (pr < tile.count) route_partials[dest[pr] + row0 + uint(pos[0])] = half(acc[e] * pair_scale[pr]);
+    }
 }
+#endif
 
 static inline void prefill_rope_apply_neox_pair(
     device half* head_ptr,
