@@ -940,6 +940,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         let spans = PrefillChunkPlanner.spans(tokenCount: tokens.count,
                                               startPosition: startPosition,
                                               config: config)
+        if spans.count > 1, prefillCapture == nil {
+            try await prefillLayerMajor(tokens: tokens, spans: spans, outputMode: outputMode, logits: logits,
+                                        scratch: scratch, config: config)
+            onProgress(tokens.count)
+            return prefillResult(newPosition: startPosition + tokens.count, outputMode: outputMode)
+        }
         for (spanIndex, span) in spans.enumerated() {
             // A chunk in flight finishes; cancellation is observed between chunks.
             try Task.checkCancellation()
@@ -1292,6 +1298,41 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
         return scratch
     }
 
+    /// A text prompt longer than one chunk, run one layer at a time across all
+    /// its chunks: each layer's routed experts are read once for the whole
+    /// prompt, where chunk by chunk every chunk streams nearly all 13 GB of
+    /// them. A chunk's attention at layer L needs only the earlier chunks'
+    /// layer-L keys and values, which this order has written; the drafter's
+    /// feature rows are written by position, so either order fills them alike.
+    private func prefillLayerMajor(tokens: ArraySlice<Int32>, spans: [PrefillChunkSpan],
+                                   outputMode: PrefillOutputMode, logits: any MTLBuffer,
+                                   scratch: PrefillChunkScratchBuffers, config: PrefillRuntimeConfig) async throws {
+        let rowBytes = cfg.hiddenSize * MemoryLayout<Float16>.stride
+        let hidden = try ctx.device.newBuffer(length: tokens.count * rowBytes, options: .storageModePrivate)
+        hidden.label = "prefill.layerMajor.hidden"
+        for L in 0..<cfg.numLayers {
+            for (spanIndex, span) in spans.enumerated() {
+                // A layer in flight finishes; cancellation is observed between chunks.
+                try Task.checkCancellation()
+                let lower = tokens.index(tokens.startIndex, offsetBy: span.tokenOffset)
+                let upper = tokens.index(lower, offsetBy: span.tokenCount)
+                try await executePrefillChunk(
+                    tokens: tokens[lower..<upper],
+                    startPosition: span.startPosition,
+                    outputMode: outputMode,
+                    logits: logits,
+                    scratch: scratch,
+                    config: config,
+                    writeFinalHead: L == cfg.numLayers - 1 && spanIndex == spans.count - 1,
+                    layerRange: L..<(L + 1),
+                    promptHidden: (hidden, span.tokenOffset * rowBytes),
+                    finishesChunk: false)
+            }
+        }
+        kv.advance(by: tokens.count)
+        prefillChunkState.markCommitted()
+    }
+
     private func executePrefillChunk(tokens: ArraySlice<Int32>,
                                      startPosition: Int,
                                      outputMode: PrefillOutputMode,
@@ -1300,7 +1341,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                                      config: PrefillRuntimeConfig,
                                      writeFinalHead: Bool,
                                      embeddingOverride: any MTLBuffer? = nil,
-                                     bidirectionalBlock: Range<Int>? = nil) async throws {
+                                     bidirectionalBlock: Range<Int>? = nil,
+                                     layerRange: Range<Int>? = nil,
+                                     promptHidden: (buffer: any MTLBuffer, offset: Int)? = nil,
+                                     finishesChunk: Bool = true) async throws {
         guard !tokens.isEmpty else { return }
         guard tokens.count <= scratch.layout.chunkTokens else {
             throw PrefillError.chunkedUnsupported(
@@ -1342,9 +1386,21 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
 
         prefillChunkState.markDirty(startPosition: startPosition, tokenCount: tokens.count)
 
+        let layersToRun = layerRange ?? 0..<cfg.numLayers
+        let rowsBytes = t * D * MemoryLayout<Float16>.stride
         var cb = try ctx.makeCommandBuffer()
         cb.label = "prefill start=\(startPosition) count=\(t) phase=embed"
-        if let embeddingOverride {
+        if layersToRun.lowerBound > 0 {
+            // A later layer of a layer-major prefill: this chunk's rows wait
+            // in the prompt's hidden buffer between layers.
+            guard let promptHidden else {
+                preconditionFailure("a prefill starting past layer 0 needs the prompt's hidden rows")
+            }
+            let blit = try cb.makeTracedBlitEncoder()
+            blit.copy(from: promptHidden.buffer, sourceOffset: promptHidden.offset, to: scratch.hidden,
+                      destinationOffset: 0, size: rowsBytes)
+            blit.endEncoding()
+        } else if let embeddingOverride {
             // The planner emits image spans as standalone chunks, so the
             // override covers the whole chunk and replaces the INT4 gather.
             let bytes = t * D * MemoryLayout<Float16>.stride
@@ -1396,7 +1452,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             GPUTrace.end("prefill \(t)", since: traceChunk)
             GPUTrace.collect()
         }
-        for L in 0..<cfg.numLayers {
+        for L in layersToRun {
             GPUTrace.setScope("prefill L\(L)")
             let traceAttention = GPUTrace.begin()
             model.beginOpeningRoutedExpertLayer(layer: L)
@@ -1541,12 +1597,20 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
             // decode does, which saves a host round trip per layer.
             pendingTail = PendingLayerTail(attention: cb, tail: tailCB, shared: sharedCB, tiles: tileCBs,
                                            plan: plan)
-            if L + 1 < cfg.numLayers {
+            if L + 1 < layersToRun.upperBound {
                 cb = try ctx.makeCommandBuffer()
                 cb.label = "prefill start=\(startPosition) count=\(t) layer=\(L + 1) phase=qkv_attention"
             }
         }
         if let pending = pendingTail { try settle(pending) }
+        if let promptHidden, layersToRun.upperBound < cfg.numLayers {
+            try runSync { cb in
+                let blit = try cb.makeTracedBlitEncoder()
+                blit.copy(from: scratch.hidden, sourceOffset: 0, to: promptHidden.buffer,
+                          destinationOffset: promptHidden.offset, size: rowsBytes)
+                blit.endEncoding()
+            }
+        }
 
         if writeFinalHead {
             let finalNorm = model.finalNorm
@@ -1599,8 +1663,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, MultimodalPrefillRun
                 storage: buffer, hiddenCount: capture.hiddenLayers.count * t * D))
         }
 
-        kv.advance(by: tokens.count)
-        prefillChunkState.markCommitted()
+        if finishesChunk {
+            kv.advance(by: tokens.count)
+            prefillChunkState.markCommitted()
+        }
     }
 
     private func produceToken(token: Int32,
